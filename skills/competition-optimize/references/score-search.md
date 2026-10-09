@@ -1,0 +1,95 @@
+# Search for Score Improvements
+
+Read this when selecting experiments after a verified baseline exists. Optimize the contest objective under the remaining budget; choose actions from evidence and unresolved questions.
+
+## Turn Research into Testable Mechanisms
+
+Search using the task family, candidate representation, metric, input scale, resource constraints, and a concrete bottleneck. Prefer relevant original writeups, task documentation, and source code; check the actual evaluator when a reported objective or validity claim matters. Once an executable test is available, spend the next budget on it rather than extending a general literature list. Search again when an observed failure identifies missing knowledge.
+
+Convert useful sources into the hypothesis queue below. Record URL/version, license where reuse matters, prerequisites, and a cheap transfer test. Separate author-reported outcomes, inspected implementation, and local measurements. Historical wins, stars, or votes do not establish transfer. Read only the relevant section of [the task-family guide](task-playbooks.md) for concrete experiment options.
+
+## Diagnose Before Choosing a Trial
+
+Break the baseline down by score component and representative case group. For each weak group, distinguish a poor solution from a measurement or implementation defect. Estimate the available improvement from bounds, small exact solutions, a stronger reference, or a targeted ablation when practical. A low raw metric is not necessarily fixable or heavily weighted in the contest score.
+
+Maintain a short hypothesis queue in `research.md`:
+
+| Field | What it must make clear |
+| --- | --- |
+| Mechanism and target | What changes and which score component or case regime should benefit |
+| Parent and evidence | Candidate IDs, source or local result, and the remaining uncertainty |
+| Prerequisites | Data, rules, scale, solver behavior, or resources needed for the idea to apply |
+| Prediction and rejection test | An observable outcome and the cheapest useful experiment that could contradict it |
+| Cost and next decision | Implementation/evaluation cost, failure condition, and whether success justifies a larger trial |
+
+Prefer plausible objective gain per unit of total experiment cost while keeping room for unfamiliar mechanisms. Numeric gain predictions are estimates, not results.
+
+## Select the Next Action
+
+| Evidence or uncertainty | Action | Evidence needed to continue |
+| --- | --- | --- |
+| Only one family has been tried, with unclear fit | Explore a materially different route | A valid result, resource fit, and promising objective or complementary behavior |
+| Low score with an unclear cause | Diagnose using case analysis, a profile, ablation, or small reference solution | A bottleneck or falsifiable explanation that suggests an affordable change |
+| A component has a supported improvement mechanism | Refine that component | Matched evaluations that justify another variant or reveal a new testable mechanism |
+| A mechanism works but sensitive settings are unresolved | Tune its parameters | Full-fidelity gains that reproduce beyond the screening setup |
+| Candidates have compatible, complementary strengths | Combine or select by regime | Improvement in the combined candidate's objective within its resource limits |
+| Apparent gain is comparable to measurement variation | Repeat a matched comparison | Enough evidence to resolve the promotion decision |
+| Final reserve is all that remains | Confirm the frozen shortlist | Validity and independent objective measurements for delivery |
+
+Diagnostics are experiments too and consume budget. Keep their results separate from candidate ranking. A correctness failure may justify a repair when the mechanism remains promising; an infrastructure failure gives no evidence about algorithm quality. Neither warrants unlimited retries.
+
+## Refine a Measured Component
+
+When the budget supports deeper search, use a targeted ablation, runtime profile, or small reference solution to choose a component worth refining. Within it, test one explanatory mechanism per trial and use prior results to select the next variant. Include representation, solver encoding, search neighborhoods, features, and training signals where the task supports them; parameter changes are only one search action.
+
+An ablation measures the current solution's reliance on a component, not its remaining improvement potential. Combine that evidence with a plausible improvement mechanism and evaluation cost. Keep the official evaluator fixed. An approximation used inside the candidate's search is itself a hypothesis and still needs confirmation on the declared objective.
+
+Reallocate trials to another component or route when gains fail to reproduce, a limiting bound is reached, or remaining variants lack a credible benefit. A promising line need not be abandoned after one failed variant, and a familiar line does not earn extra trials merely because it is easy to edit.
+
+## Explore, Refine, Combine
+
+With enough budget, start with materially different solution families rather than many minor edits to the same baseline. Keep their parent IDs and best validated representatives; one route may excel at a different regime or later combine with another. This is a candidate portfolio and can be executed by one agent sequentially.
+
+After a mechanism works, tune its sensitive parameters with a small sweep or adaptive search. Compare candidates at documented evaluation fidelity. If promising gains from routes can coexist, make a separate combination trial with all parent IDs and an ablation where it changes the decision. Gains need not add; evaluate the combination's objective, runtime, and memory including selection or ensemble overhead. Use ensembling only when the submission format and metric support it.
+
+For model ensembles, inspect complementary validation errors rather than selecting solely by individual rank. Reuse cached predictions only with matching sample IDs, split, preprocessing, model/configuration provenance, and metric. OOF predictions must exclude held-out samples and dependent groups from label-dependent fitting. Fit learned preprocessing within folds unless the contract permits transductive fitting; document any such use of held-out features. Tune combination weights on development evidence and confirm the frozen combination independently. A regime-specific algorithm selector must use features available at inference, not ground-truth outcomes.
+
+Reuse intermediates only when their dependencies match. A changed feature pipeline, split, model, or training configuration invalidates affected cached results even if output filenames are unchanged.
+
+## Learn from Evaluated Pairs
+
+Compare an informative candidate with its parent or another matched candidate using code differences, objective deltas, case-level behavior, and cost. Record the observation, the proposed explanation, and the next falsifiable test separately. A model-generated explanation does not establish causality. Use failed predictions to revise or retire hypotheses. Retain lessons in `research.md` with task/metric/constraints, success and failure regimes, and result paths. On a later task, recheck prerequisites and run a transfer test; do not turn a historical lesson into a universal rule.
+
+## Spend Evaluation Budget Where It Changes Decisions
+
+Measure baseline costs and reserve final verification first. Record consumed and remaining time/compute/trials after each batch, including research, evaluator development, diagnostics, retries, training, full runs, and confirmation. Code/configuration variants, including ablations, repairs, and rejected candidates, count against the candidate-trial limit. Respect the contract's budget and the initial default defined in `SKILL.md`; reserve final verification separately.
+
+Use low-cost stages to reject invalid or clearly weak candidates. Before using a subset, reduced resolution, fewer training epochs, or shorter simulation as a score screen, check on reference candidates that it preserves useful ordering. Treat it as a screen, not the final score. Keep some full-fidelity comparisons on distinct mechanisms so a biased cheap screen does not eliminate all alternatives.
+
+If screening ordering fails, revise that screen and reevaluate affected candidates at comparable fidelity. Optimizing the development pipeline can buy more experiments without improving the submission itself; record which cost was reduced.
+
+Evaluate the most promising candidates at full fidelity against the incumbent on matched cases. For noisy metrics, use repetitions to resolve a decision rather than choosing the largest single observed gain. Maintain validity, screening, and confirmation outcomes separately; a partial or failed run cannot establish a new best.
+
+## Keep Search and Confirmation Separate
+
+Freeze the development metric, evaluation split, case weights, and final confirmation protocol before tuning. Choose a split appropriate to deployment: group or time splits when samples are dependent, fresh instances for combinatorial tasks, and matched repeated seeds for stochastic simulations.
+
+Keep repetitions of one candidate distinct from independent complete agent runs when assessing the skill itself.
+
+Use development results to select a small final shortlist. Evaluate the frozen shortlist on the confirmation set within the reserved budget. If its errors guide another edit, that set has become development evidence; document the reuse and arrange fresh confirmation where possible. Do not describe repeatedly inspected fixtures as unseen.
+
+Report the best development result separately when confirmation is unavailable or disagrees. Full-data retraining produces final artifacts, not a new unbiased validation score.
+
+Public leaderboard results can diagnose a mismatch with local validation, but repeated submissions can overfit the public set. Keep platform feedback and local evidence in separate records and respect submission authorization and quota.
+
+## Promotion and Stop Decisions
+
+Promote using the declared metric direction and official aggregation at matched fidelity. Do not reject a net score gain merely because it slows down or regresses in some cases, unless those are hard constraints. Conversely, an attractive mean on a convenient subset does not prove a gain on the actual objective.
+
+If a full score cannot be calculated, preserve tradeoff candidates and label any selected incumbent as provisional under its stated heuristic. State which missing terms could reverse the choice. Do not invent a Pareto direction for a component whose effect on the score is unknown.
+
+## Record Decisions and Recover State
+
+Append planned and completed events under each trial ID in `trials.jsonl`; do not rewrite old outcomes. Before implementation include parent IDs, action/target, hypothesis, predicted observation, rejection test, planned fidelity, and cost. After execution include candidate/configuration hashes, evaluation and comparison paths, validity/fidelity, objective kind/direction, actual cost, decision, and the next unresolved question. Reference immutable result files instead of copying raw logs into the ledger.
+
+On resumption, reconstruct the incumbent, alternatives, unfinished trials, and remaining budget from these events. Partial, invalid, or interrupted runs remain diagnostic evidence. Reuse results only when their dependencies still match. Stop when the budget is spent or only the confirmation reserve remains; when stalled, either test a materially new mechanism within budget or deliver the best confirmed artifacts. Increasing the search budget is a separate user decision.

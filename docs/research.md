@@ -4,7 +4,9 @@
 
 三轮源码研究与首个案例 harness 审计后，首个可验证版本应是 **一个 Codex skill + 比赛专用 evaluator adapter**。先把题目评测做成接受任意候选路径、产出机器可读结果的稳定接口；不急着写通用 runner。若 pilot 表明快照、超时或记账容易出错，再加很小的 runner。评分实现仍属于确定性 evaluator，不交给模型从日志推断。
 
-首版先只支持算法与代码优化类题目，用单个 Codex agent 做有限轮次的顺序优化，复用比赛已有 benchmark。没有可信、可重复的 evaluator 时，先构造并验证评测器，不开始自动搜索。不要实现 MCTS、memory service、数据库、并行 worker 或通用 Kaggle 数据管线；等多个真实任务证明它们必要后再加。分阶段实现与验收条件见 [`mvp-plan.md`](mvp-plan.md)。
+当前采用通用优化核心加题型 adapter：核心按比赛指标选择实验、管理预算和验证，首个端到端 adapter 覆盖算法与代码题；现已补上数据建模的[预测 CSV 指标评测与比较层](../skills/competition-optimize/references/data-model.md)。数据建模的训练与泄漏验证、仿真等题型仍需各自接入，不能直接套用固定时隙 harness。以下上游观察及 MVP 运行模型保留初期设计依据；最新流程以 [`SKILL.md`](../skills/competition-optimize/SKILL.md) 为准。分阶段实现与验收条件见 [`mvp-plan.md`](mvp-plan.md)。
+
+2026-10-10 的[自动化解题与高分经验补充研究](automation-and-solving-experience.md)加入 MLE-STAR、ALE-Agent、LLM4AD、NVIDIA Kaggle skill 与选手复盘，并记录源码核查发现的评分和有效性差异。研究重点是跨题型可迁移的提分决策，以及如何验证这些决策是否有效。
 
 ## 上游实现观察
 
@@ -66,7 +68,7 @@ FDE-Bench README 要求把 `information.md`、`gt.json`、tests 和参考答案�
 
 [AI Scientist v2](https://github.com/SakanaAI/AI-Scientist-v2/tree/96bd51617cfdbb494a9fc283af00fe090edfae48)采用 best-first tree search，且 README 说明它的 tree search 基于 AIDE；它面向开放式研究而不是限定规则的竞赛。README 还提醒生成代码可能安装危险依赖、访问网络或启动额外进程，建议放在 Docker 等隔离环境执行。这里借鉴的是“模型生成代码需要运行边界”的风险认识，不引入其研究流程或受额外限制的代码。
 
-## MVP 的具体运行模型
+## 初期算法类 MVP 的运行模型
 
 ### 适用边界
 
