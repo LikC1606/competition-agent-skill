@@ -2,9 +2,9 @@
 
 ## 结论
 
-两轮源码研究后，首版收敛为一个 **薄型 Codex skill + 很小的 trial runner + 比赛专用 evaluator adapter**。Skill 管理读题、定向检索、baseline 和实验假设；runner 复用已有命令、保存候选快照与结构化结果；adapter 定义该题的编译、短测、完整评测、规则检查和打包命令。评分实现仍属于确定性 evaluator，不交给模型从日志推断。
+三轮源码研究与首个案例 harness 审计后，首个可验证版本应是 **一个 Codex skill + 比赛专用 evaluator adapter**。先把题目评测做成接受任意候选路径、产出机器可读结果的稳定接口；不急着写通用 runner。若 pilot 表明快照、超时或记账容易出错，再加很小的 runner。评分实现仍属于确定性 evaluator，不交给模型从日志推断。
 
-首版先只支持算法与代码优化类题目，用单个 Codex agent 做有限轮次的顺序优化，复用比赛已有 benchmark。没有可信、可重复的 evaluator 时，先构造并验证评测器，不开始自动搜索。不要实现 MCTS、memory service、数据库、并行 worker 或通用 Kaggle 数据管线；等多个真实任务证明它们必要后再加。
+首版先只支持算法与代码优化类题目，用单个 Codex agent 做有限轮次的顺序优化，复用比赛已有 benchmark。没有可信、可重复的 evaluator 时，先构造并验证评测器，不开始自动搜索。不要实现 MCTS、memory service、数据库、并行 worker 或通用 Kaggle 数据管线；等多个真实任务证明它们必要后再加。分阶段实现与验收条件见 [`mvp-plan.md`](mvp-plan.md)。
 
 ## 上游实现观察
 
@@ -82,9 +82,9 @@ FDE-Bench README 要求把 `information.md`、`gt.json`、tests 和参考答案�
 6. **Promote / stop**：先过硬正确性与规则门槛，再按比赛目标排序；保持 incumbent 与 runner-up。连续两轮无提升则切换到 runner-up 或提出不同机制。达到 trial、时间或费用预算即停止，并留出最终复测预算。
 7. **Final verify**：用未参与调参的 seeds/scenarios 或独立参考实现复核最终候选，重新跑规则检查和提交打包。报告只写 evaluator 可追溯的数据，分清本地与官方分数。
 
-### Runner 与隔离边界
+### 可选 Runner 与隔离边界
 
-第一版 runner 只做可重复的机械工作：按 trial ID 建目录、复制指定候选源文件、运行 adapter 的固定命令、强制 timeout、保存 stdout/stderr、读取 evaluator JSON、计算源代码和配置 hash，并以追加方式写入 JSONL ledger。候选生成、研究和下一步策略仍由一个 Codex agent 完成。候选绝不编辑已 seal 的 evaluator；若 evaluator/fixture 有变化，hash 变化后必须重跑基线和待比较版本。
+如果 pilot 证明手工步骤容易出错，runner 只做可重复的机械工作：按 trial ID 建目录、复制指定候选源文件、运行 adapter 的固定命令、强制 timeout、保存 stdout/stderr、读取 evaluator JSON、计算源代码和配置 hash，并以追加方式写入 JSONL ledger。候选生成、研究和下一步策略仍由一个 Codex agent 完成。候选绝不编辑已 seal 的 evaluator；若 evaluator/fixture 有变化，hash 变化后必须重跑基线和待比较版本。
 
 目录隔离方便追溯，但不等于安全 sandbox。LLM 生成的候选可以是任意程序；如需要保护机器或隐藏真值，应由 OS/container 限制 CPU、内存、时间、网络和文件系统，并让 evaluator/truth 位于候选进程不可读的独立身份或服务。无法提供访问控制时，只把公开本地 fixtures 称为 validation，不称为 hidden test，也不声称 evaluator 对该 agent 保密。
 
@@ -109,9 +109,9 @@ FDE-Bench README 要求把 `information.md`、`gt.json`、tests 和参考答案�
 
 本地 benchmark 脚本用浮点重算分数没问题，受限的是最终提交解法。源代码静态扫描可以做快速检查，但由于 `*` 也用于 C++ 解引用，不能只用一个不理解语法的正则当作最终合规证明；应保留严格审阅和独立编译验证。
 
-## 首版文件与运行契约
+## 可选 Runner 文件草案
 
-建议先实现下列接口；具体目录名可在代码实现时小幅调整：
+若 pilot 需要 runner，再实现下列接口；具体目录名可在代码实现时小幅调整：
 
 ```text
 .agents/skills/competition-optimize/SKILL.md
