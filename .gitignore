@@ -1,0 +1,29 @@
+# Local credentials
+.env
+.env.*
+!.env.example
+auth.json
+api_key.txt
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local experiment outputs
+tmp/
+output/
+runs/
+*.exe
+*.o
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
