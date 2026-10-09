@@ -66,4 +66,4 @@
 
 ## 下一步
 
-按 [`docs/mvp-plan.md`](docs/mvp-plan.md) 先把当前 benchmark 包成稳定的候选评测接口，再实现 `SKILL.md` 跑通一条 baseline 到复核的纵向流程。首个 pilot 通过后，再决定要不要加 trial runner；不把它扩展成通用 Kaggle 平台。
+按 [`docs/mvp-plan.md`](docs/mvp-plan.md) 先把当前 benchmark 包成稳定的候选评测接口，再实现 `skills/competition-optimize/SKILL.md` 跑通一条 baseline 到复核的纵向流程。首个 pilot 通过后，再决定要不要加 trial runner；不把它扩展成通用 Kaggle 平台。

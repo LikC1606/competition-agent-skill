@@ -13,6 +13,16 @@
 - 先不实现通用 runner。Skill 可以用每轮独立目录和 adapter 结果文件完成小规模 pilot；只有出现重复的快照、超时或记账错误后，才把机械操作抽成 Python runner。
 - 代码生成与候选执行分开。候选不能改 evaluator、fixtures 或打包规则；这些文件的 hash 属于评测契约。
 
+## Skill 本身
+
+首版是一份可单独安装的 `competition-optimize` skill，不拆成 Reader、Planner、Coder、Reviewer 等多个角色，也不依赖本机已有的其他竞赛 skills。Skill 假设 Codex 已能读文件、写代码和运行命令，只规定会改变结果的决策：规则先封存、先有可用 baseline、每轮只验证一个假设、用 evaluator JSON 判断、保留最好候选、预算用完后停。
+
+Skill 的描述只针对“算法/代码竞赛中，需要定向检索、构造 baseline 并依据本地评测反复改进”的请求；v1 明确不覆盖 Kaggle 数据建模和自动官方提交。Skill 正文保留输入约定、阶段入口、硬门槛、停止条件和输出位置；复杂 schema 或某题编译细节放在其 adapter 或按需读取的 reference 中。没有足够内容需要路由时，不增加额外 reference 文件。
+
+仓库中把 installable skill 放在 `skills/competition-optimize/`，题目 adapter 作为该 skill 的 supporting script/resources；文档留在仓库 `docs/`。安装后的试验输出写在用户指定的比赛工作区，不写入已安装的 skill 目录。先保留平台默认的隐式发现，同时允许显式 `$competition-optimize` 调用；不添加更改调用策略的 UI 配置，除非真实使用暴露需要。
+
+Skill 不是后台 agent runtime：它只在 Codex 对话中提供工作流指引和工具选择，不能脱离当前会话自行守候或无限迭代。v1 限定为用户发起、预算封顶、可在一个短会话内完成的实验；每个阶段把状态写入 run 目录，方便上下文压缩后恢复。若后续需要无人值守的长任务或可靠断点恢复，再把执行循环抽到独立 runner。
+
 ## 首案接入发现
 
 目前的 harness 有很好的算法覆盖，但还没有适合作为 agent 工具调用的稳定接口：

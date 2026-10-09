@@ -114,14 +114,14 @@ FDE-Bench README 要求把 `information.md`、`gt.json`、tests 和参考答案�
 若 pilot 需要 runner，再实现下列接口；具体目录名可在代码实现时小幅调整：
 
 ```text
-.agents/skills/competition-optimize/SKILL.md
-src/trial_runner.py
-adapters/current_timeslot/evaluate.py
-adapters/current_timeslot/adapter.json
+skills/competition-optimize/SKILL.md
+skills/competition-optimize/scripts/evaluate_current_timeslot.py
 runs/<run-id>/contract.json
 runs/<run-id>/trials.jsonl
 runs/<run-id>/candidates/<trial-id>/
 ```
+
+其中 skill 与 task adapter 是首个 pilot 的范围；`src/trial_runner.py` 仅在 pilot 证明有必要时再加入。
 
 每条 trial 至少存：`trial_id`、`parent_id`、单一 `hypothesis`、候选源码 hash、evaluator/fixture/config hash、seed/suite、启动命令、exit code、timeout、`correct`、逐场景 metrics、elapsed time、artifact 路径和 promote/reject 原因。原始日志与候选快照放在 trial 目录，JSONL 保持可扫描。runner 先只消费比赛已有命令，不把通用评分公式写进核心。
 
