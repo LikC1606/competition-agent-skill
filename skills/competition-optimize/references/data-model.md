@@ -47,3 +47,35 @@ python <skill-dir>/scripts/compare_prediction_results.py `
 The comparator accepts only complete successful results with matching evaluator, metric/score model, split, stage, and evaluation configuration. Keep each result beside its `predictions.csv`; it verifies the snapshot hash. It reports raw score delta, improvement oriented in the correct metric direction, and `metric_preference` as baseline/candidate/tie. `--tie-epsilon` defaults to `1e-12` and is a numerical threshold, not a statistical confidence interval. Existing comparison files are never overwritten.
 
 This preference is about the deterministic local metric. Independently check training repeatability, task hard rules, and final confirmation; a favorable CSV score alone does not prove the full model should be promoted. Compare separate confirmation results with one another, never a development result directly against a confirmation result. For metrics outside this interface, extend the task's adapter rather than substituting a supported metric and calling it official.
+
+## Construct and Confirm a Prediction Blend
+
+When compatible models have complementary held-out errors, use `blend_predictions.py` to test a convex weighted mean without retraining. This is candidate construction; evaluate its output with the same frozen evaluator and compare against the best individual candidate. A weaker individual model can help a blend, while highly similar predictions can add cost without gain. Check the actual metric rather than inferring improvement from diversity alone.
+
+Create a recipe from at least two named, complete **development** evaluations with matching metric, evaluator, split, stage, and configuration:
+
+```powershell
+python <skill-dir>/scripts/blend_predictions.py create `
+  --member model-a <model-a-development/result.json> `
+  --member model-b <model-b-development/result.json> `
+  --weights 3 1 `
+  --output-dir <new-blend-directory>
+```
+
+Weights correspond to the member order in this command. They must be finite, non-negative, and have a positive total; the tool normalizes and saves them. It reads the verified `predictions.csv` beside each result and aligns exact string IDs. It saves blended `predictions.csv`, `recipe.json`, byte-for-byte parent prediction snapshots under `parents/`, and `manifest.json` containing parent, recipe, builder, and candidate hashes. The manifest has a null score and is not an evaluation result. Custom ID/prediction columns are inherited from the development evaluations. Input/output CSVs use the same scalar interface as the evaluator.
+
+Count every tested weight recipe as a candidate trial, including recipes rejected after cached-prediction evaluation. Select weights using development evidence and reserve confirmation before a sweep. Start with a small blend justified by error complementarity; the tool does not optimize weights, stack models, calibrate outputs, or compute a score. For ROC-AUC it blends raw ranking scores, whose scales may differ; it does not silently rank-normalize them. For log loss, blending probabilities keeps the convex result in [0, 1]. Do not average incompatible target encodings, units, or prediction interpretations.
+
+Once selected, apply the **same recipe** to confirmation or final-test predictions using the same named model pipelines:
+
+```powershell
+python <skill-dir>/scripts/blend_predictions.py apply `
+  --recipe <selected-blend-directory/recipe.json> `
+  --member model-b <model-b-confirmation.csv> `
+  --member model-a <model-a-confirmation.csv> `
+  --output-dir <new-confirmation-blend-directory>
+```
+
+Member order may change here: weights map by exact name. Choose distinct ASCII member names without case-only differences or Windows device names so parent snapshots remain portable. All recipe members must be present, including zero-weight members, with identical sample coverage within this invocation; new sample IDs can differ from the development IDs. The tool validates the recipe content hash and copies the unchanged recipe into the new output. `apply` requires no labels and has no weight override. Evaluate confirmation predictions with `--stage confirmation` on the sealed independent truth; compare with separately evaluated individual confirmation predictions. Changing weights after looking at confirmation outcomes turns that evidence into development data and requires fresh confirmation for an unbiased claim.
+
+Member names and hashes identify artifacts, not model semantics. Record the exact model/preprocessing configurations behind each name and verify that confirmation/test predictions come from the selected pipelines. Parent CSVs must have valid OOF or held-out provenance; blending cannot repair leakage. Measure combined model inference time/memory and permitted dependencies under the task rules. Recipe hashes detect accidental changes; they are not signatures or proof of provenance. Existing output directories are never overwritten; a failed run returns code 2 with a null score in a new directory's manifest. A failed or incomplete construction cannot be used as an evaluated candidate.
