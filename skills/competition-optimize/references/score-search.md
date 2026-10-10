@@ -15,7 +15,7 @@ Build a small route map in `research.md` from task structure, baseline behavior,
 | Objective headroom | Identify a fixable failure, stronger reference, bound, or missing capability; label unsupported gain estimates |
 | Minimal complete prototype | State the smallest executable implementation that actually tests the different method, not an incomplete stub |
 | Cost and continuation | Include implementation, evaluation, likely full-fidelity follow-up and combined inference cost; say what justifies deeper work |
-| Status and best representative | Untested, supported, unresolved, or rejected with candidate/result IDs and the next route-level question |
+| Status and best representative | Candidate/result IDs, tested maturity/resource limit, and supported, unresolved, or rejected mechanisms; keep investment eligibility separate from incumbent rank |
 
 Compare the next proposed variant with the strongest affordable alternative route. Prefer the action with credible potential to change the best solution or resolve a consequential uncertainty; do not assign numerical expected gains without a basis. A tiny test can reveal a large opportunity, and a large rewrite can still be low value. Record the chosen route and why its nearest alternative was deferred; a short sentence at a decision boundary is enough.
 
@@ -23,7 +23,7 @@ Typical structural changes are algorithm/representation/encoding/neighborhood re
 
 Use one interpretable hypothesis or **coherent pipeline transition** per candidate. A new model may need different preprocessing, and a new representation may need a decoder and search moves; implement the coupled change together. Compare the complete candidate first. Use selective ablations only when attribution would change the next investment or final combination; without them, claim the whole pipeline's observed gain rather than identifying one component as the cause.
 
-Repeated refinements with negligible objective gains, improvements within noise, or the same unresolved failure suggest the route's current search has saturated. Revisit assumptions, representation, data/training signal, search space, or policy before more neighboring settings. Keep successful incumbents and rejected evidence. A failed prototype rejects its tested implementation; distinguish a fixable implementation defect from evidence that the mechanism is unsuitable. Budget or confirmation limits still stop exploration.
+Repeated refinements with negligible objective gains, improvements within noise, or the same unresolved failure warrant reconsidering the route's current search. Check [maturity and stopping evidence](#decide-whether-to-repair-deepen-or-retire) before attributing a plateau to the method. Revisit assumptions, representation, data/training signal, search space, or policy before more neighboring settings. Keep successful incumbents and rejected evidence; budget or confirmation limits still stop exploration.
 
 ## Turn Research into Testable Mechanisms
 
@@ -50,12 +50,34 @@ Maintain a short hypothesis queue in `research.md`:
 
 Prefer plausible objective gain per unit of total experiment cost while keeping room for unfamiliar mechanisms. Numeric gain predictions are estimates, not results.
 
+## Decide Whether to Repair, Deepen, or Retire
+
+After a weak result, decide two things separately: whether this candidate beats the incumbent, and whether its route merits another experiment. A valid low score can answer the first without answering the second. Record the narrowest supported conclusion; "not promoted" is not a diagnosis or proof that the entire route is unsuitable.
+
+| Evidence from the trial | Supported conclusion and next choice |
+| --- | --- |
+| Broken interface, invalid output, or a failed known-answer check | The implementation failed to test the mechanism. Consider a bounded repair if its cause is identifiable and the repaired experiment beats the strongest affordable alternative in value. |
+| Infrastructure failure or interruption before a complete result | Quality is unresolved. Preserve partial work for diagnosis, reconcile cost, and repair/recover only if useful. |
+| Valid result stops at a resource cap; progress remains near the stop | The tested allocation is insufficient to establish convergence. Consider a legal deeper or more efficient implementation; do not assume extrapolated improvement. |
+| Valid result is flat, but the search did not finish a neighborhood, training is underfit, or a required component is absent | This prototype leaves a mechanism unresolved. Test the missing component or a complete affordable pipeline when evidence justifies it. Flatness alone does not establish maturity. |
+| Completed local search, stable development learning behavior, or repeated negligible gains at suitable fidelity | The tested mechanism has plateau evidence. Consider a new representation, neighborhood, training signal, or route; local convergence is not global optimality. |
+| A complete, applicable implementation loses under the intended limits and no supported rescue remains | Retire the tested mechanism at that scale/resource setting, retaining its result and reason. Broader rejection needs broader evidence. |
+
+Use adapter-specific evidence already available: termination reason, actual work and objective progress for search; training/development curves and fit provenance for learned models; complete episode/horizon and constraint failures for policies. Small exact cases or an independently scored reference can reveal a defect, but do not prove large-case competitiveness. If evidence is missing, retain uncertainty; collect only diagnostics that can alter the next investment. Use development evidence, never confirmation errors, for this diagnosis.
+
+Compare a lagging route's proposed **complete pipeline** against further refinement of the leader. Initial construction quality need not predict quality after local optimization; a model may require different preprocessing/training; a weak parent may have complementary errors. Test a credible combination or missing component rather than repeatedly polishing the same premature prototype. This does not give every route an automatic rescue trial: include implementation, full execution, downstream cost and remaining confirmation reserve, and defer when another action has stronger support.
+
+Before a rescue, name the defect or missing capability, the observation that would justify continuation, and the rejection/stop condition. Count the changed implementation or resource setting as a candidate trial; unchanged diagnostic measurements still consume time/compute. A contest's per-candidate hard cap cannot be extended: improve work allocation or implementation within it. Training more can overfit, and searching longer can remain trapped; a recent progress trace is evidence for a test, not a promised gain. Compare any new result under the sealed full objective and intended resource constraints.
+
+Keep the route's best representative, tested scope, unresolved mechanism and next investment decision alongside its promotion status. A route deferred because budget ran out is **untested or unresolved**, not empirically rejected. Reopen a retired mechanism only when a relevant dependency, implementation finding, resource setting or new evidence changes the reason for retirement.
+
 ## Select the Next Action
 
 | Evidence or uncertainty | Action | Evidence needed to continue |
 | --- | --- | --- |
 | Only one family has been tried, with unclear fit | Explore a materially different route | A valid result, resource fit, and promising objective or complementary behavior |
 | Low score with an unclear cause | Diagnose using case analysis, a profile, ablation, or small reference solution | A bottleneck or falsifiable explanation that suggests an affordable change |
+| A valid lagging prototype leaves a credible mechanism unresolved | Compare a bounded repair/deepening or complete pipeline against the leader's next refinement | Cause/maturity evidence, a useful rejection test, and a full candidate within the intended limits |
 | A component has a supported improvement mechanism | Refine that component | Matched evaluations that justify another variant or reveal a new testable mechanism |
 | A route has evidence and unresolved high-impact mechanisms | Replace or deepen that mechanism | Full-objective gains or a consequential rejected hypothesis |
 | A mechanism works and settings are now the consequential uncertainty | Tune its parameters | Full-fidelity gains that reproduce beyond the screening setup |

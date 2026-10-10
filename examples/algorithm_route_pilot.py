@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Compare parameter-only search with route exploration on generated Euclidean tours.
+"""Study route exploration and investment on generated Euclidean tours.
 
-This is a scripted integration example, not an autonomous-agent benchmark. Both
-arms have six development candidate slots; their actual compute costs differ.
+These are scripted integration examples, not autonomous-agent benchmarks. Each
+arm has six development candidate slots; their actual compute costs differ.
 """
 
 from __future__ import annotations
@@ -89,9 +89,23 @@ def mst_preorder(matrix: list[list[float]]) -> list[int]:
 
 
 def improve(route: list[int], matrix: list[list[float]], move: str,
-            limit: int) -> tuple[list[int], dict[str, int]]:
+            limit: int, trace: bool = False) -> tuple[list[int], dict]:
+    if move not in {"two_opt", "relocate"}:
+        raise ValueError("Unknown neighborhood")
+    if type(limit) is not int or limit < 0:
+        raise ValueError("Move-check limit must be a nonnegative integer")
     route, checks, accepted = list(route), 0, 0
     count = len(route)
+    progress = []
+    interval = max(1, (limit + 4) // 5)
+
+    def checkpoint() -> None:
+        if trace and (not progress or progress[-1]["checks"] != checks):
+            progress.append({"checks": checks, "accepted": accepted,
+                             "length": tour_length(matrix, route), "route": list(route)})
+
+    checkpoint()
+    stop_reason, last_accepted_check = "work_cap", None
     while checks < limit:
         changed = False
         for i, j in itertools.product(range(count), repeat=2):
@@ -107,8 +121,6 @@ def improve(route: list[int], matrix: list[list[float]], move: str,
                 a, b = route[j], route[(j + 1) % count]
                 delta = (matrix[before][after] + matrix[a][vertex] + matrix[vertex][b]
                          - matrix[before][vertex] - matrix[vertex][after] - matrix[a][b])
-            else:
-                raise ValueError("Unknown neighborhood")
             checks += 1
             if delta < -1e-12:
                 if move == "two_opt":
@@ -117,17 +129,31 @@ def improve(route: list[int], matrix: list[list[float]], move: str,
                     vertex = route.pop(i)
                     route.insert(j + 1 if j < i else j, vertex)
                 accepted += 1
+                last_accepted_check = checks
                 changed = True
-                break
-            if checks == limit:
+            if trace and checks % interval == 0:
+                checkpoint()
+            if changed or checks == limit:
                 break
         if not changed:
+            # A cap, even at the last check, is not a certified complete sweep.
+            if checks < limit:
+                stop_reason = "neighborhood_exhausted"
             break
-    return route, {"checks": checks, "accepted": accepted}
+    checkpoint()
+    receipt = {"checks": checks, "accepted": accepted, "stop_reason": stop_reason,
+               "last_accepted_check": last_accepted_check}
+    if trace:
+        receipt["progress"] = progress
+    return route, receipt
 
 
 def solve(points: list[list[float]], recipe: dict) -> tuple[list[int], dict]:
     started = time.perf_counter()
+    limits = recipe.get("move_limits", [MOVE_LIMIT] * len(recipe["moves"]))
+    if (len(limits) != len(recipe["moves"]) or any(type(value) is not int or value < 0 for value in limits)
+            or sum(limits) > 3 * MOVE_LIMIT):
+        raise ValueError("Recipe has invalid limits or exceeds the declared move-check cap")
     matrix = distances(points)
     constructor = recipe["constructor"]
     if constructor == "nearest":
@@ -139,8 +165,8 @@ def solve(points: list[list[float]], recipe: dict) -> tuple[list[int], dict]:
     else:
         raise ValueError("Unknown constructor")
     work = []
-    for move in recipe["moves"]:
-        route, receipt = improve(route, matrix, move, MOVE_LIMIT)
+    for move, limit in zip(recipe["moves"], limits):
+        route, receipt = improve(route, matrix, move, limit, trace=recipe.get("trace", False))
         work.append({"move": move, **receipt})
     score = tour_length(matrix, route)
     if sum(row["checks"] for row in work) > 3 * MOVE_LIMIT:
@@ -165,7 +191,10 @@ def fixtures(sizes: list[int], repetitions: int, seed_start: int, stage: str) ->
     return cases
 
 
-def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], repetitions: int) -> dict:
+def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], repetitions: int,
+        study: str = "route_search") -> dict:
+    if study not in {"route_search", "route_investment"}:
+        raise ValueError("Unknown study")
     if (min(sizes + confirmation_sizes) < 6 or max(sizes + confirmation_sizes) > 500
             or len(set(sizes)) != len(sizes) or len(set(confirmation_sizes)) != len(confirmation_sizes)
             or not 1 <= repetitions <= 5):
@@ -176,20 +205,31 @@ def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], r
     output.mkdir(exist_ok=False)
     source = pathlib.Path(__file__).read_bytes()
     (output / "pilot-source.py").write_bytes(source)
-    contract = {"metric": "mean_closed_tour_length", "direction": "minimize", "score_kind": "synthetic_proxy",
-                "validity": "one closed permutation of every input vertex", "seed_development": 4100,
-                "seed_confirmation": 9100, "sizes_development": sizes, "sizes_confirmation": confirmation_sizes,
+    investment = study == "route_investment"
+    development_seed, confirmation_seed = (6100, 11100) if investment else (4100, 9100)
+    contract = {"study": study, "metric": "mean_closed_tour_length", "direction": "minimize", "score_kind": "synthetic_proxy",
+                "validity": "one closed permutation of every input vertex", "seed_development": development_seed,
+                "seed_confirmation": confirmation_seed, "sizes_development": sizes, "sizes_confirmation": confirmation_sizes,
                 "repetitions_per_regime": repetitions, "slots_per_arm": 6, "shared_baseline_counts_in_both_arms": True,
-                "max_distinct_development_recipes": 11, "max_move_checks_per_case": 3 * MOVE_LIMIT,
+                "max_distinct_development_recipes": 8 if investment else 11, "max_move_checks_per_case": 3 * MOVE_LIMIT,
                 "confirmation": "Freeze baseline and each arm's development winner before generating confirmation. "
                                 "Deliver an arm's challenger only when it improves both phases, otherwise baseline.",
                 "source_hash": hashlib.sha256(source).hexdigest(), "python": platform.python_version(),
                 "limits": "Candidate counts and hard work caps match; actual compute, implementation effort, "
                           "and runtime differ. This is not an old/new skill or autonomous-agent experiment."}
+    if investment:
+        contract["allocation"] = {
+            "shared_prototypes": ["nearest", "farthest_insertion", "mst_preorder"],
+            "greedy_parent": "Select the best raw construction; test two-opt caps 5000, 25000, 150000.",
+            "mature_routes": "Test each construction plus two-opt at 150000 checks; reuse the identical greedy final test.",
+            "diagnostic": "Record stop reasons and development progress. Raw construction ranking is not a pipeline rejection.",
+            "all_shared_recipes_count_in_each_arm": True,
+        }
     save(output / "task-contract.json", contract)
-    development = fixtures(sizes, repetitions, 4100, "development")
+    development = fixtures(sizes, repetitions, development_seed, "development")
     save(output / "development.json", development)
-    results, recipes, arms = {}, {}, {"parameter_only": [], "route_search": []}
+    results, recipes = {}, {}
+    arms = {"greedy_parent": [], "mature_routes": []} if investment else {"parameter_only": [], "route_search": []}
 
     def event(**fields: object) -> None:
         with (output / "trials.jsonl").open("a", encoding="utf-8", newline="\n") as stream:
@@ -220,7 +260,7 @@ def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], r
 
     def trial(name: str, recipe: dict, arm: str, scope: str, parent: str | None,
               hypothesis: str, deferred: str) -> None:
-        if len(arms[arm]) >= contract["slots_per_arm"] or len(results) >= 11:
+        if len(arms[arm]) >= contract["slots_per_arm"] or len(results) >= contract["max_distinct_development_recipes"]:
             raise ValueError("Development trial budget exhausted")
         event(event="planned", candidate=name, arm=arm, route=recipe["constructor"], change_scope=scope,
               parent=parent, hypothesis=hypothesis, alternative_deferred=deferred,
@@ -230,27 +270,59 @@ def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], r
         arms[arm].append(name)
 
     base = {"constructor": "nearest", "start": 0, "moves": []}
-    trial("baseline", base, "parameter_only", "baseline", None, "Cheap valid geometric reference", "None")
-    arms["route_search"].append("baseline")  # One cached evaluation, one slot in each arm.
-    for start in range(1, 6):
-        trial(f"nearest-start-{start}", {**base, "start": start}, "parameter_only", "parameter_refinement", "baseline",
-              "A different fixed starting vertex may improve greedy construction",
-              "Structural routes deliberately excluded by this illustrative arm")
-    for constructor in ["farthest_insertion", "mst_preorder"]:
-        trial(constructor, {"constructor": constructor, "start": 0, "moves": []}, "route_search", "route_prototype",
-              "baseline", "Global construction may avoid greedy short-edge traps",
-              "Nearby nearest-neighbor starts defer to testing a different construction mechanism")
-    parent = min(arms["route_search"], key=lambda name: (results[name]["score"], name))
-    selected_constructor = recipes[parent]["constructor"]
-    for name, moves, mechanism in [
-        ("two-opt", ["two_opt"], "Replace a fixed construction by edge-exchange local optimization"),
-        ("relocate", ["two_opt", "relocate"], "Vertex relocation can escape an edge-exchange local minimum"),
-        ("alternate", ["two_opt", "relocate", "two_opt"], "Edge exchange after relocation may unlock further gains"),
-    ]:
-        trial(name, {"constructor": selected_constructor, "start": 0, "moves": moves}, "route_search",
-              "mechanism_replacement" if name == "two-opt" else "pipeline_combination", parent, mechanism,
-              "Start-vertex tuning defers to a new neighborhood under the same objective and hard cap")
-        parent = name
+    if investment:
+        for name, constructor in [("baseline", "nearest"), ("farthest_insertion", "farthest_insertion"),
+                                  ("mst_preorder", "mst_preorder")]:
+            trial(name, {**base, "constructor": constructor}, "greedy_parent", "route_prototype", None,
+                  "Measure raw construction quality; its untested local optimization remains unresolved", "None")
+            arms["mature_routes"].append(name)
+        prototypes = list(arms["greedy_parent"])
+        parent = min(prototypes, key=lambda name: (results[name]["score"], name))
+        raw_winner = parent
+        event(event="investment_decision", raw_winner=raw_winner,
+              unresolved="Other valid constructors have not yet tested construction-plus-search pipelines",
+              greedy_allocation=contract["allocation"]["greedy_parent"],
+              maturity_allocation=contract["allocation"]["mature_routes"])
+        for cap in [5000, 25000, 3 * MOVE_LIMIT]:
+            name = f"greedy-two-opt-{cap}"
+            trial(name, {**recipes[raw_winner], "moves": ["two_opt"], "move_limits": [cap], "trace": True},
+                  "greedy_parent", "effort_variant", parent,
+                  "More legal edge-exchange effort may improve the initially strongest construction",
+                  "Other construction-plus-search routes excluded by this illustrative greedy arm")
+            parent = name
+        for prototype in prototypes:
+            if prototype == raw_winner:
+                arms["mature_routes"].append(parent)
+                event(event="reused", candidate=parent, arm="mature_routes", counts_as_trial=True,
+                      recipe_hash=digest(recipes[parent]))
+                continue
+            trial(f"mature-{prototype}", {**recipes[prototype], "moves": ["two_opt"],
+                                         "move_limits": [3 * MOVE_LIMIT], "trace": True},
+                  "mature_routes", "complete_pipeline", prototype,
+                  "A weaker raw construction may improve differently under the same final search cap",
+                  "Nearby settings defer to testing the unresolved complete route")
+    else:
+        trial("baseline", base, "parameter_only", "baseline", None, "Cheap valid geometric reference", "None")
+        arms["route_search"].append("baseline")  # One cached evaluation, one slot in each arm.
+        for start in range(1, 6):
+            trial(f"nearest-start-{start}", {**base, "start": start}, "parameter_only", "parameter_refinement", "baseline",
+                  "A different fixed starting vertex may improve greedy construction",
+                  "Structural routes deliberately excluded by this illustrative arm")
+        for constructor in ["farthest_insertion", "mst_preorder"]:
+            trial(constructor, {"constructor": constructor, "start": 0, "moves": []}, "route_search", "route_prototype",
+                  "baseline", "Global construction may avoid greedy short-edge traps",
+                  "Nearby nearest-neighbor starts defer to testing a different construction mechanism")
+        parent = min(arms["route_search"], key=lambda name: (results[name]["score"], name))
+        selected_constructor = recipes[parent]["constructor"]
+        for name, moves, mechanism in [
+            ("two-opt", ["two_opt"], "Replace a fixed construction by edge-exchange local optimization"),
+            ("relocate", ["two_opt", "relocate"], "Vertex relocation can escape an edge-exchange local minimum"),
+            ("alternate", ["two_opt", "relocate", "two_opt"], "Edge exchange after relocation may unlock further gains"),
+        ]:
+            trial(name, {"constructor": selected_constructor, "start": 0, "moves": moves}, "route_search",
+                  "mechanism_replacement" if name == "two-opt" else "pipeline_combination", parent, mechanism,
+                  "Start-vertex tuning defers to a new neighborhood under the same objective and hard cap")
+            parent = name
     winners = {arm: min(names, key=lambda name: (results[name]["score"], name)) for arm, names in arms.items()}
     finalists = sorted({"baseline", *winners.values()})
     shortlist = {"winners": winners, "finalists": {name: digest(recipes[name]) for name in finalists},
@@ -258,14 +330,14 @@ def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], r
     save(output / "shortlist.json", shortlist)
     event(event="shortlist_frozen", shortlist_hash=digest(shortlist))
     # No confirmation coordinates or scores are generated before the freeze.
-    confirmation = fixtures(confirmation_sizes, repetitions, 9100, "confirmation")
+    confirmation = fixtures(confirmation_sizes, repetitions, confirmation_seed, "confirmation")
     save(output / "confirmation.json", confirmation)
     confirmed = {}
     for name in finalists:
         if digest(recipes[name]) != shortlist["finalists"][name]:
             raise ValueError("Frozen recipe changed")
         confirmed[name] = evaluate(name, recipes[name], confirmation, "confirmation")
-    summary = {"arms": {}, "distinct_development_recipes": len(results),
+    summary = {"study": study, "arms": {}, "distinct_development_recipes": len(results),
                "development_cases": len(development), "confirmation_cases": len(confirmation),
                "limits": contract["limits"]}
     for arm, names in arms.items():
@@ -279,6 +351,19 @@ def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], r
             "confirmation_improvement_fraction": 1 - confirmed[winner]["score"] / confirmed["baseline"]["score"],
             "development_evaluation_seconds": math.fsum(results[name]["seconds"] for name in names),
         }
+    if investment:
+        summary["raw_construction_winner"] = raw_winner
+        summary["development_search_diagnostics"] = {
+            name: {"work_cap_cases": sum(row["work"][0]["stop_reason"] == "work_cap" for row in result["cases"]),
+                   "neighborhood_exhausted_cases": sum(row["work"][0]["stop_reason"] == "neighborhood_exhausted"
+                                                       for row in result["cases"]),
+                   "total_checks": sum(row["work"][0]["checks"] for row in result["cases"]),
+                   "cap_with_last_quarter_progress_cases": sum(
+                       row["work"][0]["stop_reason"] == "work_cap"
+                       and (row["work"][0]["last_accepted_check"] or 0) > 0.75 * recipes[name]["move_limits"][0]
+                       for row in result["cases"])}
+            for name, result in results.items() if recipes[name]["moves"]
+        }
     save(output / "summary.json", summary)
     if source != pathlib.Path(__file__).read_bytes():
         raise ValueError("Pilot implementation changed during execution")
@@ -291,8 +376,9 @@ def main() -> None:
     parser.add_argument("--sizes", nargs="+", type=int, default=[60, 100, 160])
     parser.add_argument("--confirmation-sizes", nargs="+", type=int, default=[80, 140])
     parser.add_argument("--cases-per-regime", type=int, default=2)
+    parser.add_argument("--study", choices=["route_search", "route_investment"], default="route_search")
     args = parser.parse_args()
-    print(json.dumps(run(args.output_dir, args.sizes, args.confirmation_sizes, args.cases_per_regime), indent=2))
+    print(json.dumps(run(args.output_dir, args.sizes, args.confirmation_sizes, args.cases_per_regime, args.study), indent=2))
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ Start from a valid constructive/reference solution. Use per-instance objective c
 | Online decisions do well on averages but fail in particular sequences | Try lookahead where allowed, a revised heuristic, or a regime policy | Only information available at decision time and matched sequence evaluation |
 | Strategies excel at different sizes or structures | Combine them or use an input-based selector | Selector overhead, worst allowed resource use, and aggregate objective |
 
-Candidate speed can buy more search iterations under the contest deadline. Measure both iteration throughput and the quality obtained within the actual runtime budget; faster operations alone do not establish a higher score. Keep hard time/memory checks separate from soft speed/quality tradeoffs. Confirm on fresh instances/seeds and boundary sizes, respecting the official aggregation.
+Candidate speed can buy more search iterations under the contest deadline. Measure both iteration throughput and the quality obtained within the actual runtime budget; faster operations alone do not establish a higher score. Record whether search exhausted a neighborhood or hit its work/time cap, with development objective progress when useful. A weak construction may become a stronger complete construction-plus-search pipeline; compare that mechanism before rejecting it when affordable. Keep hard time/memory checks separate from soft speed/quality tradeoffs. Confirm on fresh instances/seeds and boundary sizes, respecting the official aggregation.
 
 ## Stochastic Simulation, Control, and Interactive Tasks
 

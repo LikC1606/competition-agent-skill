@@ -62,6 +62,75 @@ class AlgorithmRoutePilotTests(unittest.TestCase):
                 self.assertAlmostEqual(work["length"], direct)
                 self.assertLessEqual(sum(row["checks"] for row in work["work"]), 3 * pilot.MOVE_LIMIT)
 
+    def test_progress_receipts_score_actual_tours_and_distinguish_cap_from_local_stop(self) -> None:
+        points = [[0, 0], [1, 0], [1, 1], [0, 1]]
+        matrix = pilot.distances(points)
+        crossed = [0, 2, 1, 3]
+        capped, cap_work = pilot.improve(crossed, matrix, "two_opt", 1, trace=True)
+        complete, complete_work = pilot.improve(crossed, matrix, "two_opt", 10, trace=True)
+        self.assertEqual(cap_work["stop_reason"], "work_cap")
+        self.assertEqual(cap_work["last_accepted_check"], 1)
+        self.assertEqual(complete_work["stop_reason"], "neighborhood_exhausted")
+        self.assertEqual(capped, complete)
+        self.assertAlmostEqual(pilot.tour_length(matrix, complete), 4)
+        for work in (cap_work, complete_work):
+            trace = work["progress"]
+            self.assertEqual(trace[0]["checks"], 0)
+            self.assertEqual(trace[-1]["checks"], work["checks"])
+            self.assertEqual(trace[-1]["accepted"], work["accepted"])
+            for checkpoint in trace:
+                tour = checkpoint["route"]
+                direct = math.fsum(math.dist(points[a], points[b]) for a, b in zip(tour, tour[1:] + tour[:1]))
+                self.assertAlmostEqual(checkpoint["length"], direct)
+            self.assertTrue(all(a["checks"] < b["checks"] and a["length"] >= b["length"] - 1e-12
+                                for a, b in zip(trace, trace[1:])))
+
+    def test_flat_capped_search_is_not_reported_as_converged(self) -> None:
+        matrix = pilot.distances([[0, 0], [1, 0], [1, 1], [0, 1]])
+        for limit, reason in [(0, "work_cap"), (1, "work_cap"), (10, "neighborhood_exhausted")]:
+            route, work = pilot.improve([0, 1, 2, 3], matrix, "two_opt", limit, trace=True)
+            self.assertEqual(work["accepted"], 0)
+            self.assertIsNone(work["last_accepted_check"])
+            self.assertEqual(work["stop_reason"], reason)
+            self.assertEqual(route, [0, 1, 2, 3])
+
+    def test_work_can_be_reallocated_without_exceeding_the_total_recipe_cap(self) -> None:
+        points = [[0, 0], [1, 0], [1, 1], [0, 1]]
+        recipe = {"constructor": "nearest", "start": 0, "moves": ["two_opt"],
+                  "move_limits": [3 * pilot.MOVE_LIMIT], "trace": True}
+        route, receipt = pilot.solve(points, recipe)
+        self.assertAlmostEqual(receipt["length"], 4)
+        self.assertEqual(sorted(route), [0, 1, 2, 3])
+        for invalid in [[], [-1], [True], [3 * pilot.MOVE_LIMIT + 1]]:
+            with self.subTest(limits=invalid), self.assertRaises(ValueError):
+                pilot.solve(points, {**recipe, "move_limits": invalid})
+
+    def test_investment_study_counts_shared_trials_and_confirms_only_frozen_pipelines(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = pathlib.Path(temporary) / "pilot"
+            summary = pilot.run(output, [6], [8], 1, "route_investment")
+            self.assertEqual(summary["distinct_development_recipes"], 8)
+            for arm in summary["arms"].values():
+                self.assertEqual(len(arm["trials"]), 6)
+            shared = set.intersection(*(set(arm["trials"]) for arm in summary["arms"].values()))
+            self.assertEqual(len(shared), 4)
+            complete_arm = summary["arms"]["mature_routes"]
+            pipelines = [json.loads((output / f"development-{name}/recipe.json").read_text())
+                         for name in complete_arm["trials"] if name not in {"baseline", "farthest_insertion", "mst_preorder"}]
+            self.assertEqual({recipe["constructor"] for recipe in pipelines},
+                             {"nearest", "farthest_insertion", "mst_preorder"})
+            self.assertTrue(all(recipe["move_limits"] == [3 * pilot.MOVE_LIMIT] for recipe in pipelines))
+            ledger = [json.loads(line) for line in (output / "trials.jsonl").read_text().splitlines()]
+            self.assertEqual(sum(event["event"] == "planned" for event in ledger), 8)
+            frozen = next(i for i, event in enumerate(ledger) if event["event"] == "shortlist_frozen")
+            self.assertTrue(all(i > frozen for i, event in enumerate(ledger) if event.get("stage") == "confirmation"))
+            shortlist = json.loads((output / "shortlist.json").read_text())
+            confirmed = {event["candidate"] for event in ledger if event.get("stage") == "confirmation"}
+            self.assertEqual(confirmed, set(shortlist["finalists"]))
+            for candidate, expected_hash in shortlist["finalists"].items():
+                recipe = json.loads((output / f"confirmation-{candidate}/recipe.json").read_text())
+                self.assertEqual(pilot.digest(recipe), expected_hash)
+
     def test_fixtures_reproduce_and_stages_have_distinct_seeds_and_ids(self) -> None:
         development = pilot.fixtures([6], 1, 4100, "development")
         confirmation = pilot.fixtures([6], 1, 9100, "confirmation")
