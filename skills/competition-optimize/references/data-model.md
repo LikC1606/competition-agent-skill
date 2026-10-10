@@ -1,6 +1,6 @@
 # Local Prediction Evaluation
 
-Use the bundled scripts for unweighted, scalar regression or binary classification predictions in CSV files. They evaluate a fixed local split, compare metrics, diagnose development errors, and construct prediction blends; task-specific data preparation, training, leakage checks, and resource checks still belong to the task adapter.
+Use the bundled scripts for unweighted, scalar regression or binary classification predictions in CSV files. They evaluate a fixed local split, compare metrics and sampling uncertainty, diagnose development errors, and construct prediction blends; task-specific data preparation, training, leakage checks, and resource checks still belong to the task adapter.
 
 ## Fit the Competition Metric
 
@@ -47,6 +47,35 @@ python <skill-dir>/scripts/compare_prediction_results.py `
 The comparator accepts only complete successful results with matching evaluator, metric/score model, split, stage, and evaluation configuration. Keep each result beside its `predictions.csv`; it verifies the snapshot hash. It reports raw score delta, improvement oriented in the correct metric direction, and `metric_preference` as baseline/candidate/tie. `--tie-epsilon` defaults to `1e-12` and is a numerical threshold, not a statistical confidence interval. Existing comparison files are never overwritten.
 
 This preference is about the deterministic local metric. Independently check training repeatability, task hard rules, and final confirmation; a favorable CSV score alone does not prove the full model should be promoted. Compare separate confirmation results with one another, never a development result directly against a confirmation result. For metrics outside this interface, extend the task's adapter rather than substituting a supported metric and calling it official.
+
+## Estimate Paired Sampling Uncertainty
+
+Use `compare_prediction_uncertainty.py` when ranking fixed candidates for performance on unseen samples and the observed difference may depend on the validation sample. It loads a matched pair of complete evaluations, verifies truth and prediction bytes, recomputes recorded scores with the installed evaluator, and resamples the **same units for both candidates**. It retains the deterministic `aggregate_comparison` separately from `uncertainty`; a positive local difference can have an interval spanning zero. This is optional evidence for a decision, not a universal significance gate or a replacement score.
+
+Choose the sampling unit, replicates, seed, confidence level, and practical improvement threshold before viewing the comparison, and freeze these for confirmation. Repeating with different seeds until an interval becomes favorable is additional selection on the same data. Use row resampling only when rows can reasonably be treated as independent exchangeable samples:
+
+```powershell
+python <skill-dir>/scripts/compare_prediction_uncertainty.py `
+  --baseline <baseline-evaluation/result.json> `
+  --candidate <candidate-evaluation/result.json> `
+  --truth <frozen-local-truth.csv> `
+  --resampling-unit row `
+  --bootstrap-samples 1000 `
+  --seed 0 `
+  --confidence-level 0.95 `
+  --minimum-improvement 0 `
+  --output-dir <new-uncertainty-directory>
+```
+
+For dependent rows within patients, devices, or another defensible independent cluster, use `--resampling-unit group --groups <metadata.csv> --group-column patient`. The metadata needs the evaluated ID column and a non-empty group column, with unique IDs and exact sample coverage. Each draw selects the original number of groups with replacement and includes every selected group's rows; duplicated groups repeat their rows. Each replicate computes the **pooled row metric**, including unequal group sizes; it does not substitute an equally weighted mean of group scores. At least two units are required to compute a result, but a small number of independent units can still give an unreliable interval. Row/group bootstrap does not implement time-series block resampling or fix distribution shift; use a task-specific protocol when these assumptions do not fit. It is unnecessary for an exact deterministic objective on a fixed exhaustive test population.
+
+The output saves `report.json`, all replicate scores/differences in `bootstrap.csv`, parent prediction snapshots, and group metadata when supplied. The report includes the empirical percentile interval for improvement (positive is better), configuration/input/estimator hashes, requested/valid/invalid replicate counts, independent unit count, Python version, and consumed row draws. `--bootstrap-samples` supports 100-10000 draws. `--max-row-draws` defaults to 2,000,000 total resampled row occurrences: expected work is checked before sampling and the actual total is checked during sampling, including invalid AUC draws. Cluster draws can exceed their expectation. Increase the limit only within the task budget; AUC sorting costs more per draw than additive losses. These repetitions consume compute/time, without creating additional candidate versions. Existing output directories are never overwritten; failed invocations return code 2 with a reason in a new directory's report.
+
+ROC-AUC draws with one class have unavailable scores. The tool reports an unavailable interval unless at least 100 draws and 90% of all requested draws are valid; valid-draw intervals are conditional on having both classes. These are operational minimums, not a guarantee of coverage. It does not redraw until success or replace undefined AUC by zero. `uncertainty.status: unavailable` with top-level `status: success` means the procedure completed and reported insufficient evidence.
+
+`evidence_preference` is `candidate_supported` when the lower interval endpoint exceeds `--minimum-improvement`, `baseline_supported` when the upper endpoint is below its negative, and `inconclusive` otherwise. The practical threshold uses the declared metric's units and defaults to zero. `fraction_above_minimum` is the fraction of valid bootstrap improvements exceeding that threshold; it is not a p-value or probability of winning. The interval concerns fixed predictions conditional on independent exchangeable units. It does not measure model training randomness, account for candidate search/multiple comparisons, correct leakage, or establish leaderboard improvement. Evaluate matched training seeds or independent splits where those uncertainties affect the next decision.
+
+Use development evidence to allocate the remaining experiments. For a frozen confirmation shortlist, this aggregate uncertainty comparison can run on paired confirmation evaluations under its predeclared protocol, without generating exploratory case/slice diagnoses. An inconclusive candidate may remain a promising alternative; resolve uncertainty with affordable independent evidence or report it when budget is exhausted. Keep the score, feasibility, compute cost, and confirmation evidence explicit rather than silently converting a diagnostic interval into a competition metric.
 
 ## Diagnose Development Errors
 

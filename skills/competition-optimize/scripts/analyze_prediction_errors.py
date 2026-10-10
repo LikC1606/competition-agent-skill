@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
 import json
 import math
 import pathlib
@@ -13,7 +12,8 @@ import sys
 from typing import Any
 
 import evaluate_predictions as evaluator
-from compare_prediction_results import ComparisonFailure, compare, load_result
+from compare_prediction_results import ComparisonFailure
+from prediction_evidence import EvidenceFailure, load_pair, read_categories
 
 
 class AnalysisFailure(Exception):
@@ -22,26 +22,9 @@ class AnalysisFailure(Exception):
 
 def read_slices(raw: bytes, id_column: str, columns: list[str], sample_ids: set[str]) -> dict[str, dict[str, str]]:
     try:
-        reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig"), newline=""), strict=True)
-        fields = reader.fieldnames
-        if (not fields or any(not field.strip() for field in fields) or len(set(fields)) != len(fields)
-                or any(column not in fields for column in [id_column, *columns])):
-            raise AnalysisFailure("Slice CSV needs unique column names and the requested ID/slice columns")
-        rows: dict[str, dict[str, str]] = {}
-        for row_number, row in enumerate(reader, 2):
-            if None in row or any(value is None for value in row.values()):
-                raise AnalysisFailure(f"Slice CSV has a wrong field count at row {row_number}")
-            sample_id = row[id_column]
-            if not sample_id.strip() or sample_id in rows:
-                raise AnalysisFailure(f"Slice CSV has an empty or duplicate ID at row {row_number}")
-            if any(not row[column].strip() for column in columns):
-                raise AnalysisFailure(f"Slice values must be non-empty at row {row_number}")
-            rows[sample_id] = {column: row[column] for column in columns}
-        if rows.keys() != sample_ids:
-            raise AnalysisFailure("Slice IDs must exactly match the evaluated split")
-        return rows
-    except (UnicodeDecodeError, csv.Error) as exc:
-        raise AnalysisFailure(f"Invalid slice CSV: {exc}") from exc
+        return read_categories(raw, id_column, columns, sample_ids)
+    except EvidenceFailure as exc:
+        raise AnalysisFailure(str(exc)) from exc
 
 
 def local_errors(metric: str, labels: list[float], predictions: list[float], epsilon: float) -> list[float] | None:
@@ -83,53 +66,17 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
     columns = args.slice_column or []
     if len(set(columns)) != len(columns) or any(not column.strip() for column in columns):
         raise AnalysisFailure("Requested slice columns must be unique and non-empty")
-    baseline_path = args.baseline.expanduser().resolve(strict=True)
-    candidate_path = args.candidate.expanduser().resolve(strict=True)
-    baseline_result, candidate_result = load_result(baseline_path), load_result(candidate_path)
-    comparison = compare(baseline_result, candidate_result, 0)
+    try:
+        pair = load_pair(args.baseline, args.candidate, args.truth)
+    except EvidenceFailure as exc:
+        raise AnalysisFailure(str(exc)) from exc
+    comparison = pair.comparison
     if comparison["stage"] != "development":
         raise AnalysisFailure("Exploratory error analysis requires development evaluations")
-    if baseline_result["evaluator_hash"] != evaluator.byte_hash(pathlib.Path(evaluator.__file__).read_bytes()):
-        raise AnalysisFailure("Reevaluate both candidates with the installed prediction evaluator before analysis")
-    config = baseline_result["evaluation"]["configuration"]
-    for key in ["id_column", "target_column", "prediction_column"]:
-        if not isinstance(config.get(key), str) or not config[key].strip():
-            raise AnalysisFailure("Evaluation must declare non-empty CSV columns")
-    if config["id_column"] in {config["target_column"], config["prediction_column"], *columns}:
-        raise AnalysisFailure("ID column must differ from numeric value and slice columns")
-    metric = baseline_result["score"]["metric"]
-    model = config["score_model"]
-    parameters = model.get("parameters")
-    if (model.get("aggregation") != "unweighted over all aligned rows" or not isinstance(parameters, dict)
-            or set(parameters) != ({"epsilon"} if metric == "binary_log_loss" else set())):
-        raise AnalysisFailure("Unsupported prediction score formula or parameters")
-    epsilon = parameters.get("epsilon", 1e-15)
-    if type(epsilon) not in {int, float}:
-        raise AnalysisFailure("Log-loss epsilon must be a number")
-    truth_path = args.truth.expanduser().resolve(strict=True)
-    truth_raw = truth_path.read_bytes()
-    if evaluator.byte_hash(truth_raw) != baseline_result["evaluation"]["split_hash"]:
-        raise AnalysisFailure("Truth bytes differ from the evaluated split")
-    raw_predictions = []
-    for path, result in [(baseline_path, baseline_result), (candidate_path, candidate_result)]:
-        raw = (path.parent / "predictions.csv").read_bytes()
-        if evaluator.byte_hash(raw) != result["candidate_hash"]:
-            raise AnalysisFailure("Prediction snapshot changed during analysis")
-        raw_predictions.append(raw)
-    labels = evaluator.read_values(truth_raw, config["id_column"], config["target_column"], "truth")
-    predictions = [evaluator.read_values(raw, config["id_column"], config["prediction_column"], role)
-                   for raw, role in zip(raw_predictions, ["baseline", "candidate"])]
-    if any(values.keys() != labels.keys() for values in predictions):
-        raise AnalysisFailure("Prediction IDs differ from the evaluated truth")
-    if len(labels) != baseline_result["evaluation"]["completed_cases"]:
-        raise AnalysisFailure("Prediction row count differs from the evaluation")
-    sample_ids = sorted(labels)
-    truth = [labels[key] for key in sample_ids]
-    before, after = [[values[key] for key in sample_ids] for values in predictions]
-    overall = subset_scores(metric, truth, before, after, epsilon)
-    for result, key in [(baseline_result, "baseline_score"), (candidate_result, "candidate_score")]:
-        if overall[key] != result["score"]["value"]:
-            raise AnalysisFailure("Recomputed score differs from its evaluation record")
+    config, metric, epsilon = pair.configuration, pair.metric, pair.epsilon
+    if config["id_column"] in columns:
+        raise AnalysisFailure("ID column must differ from slice columns")
+    sample_ids, truth, before, after = pair.sample_ids, pair.labels, pair.baseline, pair.candidate
     slices_raw = None
     slices: dict[str, dict[str, str]] = {}
     if args.slices:
@@ -189,7 +136,7 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
         regression_key = "scaled_squared_error_improvement" if metric == "rmse" else "error_improvement"
         regressions = sorted((row for row in rows if row["case_preference"] == "baseline"),
                              key=lambda row: (row[regression_key], row["id"]))[:args.top_k]
-    for name, raw in zip(["baseline.csv", "candidate.csv"], raw_predictions):
+    for name, raw in zip(["baseline.csv", "candidate.csv"], pair.prediction_bytes):
         with (output_dir / name).open("xb") as stream:
             stream.write(raw)
     if slices_raw is not None:
@@ -217,12 +164,10 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
         "largest_candidate_errors": worst, "largest_regressions": regressions, "slices": slice_results,
         "configuration": diagnostic_config, "config_hash": evaluator.object_hash(diagnostic_config),
         "analyzer_hash": evaluator.object_hash({name: evaluator.byte_hash(pathlib.Path(__file__).with_name(name).read_bytes())
-                                                for name in ["analyze_prediction_errors.py", "evaluate_predictions.py",
+                                                for name in ["analyze_prediction_errors.py", "prediction_evidence.py", "evaluate_predictions.py",
                                                              "compare_prediction_results.py"]}),
-        "inputs": {"baseline": str(baseline_path), "candidate": str(candidate_path), "truth": str(truth_path)},
-        "input_hashes": {"baseline_result": evaluator.byte_hash(baseline_path.read_bytes()),
-                         "candidate_result": evaluator.byte_hash(candidate_path.read_bytes()),
-                         "truth": evaluator.byte_hash(truth_raw)},
+        "inputs": {key: str(path) for key, path in pair.paths.items()},
+        "input_hashes": pair.input_hashes,
         "artifacts": [str(output_dir / name) for name in
                       ["baseline.csv", "candidate.csv", "cases.csv", *(["slices.csv"] if slices_raw else [])]],
         "note": "Slices and case counts diagnose hypotheses, not official aggregation or causality. "

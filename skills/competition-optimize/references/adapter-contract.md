@@ -63,6 +63,8 @@ An adapter may use different field names during an initial pilot, but it must pr
 
 Candidate comparisons require the same score-model version, evaluator and fixture hashes, workload/split, evaluation fidelity, seed protocol, and relevant measurement environment. Hash evaluation configuration separately from candidate configuration: candidate hyperparameters may differ, but comparisons must use the same evaluation protocol. For noisy workloads, preserve repetitions and compare matched cases. Report feasibility failures separately from low scores; invalid candidates are never promoted.
 
+When estimating uncertainty, record which variation is modeled: sampling independent rows/groups, training/execution seeds, or new scenarios. A paired resampling interval conditional on fixed predictions does not measure training randomness or distribution shift. Define independent units, compute limits, practical improvement thresholds, and the confirmation protocol before interpreting comparisons; uncertainty diagnostics do not change the official objective.
+
 ## Family-Specific Checks
 
 - **Algorithm/code:** compile and interface checks, property or differential tests, boundary cases, resource limits, and workload-level quality/time metrics.

@@ -22,7 +22,7 @@ Reuse an evaluation only when candidate, evaluator, score model, data/split, con
 ## Adapter Routing
 
 - For the fixed-timeslot C++ case, read [the fixed-timeslot adapter reference](references/fixed-timeslot.md).
-- For unweighted scalar regression or binary-classification CSV predictions, read [the local prediction evaluation reference](references/data-model.md). The bundled scripts check artifacts, compute local metrics, diagnose paired development errors and categorical slices, and construct fixed-weight blends. Use diagnostic observations to form the next hypothesis; reapply frozen recipes on confirmation/test predictions. Establish member model identity, training, leakage, and ensemble resource checks separately before promotion.
+- For unweighted scalar regression or binary-classification CSV predictions, read [the local prediction tools reference](references/data-model.md). The scripts check artifacts, compute local metrics, estimate paired sampling uncertainty under explicit row/group assumptions, diagnose development errors and slices, and construct fixed-weight blends. Use diagnostics to form the next hypothesis and reapply frozen recipes on confirmation/test predictions. Establish member model identity, training, leakage, and ensemble resource checks separately before promotion.
 - For data/model, algorithm/optimization, or stochastic simulation tasks, read only the applicable section of [the task-family guide](references/task-playbooks.md) when selecting baselines and improvement mechanisms.
 - For any task family without a verified adapter, establish its score contract and evaluator before expensive candidate search. Do not imply that this repository already implements every family.
 

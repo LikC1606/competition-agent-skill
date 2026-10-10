@@ -74,6 +74,8 @@ If screening ordering fails, revise that screen and reevaluate affected candidat
 
 Evaluate the most promising candidates at full fidelity against the incumbent on matched cases. For noisy metrics, use repetitions to resolve a decision rather than choosing the largest single observed gain. Maintain validity, screening, and confirmation outcomes separately; a partial or failed run cannot establish a new best.
 
+Distinguish execution/training randomness from finite-sample uncertainty and distribution mismatch. For fixed scalar predictions evaluated on exchangeable samples, [paired row/group bootstrap](data-model.md#estimate-paired-sampling-uncertainty) can estimate sensitivity to the validation sample. Declare independent units and sampling settings before interpreting the result; dependent groups stay together. For training randomness, rerun matched training seeds; for distribution shifts, confirm on task-appropriate independent scenarios. More draws on the same cached predictions do not resolve either issue. Report uncertain gains and retain promising alternatives without making significance a universal promotion gate, especially for exact deterministic contest objectives.
+
 ## Keep Search and Confirmation Separate
 
 Freeze the development metric, evaluation split, case weights, and final confirmation protocol before tuning. Choose a split appropriate to deployment: group or time splits when samples are dependent, fresh instances for combinatorial tasks, and matched repeated seeds for stochastic simulations.
