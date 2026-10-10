@@ -42,6 +42,10 @@ Keep `candidate-archive.jsonl` or an equivalent record in the run directory. Eac
 For a mechanically checked JSONL archive, use [`candidate_archive.py`](../scripts/candidate_archive.py). For example:
 
 ```powershell
+# Retrieve matched best code, failures and unfinished proposals for this decision.
+python <skill-dir>/scripts/candidate_archive.py brief `
+  --archive <run>/candidate-archive.jsonl
+
 python <skill-dir>/scripts/candidate_archive.py check `
   --archive <run>/candidate-archive.jsonl --source <run>/cand-07/predictions.csv
 
@@ -53,11 +57,14 @@ python <skill-dir>/scripts/candidate_archive.py record `
   --mechanism "complete tree pipeline replacing the linear model" --status promising `
   --feedback "Observed nonlinear errors improved; missing interaction features warrant a successor"
 
+# Optional advisory review when deciding whether the route has stalled.
 python <skill-dir>/scripts/candidate_archive.py decide `
   --archive <run>/candidate-archive.jsonl --output <run>/route-decision-02.json --append
 ```
 
 Record the baseline first, since parent IDs must already exist. `check` hashes files/directories and blocks exact artifact repeats; `record` preserves results, costs and feedback without changing old events. Give necessary unchanged repetitions or confirmation an explicit `--reuse-reason`; they remain measurements of the same implementation, and do not create novelty or reset the budget. Configurations are optional `--configuration <snapshot>` inputs. Semantic near-duplicates still need code/history review.
+
+Use [`brief` retrieval](iteration-trace.md#retrieve-evidence-for-the-next-implementation) instead of loading every recent record plus separate route and pending summaries. It preserves older best versions, retrieves matched failures and gives code/result locations in one view. Compare the latest feedback with the best version before choosing the parent. Retrieval is read-only and does not replace code inspection, proposal generation or execution; no additional ledger or report is required.
 
 For modeling tasks, `--source` is the evaluated prediction artifact, whose bytes must match `candidate_hash`. Put the training code and recipe in a compact immutable directory passed as `--configuration`. Before fitting, `check --configuration <directory>` can reject a repeated pipeline even though new predictions do not yet exist; after fitting, record both predictions and that directory. The preflight checks only supplied artifact hashes. Include both when a different pipeline yields identical predictions; do not snapshot data, evaluator code or large run logs into the pipeline directory.
 

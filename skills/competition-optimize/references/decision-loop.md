@@ -6,6 +6,8 @@ Use this when continuing a run, recovering an interrupted trial, or deciding whe
 
 Read the sealed contract and the compact card first. Check the contract bytes against the card's hash and the ledger prefix against its checkpoint (byte length and SHA-256); these checks can read bytes without loading all events into model context. If both match, read only appended complete events and the evidence needed for the current decision. Verify the dependencies and validity scope of results you intend to reuse. A hash confirms identity, not training provenance or unchecked hard rules.
 
+When a candidate archive is available, [retrieve `brief`](iteration-trace.md#retrieve-evidence-for-the-next-implementation) for matched best versions, recent failures, code locations and pending proposals in one read. Reuse the existing card's budget/contract facts; do not also reconstruct all candidate summaries. Choose a credible parent from the retrieved evidence rather than assuming the latest experiment won, inspect its relevant code, and continue the implementation loop.
+
 [`inspect_run_resume.py`](../scripts/inspect_run_resume.py) performs the byte/syntax checks for any adapter's JSON-object events. For the first inspection, omit `--checkpoint`; it reads from the start and can save a new checkpoint file:
 
 ```powershell

@@ -2,6 +2,25 @@
 
 Use this when repeated trials are managed by `candidate_archive.py`. It links an agent-authored proposal to verified parent code and development feedback, then to a new adapter result. Existing equivalent ledger links are sufficient; do not migrate old trials or reconstruct proposals after seeing their results.
 
+## Retrieve Evidence for the Next Implementation
+
+```powershell
+python <skill-dir>/scripts/candidate_archive.py brief `
+  --archive <run>/candidate-archive.jsonl
+```
+
+Use this read-only view before opening more logs. It supplies one shared comparison identity, the best measured development representative, recent distinct implementations on the active route, best/latest versions of alternative routes, unresolved feedback, recent failure evidence and code/result paths. Candidate cards are included once even when several decisions reference them. Read the relevant function or pipeline at those paths, compare the mechanism with the retained failures, and choose a concrete next implementation. A successful retrieval does not complete an optimization request.
+
+The default anchor is the latest development record. Use `--anchor <candidate-id>` to select the comparison and route for a different parent; this is not a historical cutoff. A failed latest experiment still retains the previous valid best and its code. `best_development` is a retrieval representative, not an incumbent promotion or a frozen finalist. Unknown scalar objectives keep their components and have no best-score ranking. Costs remain visible for the agent's investment decision.
+
+Only development candidates sharing the exact evaluator, workload/split, score model, evaluation configuration, stage, environment and objective metadata enter this view. Confirmation records do not change it, including selection, ordering and counts. Score ordering uses the first valid comparable observation of each fingerprint, so a lucky repetition or renamed route cannot become a new best implementation. Repeated measurements stay visible as measurements; use the task's uncertainty/aggregation procedure when they matter rather than promoting the luckiest observation.
+
+The active route is always shown; alternatives are ordered by their measured representatives in the declared direction, not by how few attempts they received. This order does not decide which route deserves the next trial: inspect objective headroom, unresolved mechanisms, maturity and cost. A materially changed successor in any matched route supersedes its parent's old unresolved opportunity; an unchanged measurement does not.
+
+Defaults display four routes, four recent distinct active-route candidates and four matching pending details. `--routes` and `--recent` change retrieval size only; they are not candidate budgets or method settings. Older best representatives are retained even outside the recent window. Each displayed route includes its latest failure/rejection; use the archive's referenced records for an older relevant mechanism. Omission counts make the retrieval scope explicit. All pending proposal IDs remain visible, while details from other comparisons stay out of the optimization view. Reconcile the relevant unfinished process/output before retrying; use `trace` for its actual completed chain.
+
+The command checks displayed result and snapshot bytes once per candidate and checks shown pending code targets. It does not rehash unselected history or alter the archive. Missing identity fields are labeled `not_recorded`; legacy evidence does not gain verification merely by appearing in a brief. Adapter validity keeps its checked scope, and score recomputation, training provenance, unchecked hard rules and causal interpretation still require their existing evidence. Reference raw results when detailed errors or components are needed; there is no need to write another summary document.
+
 ## Record One Actionable Proposal
 
 Read the relevant parent code and matched feedback first. Choose the next implementation using the [proposal guidance](score-search.md#propose-from-code-and-history), with remaining budget and the nearest credible alternative in mind. Save one compact JSON proposal and link it from the decision card; do not also write a separate report or duplicate the proposal fields in other notes. For example, an algorithm candidate might use:

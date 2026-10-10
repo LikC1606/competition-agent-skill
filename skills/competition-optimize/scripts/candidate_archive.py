@@ -700,6 +700,130 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
                        for route, info in sorted(routes.items())}}
 
 
+def distinct_implementations(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use the first supplied observation of each fingerprint, not its luckiest repeat."""
+    distinct, seen = [], set()
+    for entry in entries:
+        if entry["fingerprint"] not in seen:
+            distinct.append(entry)
+            seen.add(entry["fingerprint"])
+    return distinct
+
+
+def directed_score(entry: dict[str, Any]) -> float:
+    return entry["objective"]["value"] * (-1 if entry["objective"]["direction"] == "minimize" else 1)
+
+
+def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
+    """Retrieve decision-relevant development evidence without another ledger/card."""
+    if args.recent < 1 or args.routes < 1:
+        raise ArchiveFailure("invalid_config", "recent and routes must be positive")
+    records = read_records(args.archive.expanduser().resolve())
+    index = candidate_index(records)
+    if not index:
+        raise ArchiveFailure("empty_archive", "Record a baseline before requesting optimization context")
+    development = [entry for entry in index.values() if entry["role"] == "development"]
+    if args.anchor is not None:
+        if args.anchor not in index:
+            raise ArchiveFailure("unknown_candidate", f"No archived candidate {args.anchor!r}")
+        anchor = index[args.anchor]
+        if anchor["role"] != "development":
+            raise ArchiveFailure("confirmation_feedback", "Confirmation evidence cannot anchor optimization context")
+    elif development:
+        anchor = development[-1]
+    else:
+        raise ArchiveFailure("no_development_evidence", "Confirmation evidence cannot guide new optimization")
+    context = anchor["comparison"]
+    scoped = [entry for entry in development if entry["comparison"] == context]
+    by_route: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in scoped:
+        by_route[entry["route"]].append(entry)
+    measured = distinct_implementations([entry for entry in scoped if measurable(entry)])
+    measured_ids = {entry["candidate_id"] for entry in measured}
+    best = max(measured, key=directed_score) if measured else None
+    route_bests = {}
+    for route, entries in by_route.items():
+        eligible = [entry for entry in entries if entry["candidate_id"] in measured_ids]
+        route_bests[route] = max(eligible, key=directed_score) if eligible else None
+    # The active route is always included. Alternatives are a factual score
+    # ordering, not an effort quota or an automated choice of the next method.
+    alternatives = sorted((route for route in by_route if route != anchor["route"]),
+                          key=lambda route: (-directed_score(route_bests[route]) if route_bests[route] else math.inf, route))
+    selected_routes = [anchor["route"]] + alternatives[:args.routes - 1]
+    selected: dict[str, dict[str, Any]] = {}
+
+    def include(entry: dict[str, Any] | None) -> str | None:
+        if entry is None:
+            return None
+        selected[entry["candidate_id"]] = entry
+        return entry["candidate_id"]
+
+    include(anchor)
+    include(best)
+    recent = distinct_implementations(by_route[anchor["route"]])[-args.recent:]
+    recent_ids = [include(entry) for entry in recent]
+    superseded = {parent_id for child in scoped for parent_id in child["parent_ids"]
+                  if parent_id in index and child["fingerprint"] != index[parent_id]["fingerprint"]}
+    routes = []
+    for route in selected_routes:
+        entries = by_route[route]
+        unresolved = next((entry for entry in reversed(entries)
+                           if entry["status"] in {"promising", "unresolved"} and entry.get("feedback")
+                           and entry["candidate_id"] not in superseded), None)
+        failure = next((entry for entry in reversed(entries)
+                        if not entry["valid"] or entry["status"] == "rejected" or entry.get("failure_mechanism")), None)
+        routes.append({"route": route, "measurements": len(entries),
+                       "distinct_implementations": len(distinct_implementations(entries)),
+                       "best": include(route_bests[route]), "latest": include(entries[-1]),
+                       "unresolved": include(unresolved), "latest_failure": include(failure)})
+    closed = {entry["proposal_id"] for entry in records
+              if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
+    pending = [entry for entry in records if entry["event"] == "proposal" and entry["proposal_id"] not in closed]
+    matching_pending = [entry for entry in pending
+                        if all(index[i]["comparison"] == context for i in entry["parent_ids"] + entry["feedback_from"])]
+    details = matching_pending[-args.recent:]
+    for proposal in details:
+        for candidate_id in proposal["parent_ids"] + proposal["feedback_from"]:
+            include(index[candidate_id])
+    cards = {}
+    for candidate_id, entry in selected.items():
+        verify_result(entry)
+        verify_artifacts(entry)
+        card = {key: entry.get(key) for key in ("parent_ids", "fingerprint", "artifact_paths", "route", "mechanism",
+                                              "valid", "status", "objective", "cost", "feedback", "failure_mechanism",
+                                              "proposal_id", "prediction_status", "reused_from")}
+        result = entry["result"]
+        card["result"] = {key: result.get(key) for key in ("result_path", "result_sha256", "execution_status",
+                                                         "validity_scope", "unchecked_rules")}
+        card["identity_checks"] = {"result_bytes": "checked" if result.get("result_path") else "not_recorded",
+                                   "snapshot_bytes": "checked" if entry["artifact_paths"] else "not_recorded"}
+        card["objective_gain_vs_best"] = (directed_score(entry) - directed_score(best)
+                                          if best is not None and candidate_id in measured_ids else None)
+        cards[candidate_id] = card
+    checked_targets: set[tuple[str, str]] = set()
+    for proposal in details:
+        for target in proposal["code_targets"]:
+            identity = (target["path"], target["sha256"])
+            if identity not in checked_targets:
+                if hash_path(pathlib.Path(target["path"])) != target["sha256"]:
+                    raise ArchiveFailure("parent_artifact_changed", f"Pending code target changed: {target['path']}")
+                checked_targets.add(identity)
+    return {"schema_version": 1, "archive_path": str(args.archive.expanduser().resolve()),
+            "anchor_candidate": anchor["candidate_id"], "comparison": context,
+            "best_development": best["candidate_id"] if best else None,
+            "recent_current": recent_ids, "routes": routes, "candidates": cards,
+            "pending_proposals": [entry["proposal_id"] for entry in pending],
+            "pending_details": [{key: entry[key] for key in ("proposal_id", "parent_ids", "feedback_from", "route",
+                                                            "code_targets", "basis", "change", "expected_observation",
+                                                            "validation", "stop_condition")} for entry in details],
+            "omitted": {"routes": len(by_route) - len(routes), "current_comparison_candidates": len(scoped) - len(cards),
+                        "other_development_comparisons": len(development) - len(scoped),
+                        "pending_details": len(pending) - len(details)},
+            "scope": "Development retrieval only; first valid observation per fingerprint ranks representatives. "
+                     "Identity checks cover displayed evidence, not all history, score recomputation, causality or promotion. "
+                     "Inspect relevant code and raw results before proposing the next implementation."}
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     sub = root.add_subparsers(dest="command", required=True)
@@ -719,6 +843,11 @@ def parser() -> argparse.ArgumentParser:
     trace.add_argument("--archive", type=pathlib.Path, required=True)
     trace.add_argument("--recent", type=int, default=8, help="recent proposals to include; all pending IDs remain visible")
     trace.add_argument("--all", action="store_true", help="include every iteration when a complete audit is needed")
+    brief = sub.add_parser("brief", help="retrieve matched best versions, recent failures, code paths and pending proposals")
+    brief.add_argument("--archive", type=pathlib.Path, required=True)
+    brief.add_argument("--anchor", help="development candidate defining the comparison; defaults to the latest development record")
+    brief.add_argument("--routes", type=int, default=4, help="routes to show, including the active route")
+    brief.add_argument("--recent", type=int, default=4, help="recent distinct active-route candidates and matching pending details")
     record = sub.add_parser("record", help="append one candidate evidence record")
     record.add_argument("--archive", type=pathlib.Path, required=True)
     record.add_argument("--candidate-id", required=True)
@@ -776,6 +905,8 @@ def main() -> int:
             result = stop_proposal(args)
         elif args.command == "trace":
             result = trace_report(args)
+        elif args.command == "brief":
+            result = optimization_brief(args)
         elif args.command == "decide":
             if (args.recent < 2 or args.min_stagnant < 2 or args.min_stagnant > args.recent
                     or not math.isfinite(args.tie_epsilon) or args.tie_epsilon < 0):
