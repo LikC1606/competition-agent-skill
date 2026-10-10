@@ -12,6 +12,8 @@
 - **比赛适配器**：提供题型专属的候选接口、硬约束、评测和官方评分计算；当前有算法/代码 adapter，以及预测 CSV 的 RMSE、MAE、二分类 LogLoss 和 ROC-AUC 评测层。可按独立样本或完整组估计固定预测的抽样不确定性，诊断开发集误差与分组退步，生成加权集成候选，并将冻结配方复用于确认集或测试集。数据准备、训练、防泄漏和资源验证仍需按比赛接入。
 - **可选薄型 runner**：只在手工 pilot 出现快照、超时或记录错误后，实现候选隔离和结构化记账；不实现搜索算法或通用沙箱平台。
 
+候选档案工具 [`candidate_archive.py`](skills/competition-optimize/scripts/candidate_archive.py) 提供评测前重复检查、JSONL 追加记录与紧凑历史摘要。它根据同契约开发结果、路线历史最好成绩和有依据的未解决机会输出继续、换路线或诊断建议；确认集不会改变优化建议，必要复测需说明原因。官方分数、下一项具体实现与晋升仍由 adapter 和 agent 按题目规则决定。
+
 核心循环不依赖题型，但搜索策略和验证方式由 adapter 提供。没有可靠评测器时，先建立并验证评测器，不进入昂贵搜索；尚未实现 adapter 的题型不能宣称已支持自动优化。
 
 ## 工作流程
@@ -89,6 +91,8 @@ flowchart TD
 决定是否尝试两模型组合时，可按需增加 [`--check-blend-direction`](skills/competition-optimize/references/data-model.md#check-whether-a-two-parent-blend-has-a-useful-direction)：对 RMSE/MAE 检查目标函数方向，排除无法严格超过最好单体的理想凸组合，并识别较弱模型可能提供的组合价值。它不选择权重或给出组合分数；每个实际测试的配方仍计一次 trial，其他指标需另作判断。已通过 144 项测试和两题集成复跑，尚未证明完整 agent 的试验节省或提分效果。
 
 新增同契约预测的[批量评测入口](skills/competition-optimize/references/data-model.md#batch-ready-candidates)：单进程顺序评分、独立候选证据和可选基线比较。两项 CLI 对照约提速 4.5–5 倍；12 份既有真实数据预测的分数、hash 与契约一致，未重训模型。批量数量不改变试验预算，确认只处理冻结候选。
+
+候选档案工具已用 23 个行为测试覆盖重复拦截、训练前流水线检查、父版本、无效反馈、口径变化、停滞判断、中断恢复与确认隔离，并回放两项真实数据 pilot 的 12 份既有结果，保留原分数、hash 和检查范围。未重新训练或执行新比赛候选；自主提分与节省试验的效果仍需实战验证。
 
 流程新增[决策卡与恢复路由](skills/competition-optimize/references/decision-loop.md)：继续任务只补读变化的事件和当前决策所需证据，实验完成但未记账时先核对产物，候选预算耗尽后进入冻结确认。只读的 `inspect_run_resume.py` 自动核验契约/日志检查点，分页返回新增事件，拒绝损坏记录，检查点仅覆盖本页事件。已对两个真实 pilot 的历史记录做回放核对，保留原交付规则与预算；这不代表完整 agent 的提分或耗时对照。
 

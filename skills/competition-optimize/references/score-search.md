@@ -37,7 +37,33 @@ Parameter search is not the default: no automatic grids, random/Bayesian searche
 
 ## Candidate Archive and Route Switching
 
-Keep `candidate-archive.json` or an equivalent append-only record in the run directory. Each entry should include candidate ID, parent IDs, source/configuration fingerprint, route/mechanism, evaluator and workload hashes, validity, objective components, resource cost, status (`incumbent`, `runner_up`, `promising`, `rejected`, or `unresolved`), and the evidence that permits or blocks further investment. Store a short failure mechanism for invalid or weak candidates instead of only a score.
+Keep `candidate-archive.jsonl` or an equivalent record in the run directory. Each entry should include candidate ID, parent IDs, source/configuration fingerprint, route/mechanism, evaluator and workload hashes, validity, objective components, resource cost, status (`incumbent`, `runner_up`, `promising`, `rejected`, or `unresolved`), and the evidence that permits or blocks further investment. Store a short failure mechanism for invalid or weak candidates instead of only a score.
+
+For a mechanically checked JSONL archive, use [`candidate_archive.py`](../scripts/candidate_archive.py). For example:
+
+```powershell
+python <skill-dir>/scripts/candidate_archive.py check `
+  --archive <run>/candidate-archive.jsonl --source <run>/cand-07/predictions.csv
+
+# Evaluate using the task adapter, then record its immutable result.
+python <skill-dir>/scripts/candidate_archive.py record `
+  --archive <run>/candidate-archive.jsonl --candidate-id cand-07 `
+  --parent cand-03 --source <run>/cand-07/predictions.csv `
+  --result <run>/cand-07/result.json --route histogram-tree `
+  --mechanism "complete tree pipeline replacing the linear model" --status promising `
+  --feedback "Observed nonlinear errors improved; missing interaction features warrant a successor"
+
+python <skill-dir>/scripts/candidate_archive.py decide `
+  --archive <run>/candidate-archive.jsonl --output <run>/route-decision-02.json --append
+```
+
+Record the baseline first, since parent IDs must already exist. `check` hashes files/directories and blocks exact artifact repeats; `record` preserves results, costs and feedback without changing old events. Give necessary unchanged repetitions or confirmation an explicit `--reuse-reason`; they remain measurements of the same implementation, and do not create novelty or reset the budget. Configurations are optional `--configuration <snapshot>` inputs. Semantic near-duplicates still need code/history review.
+
+For modeling tasks, `--source` is the evaluated prediction artifact, whose bytes must match `candidate_hash`. Put the training code and recipe in a compact immutable directory passed as `--configuration`. Before fitting, `check --configuration <directory>` can reject a repeated pipeline even though new predictions do not yet exist; after fitting, record both predictions and that directory. The preflight checks only supplied artifact hashes. Include both when a different pipeline yields identical predictions; do not snapshot data, evaluator code or large run logs into the pipeline directory.
+
+Result fields supply validity, score direction/kind, stage and dependency hashes; explicit flags cannot contradict them or turn a failed/partial result valid. A fingerprint identifies artifacts separately from evaluation identity. `decide` uses only distinct valid development implementations with the same evaluator, workload/split, score model, evaluation configuration, stage and environment. It checks result bytes, compares against the route's historical best, and excludes confirmation evidence, including from alternative-route ordering. Missing scalar score identity or invalid/incomplete evidence produces `diagnose`; no maximize/minimize direction is invented. Fixed-timeslot results lack an official total score, so they remain archived components unless an explicit declared objective and its comparison dependencies are supplied.
+
+`exploit` means recent historical-best progress or a feedback-supported opportunity; `explore` means a route review is warranted after comparable weak results. An unresolved candidate needs a concrete feedback explanation, and a recorded successor supersedes it. Window defaults (`--recent 4 --min-stagnant 2`) and tie tolerance are provisional advisory policies, never promotion gates or fixed exploration quotas. The agent checks remaining budget, diagnoses the code, and implements the next proposal; the tool does not choose a method or tune parameters. Validity retains the adapter's checked scope; hard rules, training provenance, artifact availability and score recomputation still use their existing checks. Run one archive writer at a time. A partial or corrupt JSONL event blocks further appends; reconcile it before continuing.
 
 Before a new implementation, compare its fingerprint and mechanism with the archive. A duplicate or near-duplicate needs a changed prerequisite, a diagnosed defect, or a new resource/evaluation regime; a new filename is not novelty. Preserve a runner-up when its tradeoff or route may matter, even if it does not beat the incumbent.
 

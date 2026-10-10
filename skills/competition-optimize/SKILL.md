@@ -17,6 +17,8 @@ Use a bounded reconnaissance pass before expensive implementation: map the entry
 
 Maintain a compact candidate archive in the run directory. Keep the incumbent, the best representative of each materially different route, promising unresolved candidates, and rejected mechanisms with their evidence. Give each candidate a code/configuration fingerprint and parent IDs. Before implementing, compare the proposed change with the archive; a near-duplicate of a rejected change needs new evidence or a changed prerequisite, otherwise replace the proposal.
 
+For repeated trials, use [`candidate_archive.py`](scripts/candidate_archive.py) unless a verified equivalent archive already exists: `check` snapshots before evaluation, `record` the result/feedback, then `decide` for a route review. Its advice uses comparable development evidence; the agent still chooses the concrete implementation. See [archive usage](references/score-search.md#candidate-archive-and-route-switching).
+
 ## Bound Work Without Repeated Approval
 
 Honor explicit user time/compute/trial limits at their stated scope and retain all consumed work. Do not reset an exhausted user cap. When none applies, start one default work round: at most **45 minutes of total wall time and eight evaluated candidate implementations/recipes**, stopping at either limit. Reserve measured confirmation/packaging cost first; research, implementation, diagnostics and repairs use this time. Every tested code/pipeline/recipe variant, including baselines, failures and repairs, counts; unchanged verification consumes time/compute.
