@@ -56,6 +56,27 @@ The output directory's parent must exist. A successful run saves `predictions.cs
 
 `valid: true` covers prediction format, ID coverage, finite values, and the metric domain only. The result lists training leakage, training provenance, resource limits, and competition rules as unchecked. The skill must establish those checks separately before promoting a competition entry. A failed run exits with code 2 and records a null score when a new output directory was created; an existing directory is never overwritten.
 
+## Batch Ready Candidates
+
+When several prediction files already exist and share one truth/split, stage, metric, columns, clipping, and score kind, use `evaluate_prediction_batch.py` to evaluate them sequentially in one Python process. It calls the original evaluator and saves its unchanged result schema/hash, freezes one shared truth snapshot, and verifies each saved comparison input once. Do not delay useful feedback just to fill a batch; individual evaluation remains suitable when the next trial depends on the current outcome.
+
+```powershell
+python <skill-dir>/scripts/evaluate_prediction_batch.py `
+  --truth <development-truth.csv> `
+  --candidate baseline <baseline-predictions.csv> `
+  --candidate route-a <route-a-predictions.csv> `
+  --candidate route-b <route-b-predictions.csv> `
+  --baseline baseline `
+  --metric rmse --stage development --split-id <frozen-split-name> `
+  --output-dir <new-batch-directory>
+```
+
+The output contains `truth.csv`, `batch.json`, `evaluations/<name>/result.json` with its prediction snapshot, and optional `comparisons/<name>.json` against `--baseline`. Child results work with the existing comparator, blend, error, and uncertainty tools; supply the batch's saved truth bytes to diagnostics. Default metric interpretation, column options, log-loss epsilon, and tie epsilon follow the individual tools. `--baseline` is optional and must exactly name a batch candidate; it selects the comparison reference, without promoting a winner.
+
+Provide 1-64 candidates with distinct case-insensitive portable ASCII names; directory traversal, trailing dots, and Windows device names are rejected. Each failed candidate has a null score and its own error record; valid candidates continue. A failed baseline produces no comparisons. `partial_failure` or a fatal batch failure returns code 2; only complete success returns 0. Existing output directories are never overwritten. A fatal infrastructure failure can leave completed child artifacts; inspect their individual evidence before reuse.
+
+Batching applies only to already constructed candidates under a shared contract. Each tested configuration still consumes its own trial slot; training provenance and hard rules remain separate checks. Use confirmation batching only for the frozen shortlist. This entry does not train, search weights, bootstrap every pair, choose a candidate, or submit an entry.
+
 ## Compare Local Scores
 
 ```powershell

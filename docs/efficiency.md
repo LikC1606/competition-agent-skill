@@ -35,6 +35,25 @@ profile 显示旧实现每次 bootstrap draw 都重建标签/预测数组，重�
 
 性能数字只覆盖进程内 bootstrap，包括输入验证与预计算；不含 Python 启动、CSV 读取、模型训练或 agent 推理。大任务的实际收益取决于耗时构成，不能把 7.40 的单项比例当作整个比赛流程的提速。
 
+## 批量评分与比较
+
+新增 [`evaluate_prediction_batch.py`](../skills/competition-optimize/scripts/evaluate_prediction_batch.py)，将已生成且共享同一评测契约的预测文件放到一个进程内顺序评测，并复用已核验的基线评测结果。每个候选仍有独立预测快照、标准 `result.json` 和错误记录，原评分器及其 hash 未改动。批次保存公共 truth 快照，失败候选不阻断后续有效候选，失败 baseline 不产生比较；没有自动训练或晋升。
+
+[`benchmark_prediction_batch.py`](../examples/benchmark_prediction_batch.py) 对照逐候选启动评测 CLI、再启动比较 CLI 的旧路径。固定合成 CSV，三次交替顺序计时，包含 Python 启动、读取、计分、hash 核验和产物写入；以下为中位数。
+
+| 输入规模 | 原进程数 → 新进程数 | 原耗时（秒） | 新耗时（秒） | 原耗时 / 新耗时 |
+| --- | ---: | ---: | ---: | ---: |
+| 1000 行、4 个候选 | 7 → 1 | 0.930 | 0.186 | 5.01 |
+| 10000 行、12 个候选 | 23 → 1 | 3.381 | 0.755 | 4.48 |
+
+逐候选分数、候选/evaluator/score-model hashes、评测契约、检查范围和比较结果相同。路径元数据指向各自的新目录，因此整份 JSON 不应逐字节相同。批量路径保留原评分器的逐文件解析和验证，实测收益来自减少进程启动及重复基线读取；该比例只覆盖 CSV 评测/比较，不包含模型训练或完整 agent 工作。
+
+另复用了真实数据 pilot 的两题开发集各 4 份预测、确认集各 2 份预测，共 12 份，分数、hash 和评测契约与既有记录一致，模型拟合次数为 0。新增 9 个测试覆盖四种指标、前导零 ID、可选比较、部分失败、无效 baseline、冻结 truth、列/裁剪参数、确认阶段、名称/数量限制及拒绝覆盖；全套 92 个测试及 skill 结构校验通过。
+
+用法见 [批量入口](../skills/competition-optimize/references/data-model.md#batch-ready-candidates)。仅对已经准备好的兼容文件批量处理；有用反馈应及时获取，不能为了凑批次延迟下一次决策。每个配置仍单独记 trial，正式确认只处理冻结的 shortlist。
+
+性能复现：`python examples/benchmark_prediction_batch.py --output-dir <仓库外的新目录>`。本次计时与源码 hashes 在 `D:\华为云\tmp\batch-efficiency-20261010\benchmark.json`，真实预测复测及摘要在 `D:\华为云\tmp\batch-real-predictions-20261010\audit.json`。
+
 ## 复现与证据
 
 先创建仓库外的新目录，保存来自自己仓库的可信旧脚本，再执行对照：
