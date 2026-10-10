@@ -61,11 +61,15 @@ Keep rejected hypotheses with their mechanism, prerequisites, and rejection evid
 
 After a trial is reconciled, apply [the feedback loop](score-search.md#close-the-feedback-loop) and return to the next useful action in the same round. A completed evaluation is a loop boundary, not an automatic delivery boundary. When resuming, recover the last feedback and whether its successor was actually implemented; a pending suggestion is not a completed iteration.
 
+With archive proposal links, use [`trace --recent 8`](iteration-trace.md#resume-and-deliver-the-actual-chain) to recover the displayed execution chain and all pending IDs. Check existing processes/artifacts for pending actions before retrying; attach a verified result or record a specific stop. Old trials need no retrospective proposal reconstruction. The helper checks linked identities, while budget, actual code semantics and confirmation still use the existing run evidence.
+
 ## Compact Decision Card
 
 Refresh `<run>/next-action.md` after a decision or before a handoff, not after every tool call. Keep only facts needed for the next action and link to details; it is disposable and never replaces ledger events. The checkpoint covers complete JSONL events through the recorded byte offset. Later events must be reconciled before acting. Do not checkpoint a partial final line.
 
 Use the fields relevant to the task; this is a copyable example, not a required adapter schema:
+
+When an archived proposal already contains the code basis, change and validation, the card needs its proposal ID/path and current state rather than another copy of those fields.
 
 ```markdown
 # Next action

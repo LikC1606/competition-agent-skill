@@ -93,20 +93,40 @@ def read_records(path: pathlib.Path) -> list[dict[str, Any]]:
     if raw and not raw.endswith(b"\n"):
         raise ArchiveFailure("incomplete_event", "Archive ends without a newline; reconcile the interrupted write first")
     seen: set[str] = set()
+    proposals: dict[str, dict[str, Any]] = {}
+    closed: set[str] = set()
     for index, line in enumerate(raw.splitlines(), 1):
         if not line.strip():
             continue
         value = load_json(line, f"{path}:{index}")
         if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
             raise ArchiveFailure("invalid_archive", f"{path}:{index}: expected schema_version 1 object")
-        if value.get("event") not in {"candidate", "decision"}:
+        if value.get("event") not in {"candidate", "decision", "proposal", "proposal_stop"}:
             raise ArchiveFailure("invalid_archive", f"{path}:{index}: unknown event")
         if value["event"] == "candidate":
             validate_candidate(value)
             candidate_id = value["candidate_id"]
             if candidate_id in seen or not set(value["parent_ids"]) <= seen:
                 raise ArchiveFailure("invalid_archive", f"{path}:{index}: duplicate ID or unknown parent")
+            if value.get("proposal_id") is not None:
+                proposal_id = value["proposal_id"]
+                if proposal_id not in proposals or proposal_id in closed:
+                    raise ArchiveFailure("invalid_archive", "Candidate names an unknown or closed proposal")
+                validate_successor(value, proposals[proposal_id], records)
+                closed.add(proposal_id)
             seen.add(candidate_id)
+        elif value["event"] == "proposal":
+            validate_proposal(value, records)
+            proposal_id = value["proposal_id"]
+            if proposal_id in proposals:
+                raise ArchiveFailure("invalid_archive", "Duplicate proposal ID")
+            proposals[proposal_id] = value
+        elif value["event"] == "proposal_stop":
+            proposal_id = nonempty_text(value.get("proposal_id"), "proposal_id")
+            nonempty_text(value.get("reason"), "reason")
+            if proposal_id not in proposals or proposal_id in closed:
+                raise ArchiveFailure("invalid_archive", "Stop names an unknown or closed proposal")
+            closed.add(proposal_id)
         elif value.get("action") not in {"exploit", "explore", "diagnose"}:
             raise ArchiveFailure("invalid_archive", f"{path}:{index}: invalid route decision")
         records.append(value)
@@ -270,6 +290,178 @@ def append_record(path: pathlib.Path, value: dict[str, Any]) -> None:
         raise
 
 
+def candidate_index(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {entry["candidate_id"]: entry for entry in records if entry["event"] == "candidate"}
+
+
+def validate_proposal(value: dict[str, Any], records: list[dict[str, Any]]) -> None:
+    for field in ("proposal_id", "route", "basis", "change", "expected_observation", "validation", "stop_condition"):
+        nonempty_text(value.get(field), field)
+    candidates = candidate_index(records)
+    for field in ("parent_ids", "feedback_from"):
+        ids = value.get(field)
+        if (not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in candidates for i in ids)
+                or len(set(ids)) != len(ids)):
+            raise ArchiveFailure("invalid_proposal", f"{field} must name distinct archived candidates")
+        if any(candidates[i]["role"] != "development" for i in ids):
+            raise ArchiveFailure("confirmation_feedback", "Confirmation evidence cannot supply search parents or feedback")
+    targets = value.get("code_targets")
+    if not isinstance(targets, list) or not targets:
+        raise ArchiveFailure("invalid_proposal", "Supply the concrete parent code/configuration files being changed")
+    for target in targets:
+        if (not isinstance(target, dict) or not isinstance(target.get("path"), str)
+                or not pathlib.Path(target["path"]).is_absolute()
+                or not isinstance(target.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", target["sha256"])):
+            raise ArchiveFailure("invalid_proposal", "Code targets need absolute paths and SHA-256 hashes")
+
+
+def verify_result(entry: dict[str, Any]) -> None:
+    result = entry["result"]
+    if result.get("result_path") and sha256(pathlib.Path(result["result_path"]).read_bytes()) != result["result_sha256"]:
+        raise ArchiveFailure("result_changed", f"Result bytes changed for {entry['candidate_id']}")
+
+
+def verify_artifacts(entry: dict[str, Any]) -> list[pathlib.Path]:
+    roots = []
+    for key, name in entry["artifact_paths"].items():
+        path = pathlib.Path(name).resolve(strict=True)
+        if hash_path(path) != entry["artifacts"][key]:
+            raise ArchiveFailure("parent_artifact_changed", f"Archived artifact changed for {entry['candidate_id']}: {key}")
+        roots.append(path)
+    return roots
+
+
+def propose_candidate(args: argparse.Namespace) -> dict[str, Any]:
+    records = read_records(args.archive.expanduser().resolve())
+    raw = args.proposal.expanduser().resolve(strict=True).read_bytes()
+    proposal = load_json(raw, str(args.proposal))
+    if not isinstance(proposal, dict):
+        raise ArchiveFailure("invalid_proposal", "Proposal input must be an object")
+    value = {key: proposal.get(key) for key in ("proposal_id", "parent_ids", "feedback_from", "route", "basis",
+                                               "change", "expected_observation", "validation", "stop_condition")}
+    targets = proposal.get("code_targets")
+    if not isinstance(targets, list) or not targets or any(not isinstance(target, str) for target in targets):
+        raise ArchiveFailure("invalid_proposal", "code_targets must be a non-empty list of parent file paths")
+    value.update(schema_version=1, event="proposal", input_sha256=sha256(raw),
+                 code_targets=[{"path": str(pathlib.Path(target).expanduser().resolve(strict=True)),
+                                "sha256": hash_path(pathlib.Path(target))} for target in targets])
+    validate_proposal(value, records)
+    if any(entry["event"] == "proposal" and entry["proposal_id"] == value["proposal_id"] for entry in records):
+        raise ArchiveFailure("duplicate_proposal_id", "Proposal ID already exists")
+    value["recorded_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    candidates = candidate_index(records)
+    parent_roots = []
+    for candidate_id in set(value["parent_ids"] + value["feedback_from"]):
+        entry = candidates[candidate_id]
+        verify_result(entry)
+        if candidate_id in value["parent_ids"]:
+            parent_roots.extend(verify_artifacts(entry))
+    for target in value["code_targets"]:
+        path = pathlib.Path(target["path"])
+        if not path.is_file() or not any(path == root or root.is_dir() and path.is_relative_to(root) for root in parent_roots):
+            raise ArchiveFailure("unbound_code_target", "Code target must be a file in a verified parent artifact snapshot")
+    append_record(args.archive, value)
+    return value
+
+
+def validate_successor(candidate: dict[str, Any], proposal: dict[str, Any], records: list[dict[str, Any]]) -> None:
+    if (set(candidate["parent_ids"]) != set(proposal["parent_ids"]) or candidate["route"] != proposal["route"]
+            or candidate["role"] != "development"):
+        raise ArchiveFailure("proposal_mismatch", "Successor must use the proposal's parents and route in development")
+    parents = candidate_index(records)
+    if any(candidate["fingerprint"] == parents[i]["fingerprint"] for i in proposal["parent_ids"]):
+        raise ArchiveFailure("unchanged_successor", "An unchanged measurement cannot fulfill an implementation proposal")
+    configured = [parents[i] for i in proposal["parent_ids"] if "configuration" in parents[i]["artifacts"]]
+    if configured and ("configuration" not in candidate["artifacts"] or
+                       all(candidate["artifacts"]["configuration"] == parent["artifacts"]["configuration"] for parent in configured)):
+        raise ArchiveFailure("unchanged_pipeline", "An implementation proposal requires changed code/recipe, not only new predictions")
+    nonempty_text(candidate.get("feedback"), "successor.feedback")
+    if candidate.get("prediction_status") not in {"supported", "contradicted", "unresolved"}:
+        raise ArchiveFailure("missing_prediction_status", "Record whether the proposed observation was supported, contradicted or unresolved")
+    result = candidate["result"]
+    if not result.get("result_path") or result.get("execution_status") not in {"success", "failed"}:
+        raise ArchiveFailure("missing_execution_evidence", "A proposal successor requires a completed adapter result")
+    if any(entry["result"].get("result_sha256") == result["result_sha256"] for entry in parents.values()):
+        raise ArchiveFailure("reused_execution_evidence", "An old result cannot complete a new implementation proposal")
+
+
+def stop_proposal(args: argparse.Namespace) -> dict[str, Any]:
+    records = read_records(args.archive)
+    proposal_id = nonempty_text(args.proposal_id, "proposal_id")
+    if not any(entry["event"] == "proposal" and entry["proposal_id"] == proposal_id for entry in records):
+        raise ArchiveFailure("unknown_proposal", "No such proposal in this archive")
+    if any(entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id") == proposal_id for entry in records):
+        raise ArchiveFailure("closed_proposal", "Proposal already has an outcome")
+    value = {"schema_version": 1, "event": "proposal_stop", "proposal_id": proposal_id,
+             "reason": nonempty_text(args.reason, "reason"), "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    append_record(args.archive, value)
+    return value
+
+
+def evidence_summary(entry: dict[str, Any]) -> dict[str, Any]:
+    result = entry["result"]
+    return {"candidate_id": entry["candidate_id"], "valid": entry["valid"],
+            "objective": entry["objective"], "feedback": entry["feedback"],
+            "result_path": result.get("result_path"), "result_sha256": result.get("result_sha256"),
+            "validity_scope": result.get("validity_scope")}
+
+
+def iteration_trace(records: list[dict[str, Any]], recent: int | None = None) -> list[dict[str, Any]]:
+    candidates = candidate_index(records)
+    outcomes = {entry["proposal_id"]: entry for entry in records
+                if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
+    trace = []
+    verified: set[str] = set()
+    def verify(entry: dict[str, Any]) -> None:
+        if entry["candidate_id"] not in verified:
+            verify_result(entry)
+            verify_artifacts(entry)
+            verified.add(entry["candidate_id"])
+    proposals = [entry for entry in records if entry["event"] == "proposal"]
+    for proposal in proposals if recent is None else proposals[-recent:]:
+        outcome = outcomes.get(proposal["proposal_id"])
+        row = {key: proposal[key] for key in ("proposal_id", "parent_ids", "feedback_from", "route", "basis", "change", "expected_observation")}
+        row["feedback_evidence"] = [evidence_summary(candidates[i]) for i in proposal["feedback_from"]]
+        for candidate_id in proposal["feedback_from"]:
+            verify(candidates[candidate_id])
+        row["state"] = "pending"
+        if outcome is not None and outcome["event"] == "proposal_stop":
+            row.update(state="stopped", reason=outcome["reason"])
+        elif outcome is not None:
+            verify(outcome)
+            row.update(state="evaluated_valid" if outcome["valid"] else "evaluation_failed_or_invalid",
+                       candidate_id=outcome["candidate_id"], evidence=evidence_summary(outcome), objective=outcome["objective"],
+                       feedback=outcome["feedback"], prediction_status=outcome["prediction_status"],
+                       failure_mechanism=outcome["failure_mechanism"], cost=outcome["cost"])
+            gains = {}
+            for parent_id in proposal["parent_ids"]:
+                parent = candidates[parent_id]
+                verify(parent)
+                if measurable(outcome) and measurable(parent) and outcome["comparison"] == parent["comparison"]:
+                    delta = outcome["objective"]["value"] - parent["objective"]["value"]
+                    gains[parent_id] = delta * (-1 if outcome["objective"]["direction"] == "minimize" else 1)
+                else:
+                    gains[parent_id] = None
+            row["objective_gain_vs_parents"] = gains
+        trace.append(row)
+    return trace
+
+
+def trace_report(args: argparse.Namespace) -> dict[str, Any]:
+    if args.recent < 1:
+        raise ArchiveFailure("invalid_config", "recent must be positive")
+    records = read_records(args.archive)
+    proposals = [entry for entry in records if entry["event"] == "proposal"]
+    closed = {entry["proposal_id"] for entry in records
+              if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
+    trace = iteration_trace(records, None if args.all else args.recent)
+    return {"schema_version": 1, "total_iterations": len(proposals),
+            "omitted_iterations": len(proposals) - len(trace),
+            "pending_proposals": [entry["proposal_id"] for entry in proposals if entry["proposal_id"] not in closed],
+            "iterations": trace,
+            "scope": "Linked code/result identities and adapter-declared checks; mechanism causality and promotion are not certified"}
+
+
 def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
     archive = args.archive.expanduser().resolve()
     old = read_records(archive)
@@ -369,6 +561,15 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
         "reused_from": duplicate_matches(old, fingerprint),
         "result": result,
     }
+    if args.proposal_id is not None:
+        proposal = next((entry for entry in old if entry["event"] == "proposal" and entry["proposal_id"] == args.proposal_id), None)
+        if proposal is None:
+            raise ArchiveFailure("unknown_proposal", "Record the implementation proposal before its successor")
+        if any(entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id") == args.proposal_id for entry in old):
+            raise ArchiveFailure("closed_proposal", "Proposal already has an outcome")
+        record["proposal_id"] = args.proposal_id
+        record["prediction_status"] = args.prediction_status
+        validate_successor(record, proposal, old)
     validate_candidate(record)
     append_record(archive, record)
     return record
@@ -426,9 +627,7 @@ def route_decision(args: argparse.Namespace) -> dict[str, Any]:
                   and entry.get("feedback") and not any(entry["candidate_id"] in later["parent_ids"]
                                                        for later in current)]
     for entry in measured:
-        result = entry["result"]
-        if result.get("result_path") and sha256(pathlib.Path(result["result_path"]).read_bytes()) != result["result_sha256"]:
-            raise ArchiveFailure("result_changed", f"Result bytes changed for {entry['candidate_id']}")
+        verify_result(entry)
     if latest["valid"] is False:
         action = "diagnose"
         reason = "Latest candidate is invalid or incomplete; diagnose implementation/evaluation before judging its method."
@@ -492,7 +691,8 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
         summary["statuses"][entry.get("status", "unknown")] += 1
         summary["latest"] = entry["candidate_id"]
     return {"schema_version": 1, "candidate_count": len(candidates),
-            "decision_count": len(records) - len(candidates),
+            "decision_count": sum(entry["event"] == "decision" for entry in records),
+            "proposal_count": sum(entry["event"] == "proposal" for entry in records),
             "recent_candidates": [{key: entry[key] for key in ("candidate_id", "parent_ids", "fingerprint", "artifact_paths", "route", "status", "valid", "role", "objective", "comparison", "cost", "result", "feedback", "failure_mechanism")}
                                   for entry in candidates[-args.recent:]],
             "routes": {route: {"candidates": info["candidates"],
@@ -508,9 +708,22 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--source", type=pathlib.Path)
     check.add_argument("--configuration", type=pathlib.Path)
     check.add_argument("--reuse-reason", help="why an unchanged candidate needs another measurement")
+    propose = sub.add_parser("propose", help="bind an agent-authored implementation proposal to code and feedback")
+    propose.add_argument("--archive", type=pathlib.Path, required=True)
+    propose.add_argument("--proposal", type=pathlib.Path, required=True)
+    stop = sub.add_parser("stop", help="record why an unexecuted proposal was stopped")
+    stop.add_argument("--archive", type=pathlib.Path, required=True)
+    stop.add_argument("--proposal-id", required=True)
+    stop.add_argument("--reason", required=True)
+    trace = sub.add_parser("trace", help="show proposals and their actual evaluation outcomes")
+    trace.add_argument("--archive", type=pathlib.Path, required=True)
+    trace.add_argument("--recent", type=int, default=8, help="recent proposals to include; all pending IDs remain visible")
+    trace.add_argument("--all", action="store_true", help="include every iteration when a complete audit is needed")
     record = sub.add_parser("record", help="append one candidate evidence record")
     record.add_argument("--archive", type=pathlib.Path, required=True)
     record.add_argument("--candidate-id", required=True)
+    record.add_argument("--proposal-id", help="implementation proposal this evaluated successor fulfills")
+    record.add_argument("--prediction-status", choices=["supported", "contradicted", "unresolved"])
     record.add_argument("--parent", action="append", default=[])
     record.add_argument("--source", type=pathlib.Path)
     record.add_argument("--configuration", type=pathlib.Path)
@@ -557,6 +770,12 @@ def main() -> int:
             result = check_candidate(args)
         elif args.command == "record":
             result = record_candidate(args)
+        elif args.command == "propose":
+            result = {"schema_version": 1, "status": "pending", "proposal": propose_candidate(args)}
+        elif args.command == "stop":
+            result = stop_proposal(args)
+        elif args.command == "trace":
+            result = trace_report(args)
         elif args.command == "decide":
             if (args.recent < 2 or args.min_stagnant < 2 or args.min_stagnant > args.recent
                     or not math.isfinite(args.tie_epsilon) or args.tie_epsilon < 0):

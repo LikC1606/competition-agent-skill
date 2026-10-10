@@ -198,6 +198,8 @@ These choices depend on task evidence; they are not automatic quotas or proof of
 
 Each successor must cite the feedback it acts on, identify its actual implementation target and expected observation, and retain a result link after execution. Check whether that expectation occurred before choosing another variant. A copied explanation followed by the same rejected configuration is not a feedback-driven change. Further tuning after confirmation requires fresh confirmation evidence.
 
+For repeated runs using the archive helper, [bind the proposal and measured successor](iteration-trace.md) with `propose` and `record --proposal-id`. The proposal references actual parent code and development feedback; after implementation, the record attaches a new adapter result, observed feedback and prediction status. `trace` exposes pending actions and the real result chain. Use existing equivalent ledger links where available. Recording a plan cannot substitute for executing it in the current round.
+
 At delivery, show the executed chain in a compact table: trial/result, measured comparison, feedback/action, successor/change and its result or stop reason. Best-so-far scores describe development selection; they are not independent confirmation. An unexecuted suggestion stays pending and cannot fill the successor/result column as a completed experiment.
 
 ## Learn from Evaluated Pairs
