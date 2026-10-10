@@ -89,6 +89,24 @@ profile 显示旧实现每次 bootstrap draw 都重建标签/预测数组，重�
 
 新增 13 项测试覆盖重叠、元数据覆盖、多个分组边界、时间倒序/并列、标签延迟、时区、精确间隔、输入变化和拒绝覆盖；全部 119 项测试通过。两项真实数据 pilot 的 12 份评分/预测和交付选择保持一致，并拒绝注入的 ID 重叠；合成 CLI 分组和标签延迟案例与预期相符。真实分组/时间任务的完整训练效果仍待验证，详见 [pilot 记录](tabular-pilot.md)。
 
+## 按需输出错误诊断
+
+对旧错误分析的 50,000 行 RMSE profile 显示，逐例 CSV 写入累计约 1.03 秒，整次插桩运行约 3.47 秒；即使只需 top 10 案例，也先构建全部行字典并排序。现在完整导出改为流式写入，top 案例用有界选择；新增 `--summary-only` 只保存报告，复用原评测/预测文件作为依赖，省去大表及输入副本。两种模式仍验证全部样本、重算分数，计算相同的计数、分组和代表案例。
+
+[`benchmark_prediction_errors.py`](../examples/benchmark_prediction_errors.py) 对照修改前完整路径与摘要路径，同进程顺序运行，各三次互换先后；时间包括输入验证、计分、分组分析和产物写入。以下为未插桩耗时中位数；Python 分配峰值另用 `tracemalloc` 测量，不能当作进程 RSS。
+
+| 50,000 行 RMSE、8 组、top 10 | 修改前完整输出 | 新摘要输出 |
+| --- | ---: | ---: |
+| 耗时 | 1.973 秒 | 1.046 秒 |
+| Python 分配峰值 | 66.5 MB | 35.3 MB |
+| 输出字节 | 11,958,139 | 17,200 |
+
+本次诊断约提速 1.89 倍；输入生成及初始评测耗时另记约 1.05 秒，Python 启动未计入。默认完整导出的 CSV 与旧实现逐字节相同；摘要的总分、胜负计数、组统计和最差案例一致。内存仍随输入规模增长，未把 CSV 输入和分组数据改成完整的外存算法，也未测量训练或完整 agent 提速。
+
+另复用了 Diabetes 与 Breast Cancer 的 baseline 对三个 challenger，共 6 个真实开发对照；诊断内容和默认导出字节一致，未拟合模型、创建新真实候选或读取确认集。新增 5 项测试覆盖四种指标的两模式一致性、top-k 并列顺序、摘要的证据/确认限制、零/极端损失和 CLI；全套 134 项测试通过。
+
+复现：`python examples/benchmark_prediction_errors.py --rows 50000 --output-dir <仓库外的新目录>`，默认比较当前完整/摘要模式。`--reference <可信旧版/analyze_prediction_errors.py>` 可对照旧分析器，需在其旁保存 `prediction_evidence.py`、`evaluate_predictions.py` 和 `compare_prediction_results.py` 供源码 hash 核对。两条路径导入当前安装的核验/评分模块，因此这三份依赖必须与当前版本一致；该比较只隔离分析器变化。它会导入指定 Python 文件，仅使用可信代码。本次旧源码与 profile 在 `D:\华为云\tmp\error-summary-20261010-01`，顺序计时记录在 `D:\华为云\tmp\error-summary-benchmark-20261010-02\benchmark.json`，真实预测核对在前者的 `real-prediction-check.json`。
+
 ## 复现与证据
 
 ### 先校准筛选能否节省有效工作

@@ -255,6 +255,85 @@ class PredictionErrorAnalysisTests(unittest.TestCase):
         self.assertIn("Truth bytes differ", report["error"]["message"])
         self.assertFalse((output / "cases.csv").exists())
 
+    def test_summary_matches_full_diagnostics_for_all_metrics_and_references_slice_evidence(self) -> None:
+        self.truth.write_text("id,target\n001,0\n1,1\na,0\nb,1\n", encoding="utf-8")
+        for metric in evaluator.METRIC_DIRECTIONS:
+            with self.subTest(metric=metric):
+                self.baseline = self.evaluate("id,prediction\n001,0.5\n1,0.5\na,0.5\nb,0.5\n", "--metric", metric)
+                self.candidate = self.evaluate("id,prediction\nb,0.1\na,0.9\n1,0.9\n001,0.1\n", "--metric", metric)
+                options = ("--slices", str(self.slices), "--slice-column", "regime",
+                           "--slice-column", "device", "--top-k", "2")
+                full, _ = self.analyze(*options)
+                summary, output = self.analyze(*options, "--summary-only")
+                for key in ["aggregate_comparison", "case_count", "case_preference_counts", "squared_error_scale",
+                            "per_case_error_kind", "error_share_kind", "largest_candidate_errors",
+                            "largest_regressions", "slices", "selection_scope", "error"]:
+                    self.assertEqual(summary[key], full[key], key)
+                self.assertEqual(summary["configuration"], {**full["configuration"], "output_mode": "summary"})
+                self.assertNotEqual(summary["config_hash"], full["config_hash"])
+                self.assertEqual(summary["inputs"]["slices"], str(self.slices.resolve()))
+                self.assertEqual(summary["input_hashes"]["slices"], evaluator.byte_hash(self.slices.read_bytes()))
+                for key, value in full["input_hashes"].items():
+                    self.assertEqual(summary["input_hashes"][key], value)
+                self.assertEqual(summary["artifacts"], [])
+                self.assertEqual(list(output.iterdir()), [])
+
+    def test_streaming_top_cases_keep_id_tie_order_with_more_cases_than_top_k(self) -> None:
+        ids = [f"{index:03d}" for index in range(20)]
+        self.truth.write_text("id,target\n" + "".join(f"{key},0\n" for key in reversed(ids)), encoding="utf-8")
+        self.baseline = self.evaluate("id,prediction\n" + "".join(f"{key},1\n" for key in ids))
+        self.candidate = self.evaluate("id,prediction\n" + "".join(f"{key},2\n" for key in reversed(ids)))
+        for options in [(), ("--summary-only",)]:
+            with self.subTest(options=options):
+                report, _ = self.analyze("--top-k", "3", *options)
+                self.assertEqual([row["id"] for row in report["largest_candidate_errors"]], ids[:3])
+                self.assertEqual([row["id"] for row in report["largest_regressions"]], ids[:3])
+                self.assertEqual(report["case_preference_counts"], {"baseline": 20, "candidate": 0, "tie": 0})
+
+    def test_summary_keeps_confirmation_and_corrupt_evidence_rejections(self) -> None:
+        self.baseline = self.evaluate("id,prediction\n001,1\n1,1\na,1\nb,1\n", "--stage", "confirmation")
+        self.candidate = self.evaluate("id,prediction\n001,0\n1,0\na,0\nb,0\n", "--stage", "confirmation")
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "development evaluations"):
+            self.analyze("--summary-only")
+        self.baseline = self.evaluate("id,prediction\n001,1\n1,1\na,1\nb,1\n")
+        self.candidate = self.evaluate("id,prediction\n001,0\n1,0\na,0\nb,0\n")
+        result = json.loads(self.candidate.read_text())
+        result["score"]["value"] = 10
+        self.candidate.write_text(json.dumps(result), encoding="utf-8")
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "Recomputed score differs"):
+            self.analyze("--summary-only")
+        (self.candidate.parent / "predictions.csv").write_text("corrupt", encoding="utf-8")
+        with self.assertRaisesRegex(analyzer.ComparisonFailure, "snapshot differs"):
+            self.analyze("--summary-only")
+
+    def test_summary_without_slices_retains_zero_loss_and_large_residual_behavior(self) -> None:
+        for predictions in ["id,prediction\n001,0\n1,0\na,0\nb,0\n",
+                            "id,prediction\n001,1e308\n1,1e308\na,0\nb,0\n"]:
+            with self.subTest(predictions=predictions):
+                self.baseline = self.evaluate(predictions)
+                self.candidate = self.evaluate("id,prediction\n001,0\n1,0\na,0\nb,0\n")
+                full, _ = self.analyze()
+                summary, _ = self.analyze("--summary-only")
+                for key in ["largest_candidate_errors", "largest_regressions", "case_preference_counts",
+                            "aggregate_comparison", "squared_error_scale"]:
+                    self.assertEqual(summary[key], full[key])
+                self.assertNotIn("slices", summary["inputs"])
+                json.dumps(summary, allow_nan=False)
+
+    def test_summary_cli_saves_only_report_and_refuses_overwrite(self) -> None:
+        output = self.root / "cli-summary"
+        command = [sys.executable, str(SCRIPT_DIR / "analyze_prediction_errors.py"),
+                   *self.arguments(output, "--summary-only")]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({path.name for path in output.iterdir()}, {"report.json"})
+        report = json.loads((output / "report.json").read_text())
+        self.assertEqual(report["configuration"]["output_mode"], "summary")
+        self.assertEqual(report["case_count"], 4)
+        original = (output / "report.json").read_bytes()
+        self.assertEqual(subprocess.run(command, capture_output=True, timeout=15).returncode, 2)
+        self.assertEqual((output / "report.json").read_bytes(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -84,6 +84,8 @@ Measure wall time by phase so research, setup, candidate execution, and diagnost
 
 Start with a cheap valid score comparison. Use detailed slicing, profiling, bootstrap, or repeated training for pairs whose outcome could change promotion or suggest the next mechanism. A clearly rejected candidate may need only its rejection evidence; a close finalist may justify a fuller analysis. These tools remain available when a weak route has informative complementary errors or another unresolved mechanism. Cache verified predictions and deterministic intermediates at their dependency boundaries; recompute only affected descendants after a change.
 
+For CSV error analysis, use [summary output](data-model.md#diagnose-development-errors) when top cases and slice statistics resolve the question. It preserves full-split diagnostics while avoiding a redundant per-case export; retain referenced inputs and request the full table when other cases need inspection.
+
 When a stage dominates cost, profile it before increasing search breadth. Improve loading, preprocessing, compilation, or score calculation when that buys useful trials within the same budget. Validate equivalent outputs against the original path and include required setup/verification cost in the efficiency claim. Keep full-fidelity hard checks and the independent confirmation reserve; computational speed alone does not establish a score gain.
 
 ### Check Whether the Evidence Can Rank Candidates

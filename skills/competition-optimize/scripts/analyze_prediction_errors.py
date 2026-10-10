@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import heapq
 import json
 import math
 import pathlib
@@ -86,32 +87,41 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
     before_shares = error_shares(before_errors, metric == "rmse") if before_errors is not None else None
     after_shares = error_shares(after_errors, metric == "rmse") if after_errors is not None else None
     squared_error_scale = max(max(before_errors), max(after_errors)) if metric == "rmse" else None
-    rows = []
     counts = {"baseline": 0, "candidate": 0, "tie": 0} if before_errors is not None else None
-    for index, sample_id in enumerate(sample_ids):
+
+    def case_preference(index: int) -> str:
+        improvement = before_errors[index] - after_errors[index]
+        return ("tie" if abs(improvement) <= args.error_tie_epsilon
+                else "candidate" if improvement > 0 else "baseline")
+
+    def squared_improvement(index: int) -> float | None:
+        if squared_error_scale is None:
+            return None
+        if squared_error_scale == 0:
+            return 0.0
+        scaled_before = before_errors[index] / squared_error_scale
+        scaled_after = after_errors[index] / squared_error_scale
+        return (scaled_before - scaled_after) * (scaled_before + scaled_after)
+
+    def case_row(index: int) -> dict[str, Any]:
+        sample_id = sample_ids[index]
         improvement, preference = None, None
-        squared_improvement = None
         if before_errors is not None:
             improvement = before_errors[index] - after_errors[index]
-            preference = ("tie" if abs(improvement) <= args.error_tie_epsilon
-                          else "candidate" if improvement > 0 else "baseline")
-            counts[preference] += 1
-        if squared_error_scale is not None:
-            if squared_error_scale == 0:
-                squared_improvement = 0.0
-            else:
-                scaled_before = before_errors[index] / squared_error_scale
-                scaled_after = after_errors[index] / squared_error_scale
-                squared_improvement = (scaled_before - scaled_after) * (scaled_before + scaled_after)
-        rows.append({"id": sample_id, "target": truth[index], "baseline_prediction": before[index],
-                     "candidate_prediction": after[index],
-                     "baseline_error": before_errors[index] if before_errors is not None else None,
-                     "candidate_error": after_errors[index] if after_errors is not None else None,
-                     "error_improvement": improvement, "case_preference": preference,
-                     "scaled_squared_error_improvement": squared_improvement,
-                     "baseline_error_share": before_shares[index] if before_shares is not None else None,
-                     "candidate_error_share": after_shares[index] if after_shares is not None else None,
-                     "slices": slices.get(sample_id, {})})
+            preference = case_preference(index)
+        return {"id": sample_id, "target": truth[index], "baseline_prediction": before[index],
+                "candidate_prediction": after[index],
+                "baseline_error": before_errors[index] if before_errors is not None else None,
+                "candidate_error": after_errors[index] if after_errors is not None else None,
+                "error_improvement": improvement, "case_preference": preference,
+                "scaled_squared_error_improvement": squared_improvement(index),
+                "baseline_error_share": before_shares[index] if before_shares is not None else None,
+                "candidate_error_share": after_shares[index] if after_shares is not None else None,
+                "slices": slices.get(sample_id, {})}
+
+    if counts is not None:
+        for index in range(len(sample_ids)):
+            counts[case_preference(index)] += 1
     slice_results = []
     for column in columns:
         groups: dict[str, list[int]] = {}
@@ -132,30 +142,47 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
                                   if after_shares is not None else None})
     worst, regressions = [], []
     if after_errors is not None:
-        worst = sorted(rows, key=lambda row: (-row["candidate_error"], row["id"]))[:args.top_k]
-        regression_key = "scaled_squared_error_improvement" if metric == "rmse" else "error_improvement"
-        regressions = sorted((row for row in rows if row["case_preference"] == "baseline"),
-                             key=lambda row: (row[regression_key], row["id"]))[:args.top_k]
-    for name, raw in zip(["baseline.csv", "candidate.csv"], pair.prediction_bytes):
-        with (output_dir / name).open("xb") as stream:
-            stream.write(raw)
-    if slices_raw is not None:
-        with (output_dir / "slices.csv").open("xb") as stream:
-            stream.write(slices_raw)
-    fields = [key for key in rows[0] if key != "slices"] + [f"slice:{column}" for column in columns]
-    with (output_dir / "cases.csv").open("x", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({**{key: value for key, value in row.items() if key != "slices"},
-                             **{f"slice:{column}": row["slices"][column] for column in columns}})
+        worst_indexes = heapq.nsmallest(args.top_k, range(len(sample_ids)),
+                                       key=lambda index: (-after_errors[index], sample_ids[index]))
+        regression_indexes = heapq.nsmallest(
+            args.top_k, (index for index in range(len(sample_ids)) if case_preference(index) == "baseline"),
+            key=lambda index: (squared_improvement(index) if metric == "rmse" else
+                               before_errors[index] - after_errors[index], sample_ids[index]))
+        worst = [case_row(index) for index in worst_indexes]
+        regressions = [case_row(index) for index in regression_indexes]
+    summary_only = getattr(args, "summary_only", False)
+    artifacts = []
+    if not summary_only:
+        for name, raw in zip(["baseline.csv", "candidate.csv"], pair.prediction_bytes):
+            with (output_dir / name).open("xb") as stream:
+                stream.write(raw)
+        if slices_raw is not None:
+            with (output_dir / "slices.csv").open("xb") as stream:
+                stream.write(slices_raw)
+        fields = [key for key in case_row(0) if key != "slices"] + [f"slice:{column}" for column in columns]
+        with (output_dir / "cases.csv").open("x", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
+            writer.writeheader()
+            for index in range(len(sample_ids)):
+                row = case_row(index)
+                writer.writerow({**{key: value for key, value in row.items() if key != "slices"},
+                                 **{f"slice:{column}": row["slices"][column] for column in columns}})
+        artifacts = [str(output_dir / name) for name in
+                     ["baseline.csv", "candidate.csv", "cases.csv", *(["slices.csv"] if slices_raw else [])]]
     diagnostic_config = {"top_k": args.top_k, "error_tie_epsilon": args.error_tie_epsilon,
                          "slice_columns": columns, "max_groups": args.max_groups,
                          "slice_hash": evaluator.byte_hash(slices_raw) if slices_raw is not None else None}
+    inputs = {key: str(path) for key, path in pair.paths.items()}
+    input_hashes = dict(pair.input_hashes)
+    if summary_only:
+        diagnostic_config["output_mode"] = "summary"
+        if slices_raw is not None:
+            inputs["slices"] = str(args.slices.expanduser().resolve(strict=True))
+            input_hashes["slices"] = evaluator.byte_hash(slices_raw)
     return {
         "schema_version": 1, "adapter": "prediction_error_analysis", "status": "success",
         "selection_scope": "development_diagnostics_only", "aggregate_comparison": comparison,
-        "case_count": len(rows), "case_preference_counts": counts,
+        "case_count": len(sample_ids), "case_preference_counts": counts,
         "squared_error_scale": squared_error_scale,
         "per_case_error_kind": None if metric == "roc_auc" else
         "clipped_log_loss" if metric == "binary_log_loss" else "absolute_error",
@@ -166,12 +193,11 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
         "analyzer_hash": evaluator.object_hash({name: evaluator.byte_hash(pathlib.Path(__file__).with_name(name).read_bytes())
                                                 for name in ["analyze_prediction_errors.py", "prediction_evidence.py", "evaluate_predictions.py",
                                                              "compare_prediction_results.py"]}),
-        "inputs": {key: str(path) for key, path in pair.paths.items()},
-        "input_hashes": pair.input_hashes,
-        "artifacts": [str(output_dir / name) for name in
-                      ["baseline.csv", "candidate.csv", "cases.csv", *(["slices.csv"] if slices_raw else [])]],
+        "inputs": inputs, "input_hashes": input_hashes, "artifacts": artifacts,
         "note": "Slices and case counts diagnose hypotheses, not official aggregation or causality. "
-                "ROC-AUC has no independent per-row loss; single-class slices have unavailable AUC.",
+                "ROC-AUC has no independent per-row loss; single-class slices have unavailable AUC."
+                + (" Summary mode references original evidence; retain those files for reuse and reproduction."
+                   if summary_only else ""),
         "error": None,
     }
 
@@ -185,6 +211,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--max-groups", type=int, default=100)
     parser.add_argument("--error-tie-epsilon", type=float, default=1e-12)
+    parser.add_argument("--summary-only", action="store_true",
+                        help="same diagnostic scores/top cases; skip full cases CSV and copied input snapshots")
     return parser
 
 
