@@ -12,6 +12,8 @@ Convert useful sources into the hypothesis queue below. Record URL/version, lice
 
 Break the baseline down by score component and representative case group. For each weak group, distinguish a poor solution from a measurement or implementation defect. Estimate the available improvement from bounds, small exact solutions, a stronger reference, or a targeted ablation when practical. A low raw metric is not necessarily fixable or heavily weighted in the contest score.
 
+For supported CSV predictions, [paired development error analysis](data-model.md#diagnose-development-errors) can expose concentrated loss and slice regressions using saved predictions. Use its observations to propose a falsifiable mechanism, then evaluate any change on the full declared objective. A slice metric, majority of case wins, or loss concentration is diagnostic evidence; none changes the official aggregation or establishes that the errors can be fixed. Use the corresponding workload/episode diagnostics for algorithm and simulation tasks when available.
+
 Maintain a short hypothesis queue in `research.md`:
 
 | Field | What it must make clear |

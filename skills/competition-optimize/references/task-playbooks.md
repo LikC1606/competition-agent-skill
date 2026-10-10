@@ -4,7 +4,7 @@ Read only the relevant section when choosing baselines or improvement mechanisms
 
 ## Data and Model Competitions
 
-For unweighted scalar regression or binary CSV predictions, [the local prediction tools](data-model.md) provide RMSE, MAE, binary log loss, ROC-AUC, matched comparison, and fixed-weight blending with reusable recipes. Other metrics or aggregation rules require a task-specific adapter.
+For unweighted scalar regression or binary CSV predictions, [the local prediction tools](data-model.md) provide RMSE, MAE, binary log loss, ROC-AUC, matched comparison, paired development error/slice diagnostics, and fixed-weight blending with reusable recipes. Other metrics or aggregation rules require a task-specific adapter.
 
 Identify the statistical unit and intended test conditions before training. Determine whether samples share patients/users/devices, follow time order, or contain duplicates; choose group/time separation where appropriate. Check distribution shifts using features permitted by the rules. Keep target-dependent feature generation inside training folds.
 

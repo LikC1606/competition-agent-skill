@@ -1,6 +1,6 @@
 # Local Prediction Evaluation
 
-Use the bundled scripts for unweighted, scalar regression or binary classification predictions in CSV files. They evaluate a fixed local split and compare metrics; task-specific data preparation, training, leakage checks, and resource checks still belong to the task adapter.
+Use the bundled scripts for unweighted, scalar regression or binary classification predictions in CSV files. They evaluate a fixed local split, compare metrics, diagnose development errors, and construct prediction blends; task-specific data preparation, training, leakage checks, and resource checks still belong to the task adapter.
 
 ## Fit the Competition Metric
 
@@ -47,6 +47,38 @@ python <skill-dir>/scripts/compare_prediction_results.py `
 The comparator accepts only complete successful results with matching evaluator, metric/score model, split, stage, and evaluation configuration. Keep each result beside its `predictions.csv`; it verifies the snapshot hash. It reports raw score delta, improvement oriented in the correct metric direction, and `metric_preference` as baseline/candidate/tie. `--tie-epsilon` defaults to `1e-12` and is a numerical threshold, not a statistical confidence interval. Existing comparison files are never overwritten.
 
 This preference is about the deterministic local metric. Independently check training repeatability, task hard rules, and final confirmation; a favorable CSV score alone does not prove the full model should be promoted. Compare separate confirmation results with one another, never a development result directly against a confirmation result. For metrics outside this interface, extend the task's adapter rather than substituting a supported metric and calling it official.
+
+## Diagnose Development Errors
+
+Use `analyze_prediction_errors.py` when a total score leaves the next improvement mechanism unclear, or when a candidate's gains might hide specific regressions. It requires paired complete development evaluations from the installed evaluator and the exact evaluated truth bytes. It verifies snapshot hashes, recomputes both overall scores, and rejects mismatched contracts, modified artifacts, or confirmation-stage evaluations. Older evaluator versions require reevaluation. An exploratory diagnosis consumes evaluation time/compute; it is not a new candidate unless it leads to a code/configuration variant.
+
+```powershell
+python <skill-dir>/scripts/analyze_prediction_errors.py `
+  --baseline <baseline-development/result.json> `
+  --candidate <candidate-development/result.json> `
+  --truth <frozen-development-truth.csv> `
+  --slices <development-metadata.csv> `
+  --slice-column regime `
+  --slice-column device `
+  --output-dir <new-diagnostic-directory>
+```
+
+Omit `--slices` and all `--slice-column` options for per-sample analysis only. Metadata must contain the evaluated ID column and requested categorical columns, with unique IDs covering exactly the evaluated samples and non-empty category values. Rows can differ in order. Each column is analyzed independently, without automatic intersections or bins. Default `--max-groups 100` bounds the groups per column; choose meaningful regimes rather than slicing by a near-unique identifier. The diagnostic configuration and metadata hash are recorded separately from the frozen evaluation configuration.
+
+Output includes `report.json`, all aligned cases in `cases.csv`, parent prediction snapshots in `baseline.csv`/`candidate.csv`, and the metadata snapshot when provided. These diagnostics include targets and belong in the competition workspace. The report preserves the aggregate metric comparison, per-group case counts/scores and objective improvements, and up to `--top-k` (default 10, maximum 100) worst candidate errors and regressions. `--error-tie-epsilon` defaults to `1e-12`; it affects case counts and regression lists, not aggregate candidate preference or statistical significance. Existing output directories are never overwritten; failures return code 2 and a reason in a new directory's `report.json`.
+
+| Metric | Per-case diagnostic | Error-share meaning |
+| --- | --- | --- |
+| RMSE | Absolute residual; regressions ranked by squared-error increase at a common scale | Fraction of total squared error for that candidate |
+| MAE | Absolute residual | Fraction of total absolute error for that candidate |
+| Binary log loss | Per-row loss using the evaluation's clipping epsilon | Fraction of total clipped log loss for that candidate |
+| ROC-AUC | No independent row loss, error share, or case preference | Group AUC only when both classes are present; otherwise null with a reason |
+
+For RMSE, `scaled_squared_error_improvement` equals the baseline squared residual minus the candidate squared residual, divided by `squared_error_scale` squared. The shared scale is the largest residual across both candidates, with zero improvements when it is zero. This ranks score-relevant regressions without squaring large numbers; the field is null for other metrics. `error_improvement` and the case-tie threshold still use absolute residual units for regression.
+
+Case-win counts do not determine the official metric. Error shares are normalized separately for each candidate (zero when total error is zero); their changes are not marginal score improvements. Group scores are diagnostics, not new official aggregation: averaging group RMSE or AUC generally differs from the pooled metric, and group AUC omits cross-group ranking pairs. Small or repeatedly inspected slices can give unstable hypotheses. Use representative errors and task knowledge to distinguish missing signal, implementation mistakes, split mismatch, or irreducible noise; a weak slice alone does not prove a cause.
+
+Turn a diagnostic observation into one affordable next test, such as a fold-safe feature, preprocessing correction, targeted data check, or complementary blend. A selector may use only permitted inference-time features, never per-sample truth or observed errors. Validate changes on the unchanged full development objective and independently confirm the frozen shortlist. Editing after inspecting confirmation errors makes that evidence development data; this tool deliberately keeps exploratory slicing on the development path.
 
 ## Construct and Confirm a Prediction Blend
 
