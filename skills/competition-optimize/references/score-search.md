@@ -70,6 +70,8 @@ Measure baseline costs and reserve final verification first. Record consumed and
 
 Use low-cost stages to reject invalid or clearly weak candidates. Before using a subset, reduced resolution, fewer training epochs, or shorter simulation as a score screen, check on reference candidates that it preserves useful ordering. Treat it as a screen, not the final score. Keep some full-fidelity comparisons on distinct mechanisms so a biased cheap screen does not eliminate all alternatives.
 
+For paired scalar reference scores, [calibrate the proposed screen](screening.md) at the planned survivor count. Inspect inverted pairs and missed full-best candidates, not only overall agreement. Cutoff ties may increase survivors and cost; a successful analysis is not a screen-validity certificate. Prefer fewer credible full evaluations when affordable calibration cannot justify the shortcut.
+
 If screening ordering fails, revise that screen and reevaluate affected candidates at comparable fidelity. Optimizing the development pipeline can buy more experiments without improving the submission itself; record which cost was reduced.
 
 Evaluate the most promising candidates at full fidelity against the incumbent on matched cases. For noisy metrics, use repetitions to resolve a decision rather than choosing the largest single observed gain. Maintain validity, screening, and confirmation outcomes separately; a partial or failed run cannot establish a new best.

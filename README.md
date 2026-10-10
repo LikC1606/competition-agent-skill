@@ -65,6 +65,8 @@
 
 训练前可用[数据划分检查](skills/competition-optimize/references/validation-split.md)核对 ID 重叠，并按协议检查分组隔离、时间边界与标签可用时间。回执可在依赖一致时复用，避免逐模型重复检查；它核验声明的划分记录，实际拟合与上游预处理仍需另查。
 
+使用便宜评测淘汰候选前，可用[筛选校准工具](skills/competition-optimize/references/screening.md)检查参考候选的排序反转，以及按计划保留数量会漏掉哪些完整开发评测最优候选。支持两阶段各自的指标方向与并列容差，适用于配对标量分数；分数与候选关联由 adapter 核验，筛选不能替代完整评测。
+
 ## 参考项目
 
 | 项目 | 参考重点 |
