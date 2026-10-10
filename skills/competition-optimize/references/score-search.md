@@ -35,6 +35,25 @@ Treat the diagnosis as a hypothesis when evidence does not establish its cause. 
 
 Parameter search is not the default: no automatic grids, random/Bayesian searches, neighboring-value sweeps or seed hunting. Run a dedicated tuning campaign only when the user explicitly requests one. Internal settings may change as part of a code-supported mechanism; the tested proposal must explain that mechanism rather than enumerate values. History may favor a local change or a complete method replacement; do not force either solely from an action menu.
 
+## Turn User Ideas into Experiments
+
+Accept natural-language input without a mandatory form. Retain the short original idea or its message/note reference in the existing proposal's `basis`, followed by the agent's interpretation, assumptions and code/history context. Use `change`, `expected_observation` and `validation` for the actual implementation and test. No separate idea database or additional archive field is needed.
+
+| User input | Effect on the next action |
+| --- | --- |
+| A rough hypothesis, domain observation or “for consideration” | Check its task fit and compare a concrete test with the best alternative; implement or give a specific deferral reason |
+| “Try this first” or “implement and compare this” | Prioritize that legal feasible test; a speculative low gain is not grounds to silently substitute the agent's preferred route |
+| An explicit requirement or prohibition | Apply it at its stated scope; check its compatibility with competition rules and update affected implementation decisions |
+| “Discuss only” or “do not change code yet” | Analyze the idea within that scope; do not count discussion as an executed candidate |
+
+Translate the intended mechanism into a complete minimal implementation, not merely a nearby parameter change. For example, “perhaps pair swaps get stuck” can motivate a larger valid neighborhood after inspecting the move generator and stalled trace; “these errors may depend on time” can motivate a permitted time signal or a split-mismatch diagnostic. These are interpretations to test, not facts supplied by the user. Check the smallest consequential uncertainty first; absence of a previous measured gain does not disqualify a novel hypothesis.
+
+When wording admits materially different implementations, ask one targeted clarification and continue independent useful work. If the choice is routine, state the assumption and proceed. Establish a credible baseline if none exists. If a comparable experiment already tested the same interpretation, show its evidence and the changed prerequisite needed for another informative test; honor an explicit request for a matched repetition while recording it as a measurement. An infeasible or rule-conflicting idea needs the concrete obstacle and a compatible alternative preserving its purpose where possible.
+
+Input received during a trial steers the ongoing task. At the next safe decision boundary, reconcile the process/artifacts, update the next action and use the new idea without discarding measured history or restarting unchanged setup. An explicit stop/cancel or incompatible new requirement takes effect immediately. Preserve superseded unexecuted proposals with their reason instead of marking them evaluated. If an idea arrives after the shortlist is frozen, test it on development evidence; confirmation-informed changes need fresh confirmation.
+
+After the test, report the user's idea, the interpretation actually implemented, its candidate/result, the matched score/resource comparison and the next action. Keep “supported,” “contradicted” and “unresolved” scoped to that implementation and evidence. Deferral means untested, not rejected. Carry only decision-relevant pending ideas in the current card so later continuation can act on them.
+
 ## Candidate Archive and Route Switching
 
 Keep `candidate-archive.jsonl` or an equivalent record in the run directory. Each entry should include candidate ID, parent IDs, source/configuration fingerprint, route/mechanism, evaluator and workload hashes, validity, objective components, resource cost, status (`incumbent`, `runner_up`, `promising`, `rejected`, or `unresolved`), and the evidence that permits or blocks further investment. Store a short failure mechanism for invalid or weak candidates instead of only a score.

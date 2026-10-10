@@ -46,6 +46,8 @@ Read the relevant parent code and matched feedback first. Choose the next implem
 
 Replace the example path and hypothesis with this task's verified snapshot and evidence. `parent_ids` are the implementations being changed or combined; `feedback_from` are the development results that justify the choice, which may differ from the parent. `basis` records the agent's diagnosis and why this change follows from those observations. The script checks identities and links, not whether the diagnosis is scientifically correct.
 
+For a user-inspired proposal, include the short original idea or its message/note reference and the interpreted mechanism in `basis`; this text is retained in both `brief` pending details and `trace`. Keep `feedback_from` bound to actual development candidate IDs, including a baseline when needed, rather than inventing a result ID for a user message. Extra arbitrary proposal fields are not retained by the helper. After execution, connect the measured outcome back to the tested idea in `--feedback`. Follow [user-idea handling](score-search.md#turn-user-ideas-into-experiments) when deciding priority or handling new input.
+
 For modeling, the parent record should include predictions as `--source` and a compact immutable training-code/recipe directory as `--configuration`; `code_targets` names a file inside that directory. Evaluated predictions are outputs, not code targets. For an algorithm, the target can name the archived source or an applicable configuration file. The proposal command verifies parent artifact/result bytes and binds the targets to the executable snapshots. Unrelated files, changed parent bytes, missing produced-output recipes, unknown IDs and confirmation feedback are rejected.
 
 ```powershell

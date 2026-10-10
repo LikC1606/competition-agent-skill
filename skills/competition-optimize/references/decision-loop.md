@@ -41,6 +41,8 @@ Reconcile trials/time/compute/cost, incumbent scope, alternatives, unfinished wo
 
 Choose the first applicable condition; this is routing within the current run, not a sequence to replay every turn.
 
+Recover any still-relevant user ideas and their priority/test requests alongside the card. New input steers the next decision using [user-idea handling](score-search.md#turn-user-ideas-into-experiments); an explicit stop overrides routine routing. Reconcile an in-flight result before switching when it remains compatible, and retain superseded pending proposals with their actual status.
+
 | Current state | Next useful action | Exit condition |
 | --- | --- | --- |
 | An unfinished trial may already have evidence | Reconcile its artifacts/process and actual cost | Record verified completion, interruption, or failure before another trial |
@@ -61,7 +63,7 @@ If the run uses the JSONL helper, inspect `candidate-archive.jsonl` with `candid
 
 Keep rejected hypotheses with their mechanism, prerequisites, and rejection evidence. Recover the applicable [comparison lessons](score-search.md#learn-from-evaluated-pairs), including contradicted predictions and local improvements that did not beat the incumbent. They should identify the next test or constraint, not replace artifact checks. Reopen a rejected hypothesis when a dependency, implementation diagnosis, or new source changes that evidence. A new filename or another request to continue is not new evidence. After a failure, revise the hypothesis or switch route; do not regenerate the same configuration through repeated broad searches.
 
-After a trial is reconciled, apply [the feedback loop](score-search.md#close-the-feedback-loop) and return to the next useful action in the same round. A completed evaluation is a loop boundary, not an automatic delivery boundary. When resuming, recover the last feedback and whether its successor was actually implemented; a pending suggestion is not a completed iteration.
+After a trial is reconciled, apply [the feedback loop](score-search.md#close-the-feedback-loop) and execute the next useful action. A completed evaluation is a loop boundary, not an automatic delivery boundary. When resuming, recover the last feedback and whether its successor was actually implemented; a pending suggestion is not a completed iteration.
 
 With archive proposal links, use [`trace --recent 8`](iteration-trace.md#resume-and-deliver-the-actual-chain) to recover the displayed execution chain and all pending IDs. Check existing processes/artifacts for pending actions before retrying; attach a verified result or record a specific stop. Old trials need no retrospective proposal reconstruction. The helper checks linked identities, while budget, actual code semantics and confirmation still use the existing run evidence.
 
@@ -86,6 +88,7 @@ Unfinished: <trial ID and output/process, or none>
 Frozen shortlist: <path/hash, or not yet frozen>
 
 Next action: <one action and parent IDs>
+User idea, when applicable: <short original or source; suggestion/test/requirement; interpretation; pending proposal/result or deferral reason>
 Feedback source: <trial/result path; measured comparison vs parent/best; validity and cost; prediction status>
 Archive update: <candidate ID/fingerprint/status; retained route; failure mechanism or unresolved opportunity>
 Reconnaissance: <code path, relevant history, hashes checked; reused evidence and unresolved gap>
