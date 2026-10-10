@@ -2,9 +2,26 @@
 
 Read this when selecting or revising solution routes and their experiments. Optimize the contest objective under the remaining budget; choose actions from evidence and unresolved questions. A candidate is an executable method/configuration, not a prescribed small mutation.
 
+## Propose from Code and History
+
+Use the current candidate's source/configuration, matched results and relevant successful/failed implementations to derive the next optimization. Inspect the actual execution path, representation, objective updates, model pipeline or policy logic involved. Retrieve only pertinent history, preserving its evaluator, scale and resource scope; a remembered summary is reusable only when its referenced artifacts still match.
+
+Produce one short actionable proposal using the existing decision card or notes:
+
+| Basis | Content needed for the next implementation |
+| --- | --- |
+| Current code | Snapshot/path and relevant function/component; the limiting behavior or missing capability |
+| Historical evidence | Trial/result IDs, what worked or failed, and why the proposal differs from a rejected implementation |
+| Optimization mechanism | Concrete replacement or change, coupled components, expected effect on the declared objective and resources |
+| Test and cost | Observable prediction, validity checks, matched comparison, rejection condition and implementation/evaluation cost |
+
+Treat the diagnosis as a hypothesis when evidence does not establish its cause. Compare the proposal with the nearest credible affordable alternative when that changes the choice. Implement the chosen proposal in the same round. The proposal is an execution decision, not another report to finish before coding.
+
+Parameter search is not the default: no automatic grids, random/Bayesian searches, neighboring-value sweeps or seed hunting. Run a dedicated tuning campaign only when the user explicitly requests one. Internal settings may change as part of a code-supported mechanism; the tested proposal must explain that mechanism rather than enumerate values. History may favor a local change or a complete method replacement; do not force either solely from an action menu.
+
 ## Compare Routes Before Choosing Variants
 
-The outer decision is **which solution route deserves effort**; the inner decision is **which implementation or setting tests that route**. Keeping these separate prevents an easy parameter edit from repeatedly winning over a harder method with more headroom. For a score-seeking run, compare credible structural alternatives before a parameter campaign when affordable. If constraints, prior matched evidence, or remaining resources make alternatives unhelpful, state that reason and refine the supported route. Do not force breadth when the baseline is already near a credible bound.
+The outer decision is **which mechanism deserves effort**; the inner decision is **which concrete implementation tests it**. Derive both from current code and history. Compare credible structural alternatives when repeated refinements leave headroom. If constraints, prior matched evidence or remaining resources favor a supported local change, explain that choice. Do not force breadth when the baseline is already near a credible bound.
 
 Compare a few routes from task structure, baseline behavior and relevant sources. Keep only the information needed to choose an executable test in `research.md` or existing notes; the table below is optional. Drafting ideas does not consume candidate slots, but research and implementation consume time. Do not postpone a complete prototype to fill a route inventory. Establish viable representatives, then invest in supported mechanisms rather than giving every route an equal quota.
 
@@ -44,7 +61,7 @@ Maintain a short hypothesis queue in `research.md`:
 | Field | What it must make clear |
 | --- | --- |
 | Mechanism and target | What changes and which score component or case regime should benefit |
-| Route and change scope | Which solution family it tests, and whether it replaces a method/pipeline, refines it, tunes settings, or combines parents |
+| Route and change scope | Which solution family it tests, and whether it replaces a method/pipeline, refines a supported mechanism, or combines parents |
 | Parent and evidence | Candidate IDs, source or local result, and the remaining uncertainty |
 | Prerequisites | Data, rules, scale, solver behavior, or resources needed for the idea to apply |
 | Prediction and rejection test | An observable outcome and the cheapest useful experiment that could contradict it |
@@ -82,7 +99,6 @@ Keep the route's best representative, tested scope, unresolved mechanism and nex
 | A valid lagging prototype leaves a credible mechanism unresolved | Compare a bounded repair/deepening or complete pipeline against the leader's next refinement | Cause/maturity evidence, a useful rejection test, and a full candidate within the intended limits |
 | A component has a supported improvement mechanism | Refine that component | Matched evaluations that justify another variant or reveal a new testable mechanism |
 | A route has evidence and unresolved high-impact mechanisms | Replace or deepen that mechanism | Full-objective gains or a consequential rejected hypothesis |
-| A mechanism works and settings are now the consequential uncertainty | Tune its parameters | Full-fidelity gains that reproduce beyond the screening setup |
 | Repeated tweaks produce negligible gains while structural alternatives remain | Return to the route map | A materially different affordable prototype or a documented reason to stop |
 | Candidates have compatible, complementary strengths | Combine or select by regime | Improvement in the combined candidate's objective within its resource limits |
 | Apparent gain is comparable to measurement variation | Repeat a matched comparison | Enough evidence to resolve the promotion decision |
@@ -102,9 +118,9 @@ Reallocate trials to another component or route when gains fail to reproduce, a 
 
 Use the route map to start with materially different solution families when affordable. Keep their parent IDs and best validated representatives; one route may excel at a different regime or later combine with another. This is a candidate portfolio and can be executed by one agent sequentially. Exploration is not finished merely because one quick-to-implement variant exists; deepening is not postponed merely to fill a prescribed number of routes.
 
-After a mechanism works, tune its sensitive parameters with a small sweep or adaptive search. Compare candidates at documented evaluation fidelity. If promising gains from routes can coexist, make a separate combination trial with all parent IDs and an ablation where it changes the decision. Gains need not add; evaluate the combination's objective, runtime, and memory including selection or ensemble overhead. Use ensembling only when the submission format and metric support it.
+After a mechanism works, inspect the updated code and remaining development errors to propose the next change; success does not trigger a parameter sweep. Compare candidates at documented evaluation fidelity. If promising gains from routes can coexist, propose a combination supported by their complementary behavior, then test it with all parent IDs. Gains need not add; evaluate the combination's objective, runtime and memory including selection or ensemble overhead. Use ensembling only when the submission format and metric support it.
 
-For model ensembles, inspect complementary validation errors rather than selecting solely by individual rank. Reuse cached predictions only with matching sample IDs, split, preprocessing, model/configuration provenance, and metric. OOF predictions must exclude held-out samples and dependent groups from label-dependent fitting. Fit learned preprocessing within folds unless the contract permits transductive fitting; document any such use of held-out features. Tune combination weights on development evidence and confirm the frozen combination independently. A regime-specific algorithm selector must use features available at inference, not ground-truth outcomes.
+For model ensembles, inspect complementary validation errors rather than selecting solely by individual rank. Reuse cached predictions only with matching sample IDs, split, preprocessing, model/configuration provenance, and metric. OOF predictions must exclude held-out samples and dependent groups from label-dependent fitting. Fit learned preprocessing within folds unless the contract permits transductive fitting; document any such use of held-out features. Choose a justified combination recipe from development evidence and confirm it independently; do not automatically sweep weights. A regime-specific algorithm selector must use features available at inference, not ground-truth outcomes.
 
 For the supported scalar CSV interface, [the blend tool](data-model.md#construct-and-confirm-a-prediction-blend) constructs weighted candidates from compatible development evaluations and reapplies a frozen recipe by member name. When the two-parent decision needs error diagnostics, [the RMSE/MAE direction check](data-model.md#check-whether-a-two-parent-blend-has-a-useful-direction) can exclude segments with no strict development gain; case wins alone cannot decide this. It supplies no weight or practical gain estimate. Evaluate every blend with the declared metric, count each weight variant as a trial, and include all contributing models' inference cost. Freezing an algorithm selector's thresholds or a simulation policy mixture follows the same principle: selection settings are candidate parameters and cannot be retuned on confirmation evidence.
 
@@ -173,7 +189,7 @@ When a stage dominates cost, profile it before increasing search breadth. Improv
 
 ### Check Whether the Evidence Can Rank Candidates
 
-Before a fine parameter or weight sweep, ask whether the current ranking is stable enough to guide it. Small development sets, loss concentrated in a handful of cases, contradictory regimes, or gains comparable to variation suggest a measurement experiment. Choose matched folds, training seeds, instances, or episodes according to the task's uncertainty and remaining budget. Keep confirmation untouched. Preserve each repetition's score and compute the contract's aggregation; the best fold or luckiest seed is not the comparison score.
+When ranking uncertainty would change the next code/model proposal, resolve it within budget. Small development sets, loss concentrated in a handful of cases, contradictory regimes or gains comparable to variation suggest a measurement experiment. Choose matched folds, training seeds, instances or episodes according to the task's uncertainty and remaining budget. Keep confirmation untouched. Preserve each repetition's score and compute the contract's aggregation; the best fold or luckiest seed is not the comparison score.
 
 For learned models, declare internal folds in the training/development pool and fit every learned transform inside each fold. Compare the same pipelines on the same folds; specify pooled predictions versus mean fold scores because they can rank candidates differently. For algorithms and policies, use the same instances and environment seeds with the full declared resource limit. A cheap repeat can reveal unstable selection without changing either candidate.
 
@@ -181,7 +197,7 @@ Unchanged candidates repeated under a declared measurement protocol consume time
 
 ## Keep Search and Confirmation Separate
 
-Freeze the development metric, evaluation split, case weights, and final confirmation protocol before tuning. Choose a split appropriate to deployment: group or time splits when samples are dependent, fresh instances for combinatorial tasks, and matched repeated seeds for stochastic simulations.
+Freeze the development metric, evaluation split, case weights and final confirmation protocol before candidate search. Choose a split appropriate to deployment: group or time splits when samples are dependent, fresh instances for combinatorial tasks, and matched repeated seeds for stochastic simulations.
 
 Keep repetitions of one candidate distinct from independent complete agent runs when assessing the skill itself.
 

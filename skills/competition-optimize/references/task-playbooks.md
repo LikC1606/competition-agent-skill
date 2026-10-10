@@ -10,20 +10,20 @@ Identify the statistical unit and intended test conditions before training. Dete
 
 For explicit row-ID partitions, [audit the declared split](validation-split.md) before fitting, adding group/time/label-availability metadata only when required by the task. Reuse matching receipts across candidates; they do not prove actual pipeline fitting or independence.
 
-Inspect loader/cache preprocessing and retain fitting-row and pipeline lineage as described in [training and validation evidence](data-model.md#establish-training-and-validation-evidence). Small held-out sets can reverse model rankings; resolve close comparisons with affordable matched internal folds or seeds before deep tuning. Freeze a delivery rule for confirmation disagreements rather than selecting a new rule from held-out outcomes.
+Inspect loader/cache preprocessing and retain fitting-row and pipeline lineage as described in [training and validation evidence](data-model.md#establish-training-and-validation-evidence). Small held-out sets can reverse model rankings; resolve close comparisons with affordable matched internal folds or seeds when that would change the next proposal. Freeze a delivery rule for confirmation disagreements rather than selecting a new rule from held-out outcomes.
 
 Build a cheap sanity baseline and, when budget allows, a credible model from a different family suggested by task evidence. Compare the official metric from aligned validation predictions; the training loss or accuracy may not be the contest objective. Interpret model rankings jointly with feature/data quality and error regimes.
 
 | Observation | Experiment to consider | Confirmation needed |
 | --- | --- | --- |
-| A simple or alternative family approaches the current model | Improve representation/features or explore another family before expensive tuning | Same folds, official metric, and training/inference cost |
-| Errors cluster by group, time, class, or input regime | Investigate split mismatch, missing signal, label noise, or weighting | Mechanism-specific ablation and evidence beyond the tuned regime |
+| A simple or alternative family approaches the current model | Inspect the pipeline and propose improved representation/features or another applicable family | Same folds, official metric, and training/inference cost |
+| Errors cluster by group, time, class, or input regime | Investigate split mismatch, missing signal, label noise, or weighting | Mechanism-specific ablation and evidence beyond the tested regime |
 | Useful interactions or domain signals are absent | Add a targeted feature or preprocessing component | Fold-safe fitting, no target leakage, and metric gain |
 | Allowed external or unlabeled data could improve coverage | Try additional data, pretraining, or soft pseudo-labels | Provenance, rule permission, and a teacher that did not train on held-out labels |
 | Predictions show objective-relevant error interaction | Consider a small blend or stacking trial on cached OOF predictions; for two-parent RMSE/MAE, check convex-loss directions when useful | Case wins alone are insufficient; correct ID alignment, full objective, inference cost, and independent confirmation of the frozen ensemble |
-| Training is stable but the metric depends on output interpretation | Tune allowed thresholds, calibration, or decoding | Development-only selection and final confirmation under the official metric |
+| Training is stable but the metric depends on output interpretation | Inspect output mapping and implement a justified calibration or decoding change | Development-only selection and final confirmation under the official metric |
 
-Use the simplest pipeline that lets the next hypothesis be tested cheaply. After a mechanism is supported, test sensitive hyperparameters, additional seeds, or training duration within budget. Final retraining on all permitted labeled data must keep the selected pipeline fixed and satisfy inference limits; preserve the earlier validation evidence rather than claiming a new full-data validation score.
+Use the simplest complete pipeline that tests the proposal. Inspect the current pipeline, learning behavior and historical comparisons to identify missing signal, representation limits or wasted work; implement the next supported mechanism without a default hyperparameter/seed sweep. Final retraining on all permitted labeled data must keep the selected pipeline fixed and satisfy inference limits; preserve the earlier validation evidence rather than claiming a new full-data validation score.
 
 ## Algorithms and Combinatorial Optimization
 
