@@ -110,6 +110,25 @@ For the supported scalar CSV interface, [the blend tool](data-model.md#construct
 
 Reuse intermediates only when their dependencies match. A changed feature pipeline, split, model, or training configuration invalidates affected cached results even if output filenames are unchanged.
 
+## Close the Feedback Loop
+
+Every completed trial must inform the next implementation decision or an explicit stop. Close it with the result ID/path, comparable objective changes against its parent/current best, validity and cost, prediction status, and chosen follow-up. Use existing ledger/notes; no separate feedback document or extra measurement is required when the result already supports a decision.
+
+| Feedback from development evidence | Follow-up within budget |
+| --- | --- |
+| Implementation or infrastructure defect | Locate the defect and make a bounded repair when worthwhile; method quality remains unresolved |
+| Measurement cannot resolve the comparison | Run the smallest diagnostic or matched repetition that could decide it; do not tune to noise |
+| Eligible objective improvement | Update the best development candidate; test the newly limiting mechanism or a stronger affordable alternative |
+| Valid weaker candidate, with supported missing capability or progress at its legal cap | Keep the incumbent; implement the supported complete pipeline or improve work allocation within hard limits |
+| Repeated comparable negligible gains with maturity evidence | Replace the representation, neighborhood, training signal or route when a credible alternative fits |
+| Compatible complementary strengths | Implement and evaluate a combined candidate, including all inference/selection costs |
+
+These choices depend on task evidence; they are not automatic quotas or proof of causation. Missing official score terms still require provisional comparisons and retained tradeoffs. Use [failure/maturity evidence](#decide-whether-to-repair-deepen-or-retire) when a weak score has several explanations.
+
+Each successor must cite the feedback it acts on, identify its actual implementation target and expected observation, and retain a result link after execution. Check whether that expectation occurred before choosing another variant. A copied explanation followed by the same rejected configuration is not a feedback-driven change. Further tuning after confirmation requires fresh confirmation evidence.
+
+At delivery, show the executed chain in a compact table: trial/result, measured comparison, feedback/action, successor/change and its result or stop reason. Best-so-far scores describe development selection; they are not independent confirmation. An unexecuted suggestion stays pending and cannot fill the successor/result column as a completed experiment.
+
 ## Learn from Evaluated Pairs
 
 Use an informative matched comparison to change the next decision, not merely to narrate a score. Contrast candidate code/configuration, full-objective results, representative regimes, stopping behavior and actual cost. Reuse existing artifacts; extra profiling, ablation or measurements need a consequential question and budget.
@@ -184,6 +203,6 @@ If a full score cannot be calculated, preserve tradeoff candidates and label any
 
 ## Record Decisions and Recover State
 
-Append planned and completed events under each trial ID in `trials.jsonl`; do not rewrite old outcomes. Before implementation include parent IDs, action/target, hypothesis, predicted observation, rejection test, planned fidelity, and cost. After execution include candidate/configuration hashes, evaluation and comparison paths, validity/fidelity, objective kind/direction, actual cost, decision, and the next unresolved question. Reference immutable result files instead of copying raw logs into the ledger.
+Append planned and completed events under each trial ID in `trials.jsonl`; do not rewrite old outcomes. Before implementation include parent IDs, preceding feedback/result evidence, action/target, hypothesis, predicted observation, rejection test, planned fidelity and cost. After execution include candidate/configuration hashes, evaluation and comparison paths, validity/fidelity, objective kind/direction, actual cost, prediction status and the concrete follow-up or stop reason. Link the next trial back to that feedback and retain its actual change/result; reference immutable files instead of copying raw logs into the ledger.
 
 At decision boundaries, refresh `next-action.md` using [the compact card](decision-loop.md#compact-decision-card). On resumption, reconcile its ledger checkpoint with new events; a missing or stale card is rebuilt from evidence. Partial, invalid, or interrupted runs remain diagnostic evidence. Reuse results only when their dependencies still match. Stop when the current round or applicable user cap is spent, or only the confirmation reserve remains; when stalled, test a materially new mechanism that fits or deliver the best supported artifacts. Preserve consumed work on continuation. A new user request after a completed default round can start another bounded round under `SKILL.md`; an exhausted explicit user cap requires an explicit extension.

@@ -57,6 +57,8 @@ For score-seeking runs, recover the current [route comparison](score-search.md#c
 
 Keep rejected hypotheses with their mechanism, prerequisites, and rejection evidence. Recover the applicable [comparison lessons](score-search.md#learn-from-evaluated-pairs), including contradicted predictions and local improvements that did not beat the incumbent. They should identify the next test or constraint, not replace artifact checks. Reopen a rejected hypothesis when a dependency, implementation diagnosis, or new source changes that evidence. A new filename or another request to continue is not new evidence. After a failure, revise the hypothesis or switch route; do not regenerate the same configuration through repeated broad searches.
 
+After a trial is reconciled, apply [the feedback loop](score-search.md#close-the-feedback-loop) and return to the next useful action in the same round. A completed evaluation is a loop boundary, not an automatic delivery boundary. When resuming, recover the last feedback and whether its successor was actually implemented; a pending suggestion is not a completed iteration.
+
 ## Compact Decision Card
 
 Refresh `<run>/next-action.md` after a decision or before a handoff, not after every tool call. Keep only facts needed for the next action and link to details; it is disposable and never replaces ledger events. The checkpoint covers complete JSONL events through the recorded byte offset. Later events must be reconciled before acting. Do not checkpoint a partial final line.
@@ -76,8 +78,9 @@ Unfinished: <trial ID and output/process, or none>
 Frozen shortlist: <path/hash, or not yet frozen>
 
 Next action: <one action and parent IDs>
+Feedback source: <trial/result path; measured comparison vs parent/best; validity and cost; prediction status>
 Change scope and route choice: <method/pipeline replacement, mechanism refinement, tuning, or combination; why this route now>
-Question and prediction: <what is uncertain and the expected observation>
+Implementation target and prediction: <specific code/pipeline change; what the next result should test>
 Prior outcome and investment: <promotion status; defect/cap/plateau evidence; why repair/deepen/retire/defer>
 Applicable lesson: <research.md evidence; supported/contradicted/unresolved prediction; prerequisites still satisfied>
 Evidence to reuse / invalidate: <paths, dependency hashes, affected descendants>
