@@ -1,12 +1,12 @@
 # Search for Score Improvements
 
-Read this when selecting or revising solution routes and their experiments. Optimize the contest objective under the remaining budget; choose actions from evidence and unresolved questions. A candidate is an executable method/configuration, not a prescribed small mutation.
+Read this when selecting or revising solution routes and their experiments. Optimize the contest objective using evidence and unresolved questions. A candidate is an executable method/configuration, not a prescribed small mutation. There is no default time, cost, trial or round cap: budget/reserve checks below apply only to currently applicable user limits, competition rules or actual finite resources. Record costs even when no cap applies.
 
 ## Efficient Proposal and Quality Gate
 
 Use one short reconnaissance pass before implementation. Read the task contract and current candidate identity, map the entry point and score-affecting path, inspect profiles or error slices if already available, and retrieve only historical trials that share the evaluator, workload/split and relevant mechanism. Reuse hashes and summaries instead of rereading unchanged logs. The pass ends when it has either a supported bottleneck and a proposal or a smallest diagnostic that can distinguish the leading explanations.
 
-Choose the next proposal by four practical questions: does it address a measured limitation, is the mechanism supported by code/history or a task source, can it be implemented and evaluated within the remaining reserve, and would its result change promotion or the next proposal? Prefer a complete change with meaningful headroom. Do not spend the round making a longer route list or polishing an explanation after these questions are answered.
+Choose the next proposal by four practical questions: does it address a measured limitation, is the mechanism supported by code/history or a task source, is it feasible with applicable resources, and would its result change promotion or the next proposal? Prefer a complete change with meaningful headroom. Stop expanding the route list or polishing an explanation once these questions are answered and implement.
 
 Before a full evaluation, run a quality gate appropriate to the adapter:
 
@@ -15,7 +15,7 @@ Before a full evaluation, run a quality gate appropriate to the adapter:
 - Any cheap screen has a documented relation to the full objective and is used only to reject invalid or clearly weak candidates; otherwise go directly to the matched full comparison.
 - The comparison records parent/current-best IDs, objective direction and components, worst relevant regime, runtime/memory or inference cost, and the exact reproduction command.
 
-Failing the gate is an implementation or measurement problem, not evidence that the proposed mechanism loses. Fix it once when the cause is identifiable; otherwise preserve the failure and choose the next proposal. Passing the gate does not promote a candidate without the full declared comparison. This gate reduces wasted runs while keeping quality decisions tied to the actual objective.
+Failing the gate is an implementation or measurement problem, not evidence that the proposed mechanism loses. Repair an identifiable cause when a useful correction exists; each retry needs a changed implementation or resolved prerequisite. Otherwise preserve the failure and choose the next proposal. Passing the gate does not promote a candidate without the full declared comparison. This gate reduces wasted runs while keeping quality decisions tied to the actual objective.
 
 ## Propose from Code and History
 
@@ -31,7 +31,7 @@ Produce one short actionable proposal using the existing decision card or notes:
 | Test and cost | Observable prediction, validity checks, matched comparison, rejection condition and implementation/evaluation cost |
 | Novelty and decision | Fingerprint/parent, archive entries it differs from, route choice (exploit/explore), and what result would trigger the next switch |
 
-Treat the diagnosis as a hypothesis when evidence does not establish its cause. Compare the proposal with the nearest credible affordable alternative when that changes the choice. Implement the chosen proposal in the same round. The proposal is an execution decision, not another report to finish before coding.
+Treat the diagnosis as a hypothesis when evidence does not establish its cause. Compare the proposal with the nearest credible feasible alternative when that changes the choice. Implement the chosen proposal now. The proposal is an execution decision, not another report to finish before coding.
 
 Parameter search is not the default: no automatic grids, random/Bayesian searches, neighboring-value sweeps or seed hunting. Run a dedicated tuning campaign only when the user explicitly requests one. Internal settings may change as part of a code-supported mechanism; the tested proposal must explain that mechanism rather than enumerate values. History may favor a local change or a complete method replacement; do not force either solely from an action menu.
 
@@ -72,7 +72,7 @@ Record the complete executable recipe, including intended candidate arguments an
 
 Result fields supply validity, score direction/kind, stage and dependency hashes; explicit flags cannot contradict them or turn a failed/partial result valid. A fingerprint identifies artifacts separately from evaluation identity. `decide` uses only distinct valid development implementations with the same evaluator, workload/split, score model, evaluation configuration, stage and environment. It checks result bytes, compares against the route's historical best, and excludes confirmation evidence, including from alternative-route ordering. Missing scalar score identity or invalid/incomplete evidence produces `diagnose`; no maximize/minimize direction is invented. Fixed-timeslot results lack an official total score, so they remain archived components unless an explicit declared objective and its comparison dependencies are supplied.
 
-`exploit` means recent historical-best progress or a feedback-supported opportunity; `explore` means a route review is warranted after comparable weak results. An unresolved candidate needs a concrete feedback explanation, and a recorded successor supersedes it. Window defaults (`--recent 4 --min-stagnant 2`) and tie tolerance are provisional advisory policies, never promotion gates or fixed exploration quotas. The agent checks remaining budget, diagnoses the code, and implements the next proposal; the tool does not choose a method or tune parameters. Validity retains the adapter's checked scope; hard rules, training provenance, artifact availability and score recomputation still use their existing checks. Run one archive writer at a time. A partial or corrupt JSONL event blocks further appends; reconcile it before continuing.
+`exploit` means recent historical-best progress or a feedback-supported opportunity; `explore` means a route review is warranted after comparable weak results. An unresolved candidate needs a concrete feedback explanation, and a recorded successor supersedes it. Window defaults (`--recent 4 --min-stagnant 2`) and tie tolerance are provisional advisory policies, never promotion gates or fixed exploration quotas. The agent checks applicable resources, diagnoses the code, and implements the next proposal; the tool does not choose a method or tune parameters. Validity retains the adapter's checked scope; hard rules, training provenance, artifact availability and score recomputation still use their existing checks. Run one archive writer at a time. A partial or corrupt JSONL event blocks further appends; reconcile it before continuing.
 
 Before a new implementation, compare its fingerprint and mechanism with the archive. A duplicate or near-duplicate needs a changed prerequisite, a diagnosed defect, or a new resource/evaluation regime; a new filename is not novelty. Preserve a runner-up when its tradeoff or route may matter, even if it does not beat the incumbent.
 
@@ -81,7 +81,7 @@ Choose between two actions after each valid comparison:
 - **Exploit** a route when its code/history shows a specific unresolved mechanism, progress at a legal cap, or a complementary strength worth completing.
 - **Explore** a different route when the current route has repeated comparable weak results, a saturated mechanism, or no supported follow-up. Change representation, model family, neighborhood, data signal, objective component, or policy logic as the task permits.
 
-Switching routes consumes a candidate implementation, but prevents a cheap sequence of edits from monopolizing the round. Do not impose a fixed exploration quota; use the archive evidence and remaining confirmation reserve. Report the reason for every switch or continued investment.
+Record route switches as candidate implementations and use them to avoid a sequence of cheap edits monopolizing the search. Do not impose a fixed exploration quota; use archive evidence, objective headroom and actual resource costs. Keep a confirmation reserve only under a finite constraint. Report the reason for every switch or continued investment.
 
 ## Compare Routes Before Choosing Variants
 
@@ -166,13 +166,13 @@ Keep the route's best representative, tested scope, unresolved mechanism and nex
 | Repeated tweaks produce negligible gains while structural alternatives remain | Return to the route map | A materially different affordable prototype or a documented reason to stop |
 | Candidates have compatible, complementary strengths | Combine or select by regime | Improvement in the combined candidate's objective within its resource limits |
 | Apparent gain is comparable to measurement variation | Repeat a matched comparison | Enough evidence to resolve the promotion decision |
-| Final reserve is all that remains | Confirm the frozen shortlist | Validity and independent objective measurements for delivery |
+| A currently applicable finite limit leaves only confirmation resources | Confirm the frozen shortlist | Validity and independent objective measurements for delivery |
 
-Diagnostics are experiments too and consume budget. Keep their results separate from candidate ranking. A correctness failure may justify a repair when the mechanism remains promising; an infrastructure failure gives no evidence about algorithm quality. Neither warrants unlimited retries.
+Diagnostics consume time/compute; keep their results separate from candidate ranking. A correctness failure may justify a repair when the mechanism remains promising; an infrastructure failure gives no evidence about algorithm quality. Retry when a changed implementation or resolved prerequisite makes another attempt informative; do not repeat an unchanged failure without new evidence.
 
 ## Refine a Measured Component
 
-When the budget supports deeper search, use a targeted ablation, runtime profile, or small reference solution to choose a component worth refining. Within it, test an explanatory mechanism or coherent replacement per trial and use prior results to select the next variant. Include representation, solver encoding, search neighborhoods, features, and training signals where the task supports them; parameter changes are only one search action. Do not limit a route replacement to the incumbent's editable lines if its interface and rules permit a different implementation.
+When available resources support deeper search, use a targeted ablation, runtime profile, or small reference solution to choose a component worth refining. Within it, test an explanatory mechanism or coherent replacement per trial and use prior results to select the next variant. Include representation, solver encoding, search neighborhoods, features, and training signals where the task supports them; parameter changes are only one search action. Do not limit a route replacement to the incumbent's editable lines if its interface and rules permit a different implementation.
 
 An ablation measures the current solution's reliance on a component, not its remaining improvement potential. Combine that evidence with a plausible improvement mechanism and evaluation cost. Keep the official evaluator fixed. An approximation used inside the candidate's search is itself a hypothesis and still needs confirmation on the declared objective.
 
@@ -194,7 +194,7 @@ Reuse intermediates only when their dependencies match. A changed feature pipeli
 
 Every completed trial must inform the next implementation decision or an explicit stop. Close it with the result ID/path, comparable objective changes against its parent/current best, validity and cost, prediction status, and chosen follow-up. Use existing ledger/notes; no separate feedback document or extra measurement is required when the result already supports a decision.
 
-| Feedback from development evidence | Follow-up within budget |
+| Feedback from development evidence | Follow-up using applicable resources |
 | --- | --- |
 | Implementation or infrastructure defect | Locate the defect and make a bounded repair when worthwhile; method quality remains unresolved |
 | Measurement cannot resolve the comparison | Run the smallest diagnostic or matched repetition that could decide it; do not tune to noise |
@@ -207,7 +207,7 @@ These choices depend on task evidence; they are not automatic quotas or proof of
 
 Each successor must cite the feedback it acts on, identify its actual implementation target and expected observation, and retain a result link after execution. Check whether that expectation occurred before choosing another variant. A copied explanation followed by the same rejected configuration is not a feedback-driven change. Further tuning after confirmation requires fresh confirmation evidence.
 
-For repeated runs using the archive helper, [bind the proposal and measured successor](iteration-trace.md) with `propose` and `record --proposal-id`. The proposal references actual parent code and development feedback; after implementation, the record attaches a new adapter result, observed feedback and prediction status. `trace` exposes pending actions and the real result chain. Use existing equivalent ledger links where available. Recording a plan cannot substitute for executing it in the current round.
+For repeated runs using the archive helper, [bind the proposal and measured successor](iteration-trace.md) with `propose` and `record --proposal-id`. The proposal references actual parent code and development feedback; after implementation, the record attaches a new adapter result, observed feedback and prediction status. `trace` exposes pending actions and the real result chain. Use existing equivalent ledger links where available. Recording a plan cannot substitute for executing it in the current session.
 
 At delivery, show the executed chain in a compact table: trial/result, measured comparison, feedback/action, successor/change and its result or stop reason. Best-so-far scores describe development selection; they are not independent confirmation. An unexecuted suggestion stays pending and cannot fill the successor/result column as a completed experiment.
 
@@ -227,11 +227,11 @@ If a prediction fails, revise its mechanism, applicability or expected observati
 
 Carry only decision-relevant lessons forward, with task/metric, scale/resources, success and failure regimes, and linked evidence. Preserve contradictory findings instead of accumulating only successful advice. A learning entry should change an action, constraint or falsifiable prediction; skip generic reflections that do not. On resumption, check the lesson's dependencies before using it. On a different task, verify prerequisites and make a budgeted transfer test; prior gains are not promised gains. Learned-model examples concern experiment records, not online weight updates or permission to reuse held-out labels.
 
-Examples of testable feedback are replacing search order when capped work still progresses, revising training signal when permitted labels/features leave systematic errors, or changing solver encoding when the measured scale bottleneck persists. These are task-qualified choices, not defaults. A candidate's internal objective approximation, schedule or training loss may change; the official evaluator and confirmation separation remain fixed. Stop at the remaining budget even when feedback suggests another useful test.
+Examples of testable feedback are replacing search order when capped work still progresses, revising training signal when permitted labels/features leave systematic errors, or changing solver encoding when the measured scale bottleneck persists. These are task-qualified choices, not defaults. A candidate's internal objective approximation, schedule or training loss may change; the official evaluator and confirmation separation remain fixed. Continue the useful next test unless a currently applicable constraint or concrete blocker prevents it.
 
 ## Spend Evaluation Budget Where It Changes Decisions
 
-Measure baseline costs and reserve final verification first. Record round and cumulative time/compute/trials, including research, evaluator development, diagnostics, retries, training, full runs and confirmation. Changed configurations, ablations, repairs and rejected candidates count. Respect explicit user caps at their stated scope; otherwise use the bounded work-round default in `SKILL.md`, including the verification reserve. Do not convert an old default into a permanent task-wide user cap.
+Measure baseline costs and plan final verification. Record cumulative time/compute/cost and trials, including research, evaluator development, diagnostics, retries, training, full runs and confirmation. Include changed configurations, ablations, repairs and rejected candidates. Apply only currently applicable limits at their stated scope, with a measured verification reserve under a genuine finite constraint. When no cap applies, record that fact and continue without setting a numeric allowance or default round. A later user change/removal supersedes earlier optimization limits prospectively; old skill defaults never require renewed permission.
 
 Use low-cost stages to reject invalid or clearly weak candidates. Before using a subset, reduced resolution, fewer training epochs, or shorter simulation as a score screen, check on reference candidates that it preserves useful ordering. Treat it as a screen, not the final score. Keep some full-fidelity comparisons on distinct mechanisms so a biased cheap screen does not eliminate all alternatives.
 
@@ -255,11 +255,11 @@ When a stage dominates cost, profile it before increasing search breadth. Improv
 
 ### Check Whether the Evidence Can Rank Candidates
 
-When ranking uncertainty would change the next code/model proposal, resolve it within budget. Small development sets, loss concentrated in a handful of cases, contradictory regimes or gains comparable to variation suggest a measurement experiment. Choose matched folds, training seeds, instances or episodes according to the task's uncertainty and remaining budget. Keep confirmation untouched. Preserve each repetition's score and compute the contract's aggregation; the best fold or luckiest seed is not the comparison score.
+When ranking uncertainty would change the next code/model proposal, resolve it using applicable resources. Small development sets, loss concentrated in a handful of cases, contradictory regimes or gains comparable to variation suggest a measurement experiment. Choose matched folds, training seeds, instances or episodes according to the task's uncertainty and available resources. Keep confirmation untouched. Preserve each repetition's score and compute the contract's aggregation; the best fold or luckiest seed is not the comparison score.
 
 For learned models, declare internal folds in the training/development pool and fit every learned transform inside each fold. Compare the same pipelines on the same folds; specify pooled predictions versus mean fold scores because they can rank candidates differently. For algorithms and policies, use the same instances and environment seeds with the full declared resource limit. A cheap repeat can reveal unstable selection without changing either candidate.
 
-Unchanged candidates repeated under a declared measurement protocol consume time/compute. Searching for a favorable seed is candidate selection, and tested seed variants consume trial slots. A multi-seed model ensemble is also a new candidate with combined inference costs. Save enough budget to evaluate the mechanism actually selected; do not silently add a large cross-validation campaign to a small run.
+Unchanged candidates repeated under a declared measurement protocol consume time/compute. Searching for a favorable seed is candidate selection, and tested seed variants are separate trials for accounting. A multi-seed model ensemble is also a new candidate with combined inference costs. Ensure resources remain for the mechanism actually selected when a finite constraint applies; do not silently add a large cross-validation campaign when it would displace a more informative test.
 
 ## Keep Search and Confirmation Separate
 
@@ -267,7 +267,7 @@ Freeze the development metric, evaluation split, case weights and final confirma
 
 Keep repetitions of one candidate distinct from independent complete agent runs when assessing the skill itself.
 
-Use development results to select a small final shortlist. Evaluate the frozen shortlist on the confirmation set within the reserved budget. If its errors guide another edit, that set has become development evidence; document the reuse and arrange fresh confirmation where possible. Do not describe repeatedly inspected fixtures as unseen.
+Use development results to select a small final shortlist. Evaluate the frozen shortlist on the confirmation set using applicable resources. If its errors guide another edit, that set has become development evidence; document the reuse and arrange fresh confirmation where possible. Do not describe repeatedly inspected fixtures as unseen.
 
 Record a `shortlist.json` before reading confirmation scores: finalist IDs and artifact hashes, reference/fallback, shortlist size, comparison protocol, and the decision rule for ties, uncertain gains, or ranking reversal. The rule should suit the task: a fixed exhaustive contest objective may permit direct metric choice, while estimated generalization needs its sampling limits stated. Apply the recorded rule instead of inventing a new one after seeing the outcomes. Confirmation can evaluate a frozen shortlist under that policy; tuning another configuration or expanding the shortlist from its feedback needs fresh evidence.
 
@@ -287,4 +287,4 @@ If a full score cannot be calculated, preserve tradeoff candidates and label any
 
 Append planned and completed events under each trial ID in `trials.jsonl`; do not rewrite old outcomes. Before implementation include parent IDs, preceding feedback/result evidence, action/target, hypothesis, predicted observation, rejection test, planned fidelity and cost. After execution include candidate/configuration hashes, evaluation and comparison paths, validity/fidelity, objective kind/direction, actual cost, prediction status and the concrete follow-up or stop reason. Link the next trial back to that feedback and retain its actual change/result; reference immutable files instead of copying raw logs into the ledger.
 
-At decision boundaries, refresh `next-action.md` using [the compact card](decision-loop.md#compact-decision-card). On resumption, reconcile its ledger checkpoint with new events; a missing or stale card is rebuilt from evidence. Partial, invalid, or interrupted runs remain diagnostic evidence. Reuse results only when their dependencies still match. Stop when the current round or applicable user cap is spent, or only the confirmation reserve remains; when stalled, test a materially new mechanism that fits or deliver the best supported artifacts. Preserve consumed work on continuation. A new user request after a completed default round can start another bounded round under `SKILL.md`; an exhausted explicit user cap requires an explicit extension.
+At decision boundaries, refresh `next-action.md` using [the compact card](decision-loop.md#compact-decision-card). On resumption, reconcile its ledger checkpoint with new events; a missing or stale card is rebuilt from evidence. Partial, invalid, or interrupted runs remain diagnostic evidence. Reuse results only when their dependencies still match. Keep executing useful feedback-driven follow-ups without round renewal. When stalled, investigate a specific uncertainty or test a materially different supported mechanism. Stop for a user stop request, a currently applicable limit, an unresolved concrete blocker, or no credible useful follow-up after considering diagnostics and alternatives. Preserve cumulative costs, confirm/deliver as feasible and state the actual stop reason; historical default quotas are not stop reasons.

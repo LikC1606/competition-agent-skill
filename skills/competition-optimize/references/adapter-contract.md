@@ -10,9 +10,9 @@ Before search, the adapter or sealed task contract must identify:
 - Hard validity rules, resource limits, and failure categories.
 - The official metric, whether it is maximized or minimized, its formula, per-case aggregation, thresholds, and parameters. Mark every unavailable term explicitly.
 - Development and validation workloads, data splits, seeds, and repetition policy.
-- Which measurements are score inputs and which are diagnostics only, and which measured costs count toward the experiment budget.
+- Which measurements are score inputs and which are diagnostics only; record measured costs and any currently applicable resource constraints. No numeric optimization budget is required when none applies.
 
-Identify the origin and scope of constraints: competition rules, explicit user limits, or provisional agent policies/defaults. A convenient acceptance threshold, speed-only search scope or exact-incumbent-output check is not a task requirement merely because the agent recorded it in a contract. Preserve evaluation identity, but do not restrict permissible solution changes to simplify comparison.
+Identify the origin and scope of constraints: competition rules, actual resource availability, currently applicable user limits, or provisional agent policies. Do not impose default optimization time/cost/trial/round caps; a later user removal/change supersedes earlier optimization limits prospectively without changing prior results. A convenient acceptance threshold, speed-only search scope or exact-incumbent-output check is not a task requirement merely because the agent recorded it in a contract. Preserve evaluation identity, but do not restrict permissible solution changes to simplify comparison.
 
 If the official score cannot be computed, return its value as unavailable. Do not silently replace it with a convenient proxy. Preserve individual score components so the optimizer can compare tradeoffs without inventing weights.
 

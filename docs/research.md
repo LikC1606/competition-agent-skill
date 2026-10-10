@@ -24,7 +24,7 @@
 
 Shinka 的 [setup skill](https://github.com/SakanaAI/ShinkaEvolve/blob/8adc053a2ce4511ad2ac310e004c530a73fb974a/skills/shinka-setup/SKILL.md)要求新任务同时有初始程序和 evaluator，并先做 evaluator smoke test；[convert skill](https://github.com/SakanaAI/ShinkaEvolve/blob/8adc053a2ce4511ad2ac310e004c530a73fb974a/skills/shinka-convert/SKILL.md)可把已有代码库放进独立 sidecar snapshot、标出小的可演化区，再用 Python evaluator 启动非 Python 候选。Evaluator 分开写指标与 `correct`/`error`，检查结果可读；[inspect skill](https://github.com/SakanaAI/ShinkaEvolve/blob/8adc053a2ce4511ad2ac310e004c530a73fb974a/skills/shinka-inspect/SKILL.md)再把前几个好候选和反馈打包给下一轮。
 
-Shinka 的 [run skill](https://github.com/SakanaAI/ShinkaEvolve/blob/8adc053a2ce4511ad2ac310e004c530a73fb974a/skills/shinka-run/SKILL.md)以一批 generations 为运行单位，默认批次间暂停并询问。这里需要保留明确预算和批次记录，但用户想要自动优化，所以首版可以在用户设定或默认上限内连续执行；预算耗尽、规则有歧义、需要正式提交或需要增加付费预算时再停下来。
+Shinka 的 [run skill](https://github.com/SakanaAI/ShinkaEvolve/blob/8adc053a2ce4511ad2ac310e004c530a73fb974a/skills/shinka-run/SKILL.md)以一批 generations 为运行单位，默认批次间暂停并询问。这里保留资源消耗和批次记录，但不把批次或预算变成当前 skill 的默认上限；在用户设定、比赛硬规则或实际资源允许时连续执行，规则有歧义、需要正式提交或遇到具体阻塞时再停下来。
 
 **采用：** evaluator 是可替换的比赛适配器；任务快照与原工作区隔离；先 smoke 再花完整预算；指标与有效性分开记录；只把最小代码区域交给优化。
 

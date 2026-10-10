@@ -33,9 +33,9 @@ If the card is missing, its prefix differs, or the contract changed, rebuild rel
 
 For reused prediction CSV scores, [comparison with `--truth`](data-model.md#compare-local-scores) can audit recorded scores against frozen truth and snapshots once before relying on them. The ledger inspector's `ready` status does not perform this check. Reuse a passed audit only while its recorded dependencies match; preserve unaffected artifacts and redo the specific invalidated work.
 
-Reconcile trials/time/compute, the confirmation/packaging reserve, incumbent scope, alternatives, unfinished work and frozen shortlist. Establish the origin and scope of a recorded limit: an explicit user cap, a skill default or an agent estimate. Preserve consumed work and never reset a user cap. Missing records do not establish extra allowance under an explicit limit; reconcile the gap conservatively.
+Reconcile trials/time/compute/cost, incumbent scope, alternatives, unfinished work and frozen shortlist. Establish the origin, scope and current applicability of any recorded limit: competition rule, actual resource availability, explicit user cap, obsolete skill default or agent estimate. Apply later user changes/removals prospectively and preserve consumed work. Missing records do not establish extra allowance under a still-applicable explicit limit; reconcile the gap conservatively.
 
-After a completed default work round, a new user request to continue permits another bounded round under `SKILL.md` when no explicit user cap prevents it. Preserve the same task history and cumulative costs; record the new round and default limits prospectively, without rewriting old contracts or treating historical counts as a lifetime default cap. An old skill default is not itself a user-imposed limit. Actual user caps and explicit extensions remain binding at their stated scope. Never renew a round without a user request. If confirmation feedback guides new search, it becomes development evidence and fresh confirmation is needed.
+`SKILL.md` imposes no default time, cost, trial or round cap. Continue from the same incumbent, history and cumulative costs without requesting another allowance or inventing a new round. Preserve old contracts and append the current limit policy when it changed; cancellation of an optimization cap does not change evaluation identity or rewrite prior results. If no applicable limit remains, record that fact and continue useful work. Reserve confirmation/packaging cost only under a genuine finite constraint. If confirmation feedback guides new search, it becomes development evidence and fresh confirmation is needed.
 
 ## Route the Current Decision
 
@@ -45,15 +45,15 @@ Choose the first applicable condition; this is routing within the current run, n
 | --- | --- | --- |
 | An unfinished trial may already have evidence | Reconcile its artifacts/process and actual cost | Record verified completion, interruption, or failure before another trial |
 | Hard rules, score meaning, or comparison dependencies are unresolved | Resolve the specific contract/measurement defect | A trustworthy comparison path or an explicit provisional limitation |
-| No credible action fits outside the reserve | Freeze/confirm the shortlist, or deliver if confirmation is done | Apply the sealed delivery rule; preserve remaining uncertainty |
+| The user requests stopping, a genuine finite constraint leaves only confirmation resources, or no credible useful follow-up remains | Freeze/confirm the shortlist, or deliver if confirmation is done | State the stop reason, apply the sealed delivery rule and preserve remaining uncertainty |
 | No valid credible baseline exists | Establish one affordable reference | Validity, objective, and measured cost for subsequent comparisons |
 | Ranking or mechanism uncertainty prevents choosing a trial | Run a targeted diagnostic or matched repetition | A stated result changes promotion or identifies a testable mechanism |
 | An affordable falsifiable mechanism is ready | Compare its route with the strongest affordable alternative, then execute the chosen test | Reject, advance to matched full fidelity, or identify missing evidence |
 | Missing knowledge prevents a viable mechanism | Search for that specific gap | A source-backed test with prerequisites, or retire the route |
 
-Resolve a rules/scoring defect within the authorized budget even when search is exhausted; do not report an invalid comparison as confirmed. An infrastructure failure warrants a bounded repair when useful, not a fresh algorithm conclusion. Repair variants consume trial slots; rerunning unchanged candidates consumes time/compute under the sealed protocol.
+Resolve a rules/scoring defect using applicable resources; do not report an invalid comparison as confirmed. An infrastructure failure warrants a targeted repair when useful, not a fresh algorithm conclusion. Record repair variants and the time/compute of unchanged reruns under the declared protocol; count them against a trial cap only when one currently applies.
 
-Before execution, ask: which observation changes the next decision, which evidence can be reused, and does implementation + execution + analysis + possible full-fidelity follow-up fit outside the reserve? Use measured costs where available and label estimates. No plausible decision change means defer that action. Full-fidelity promotion, provenance checks, and confirmation remain necessary even when intermediate work is cached.
+Before execution, assess which observation changes the next decision, which evidence can be reused, and the cost of implementation + execution + analysis + possible full-fidelity follow-up. Check that cost and any confirmation/packaging reserve against applicable finite limits only; no numeric allowance is needed otherwise. Use measured costs where available and label estimates. No plausible decision change means defer that action. Full-fidelity promotion, provenance checks, and confirmation remain necessary even when intermediate work is cached.
 
 For score-seeking runs, inspect the current implementation and pertinent successful/failed source changes, then recover the [route comparison](score-search.md#compare-routes-before-choosing-variants) and candidate archive. Recover tested maturity/resource settings and unresolved mechanisms: promotion rank alone does not determine investment. Use [code/history proposal guidance](score-search.md#propose-from-code-and-history), [archive and route switching](score-search.md#candidate-archive-and-route-switching) and [failure evidence](score-search.md#decide-whether-to-repair-deepen-or-retire) to choose the next concrete implementation. When recent gains are negligible, revisit the representation or mechanism. Preserve the archive and route map across continuation; rebuild only when conditions or new evidence change them. Resumption does not start a parameter campaign.
 
@@ -81,7 +81,7 @@ Ledger checkpoint: <checkpoint file, or verified byte length + prefix SHA-256>; 
 Incumbent: <ID>; scope: <development/provisional/confirmed>; evidence: <result and checks>
 Alternatives: <IDs and the uncertainty worth preserving>
 Routes: <current/alternative routes; tested maturity/resource setting; unresolved mechanism; research.md section>
-Budget: <limit origin/scope; round consumed / limits; cumulative costs; explicit cap remaining>; reserved: <confirmation + packaging>
+Resources: <cumulative time/compute/cost and trials; applicable limit origin/scope and remaining, or no self-imposed cap>; confirmation/packaging: <planned cost; reserve only under a finite constraint>
 Unfinished: <trial ID and output/process, or none>
 Frozen shortlist: <path/hash, or not yet frozen>
 

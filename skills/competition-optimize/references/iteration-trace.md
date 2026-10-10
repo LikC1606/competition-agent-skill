@@ -17,7 +17,7 @@ Only development candidates sharing the exact evaluator, workload/split, score m
 
 For `prediction_csv` results with a complete training-code/recipe directory, implementation identity uses that directory; prediction bytes retain a separate artifact fingerprint. An adapter can declare `candidate_scope: generated_artifact` for other produced outputs or weights, with its executable recipe likewise saved as `--configuration`. For evaluated algorithm source, identity includes source and supplied configuration, so changing the source while retaining settings is a real implementation change. The tool uses declared artifact scope, without guessing from a filename. Changing output scope labels alone does not create a new recipe.
 
-Cards expose `implementation` and earlier same-comparison `reused_implementation_from` IDs. Routes report measurements and distinct artifact fingerprints separately from distinct implementations. Output-only records retain their scores but have a null implementation count and a diagnostic route review; reconcile the actual executed recipe before proposing a code change. These identities assume a complete snapshot: capture intended candidate arguments, feature/data choices and dependency identities in the recipe, while storing declared measurement seeds and run logs separately. Hash equality does not prove that provenance is complete. Earlier costs and applicable user caps remain binding.
+Cards expose `implementation` and earlier same-comparison `reused_implementation_from` IDs. Routes report measurements and distinct artifact fingerprints separately from distinct implementations. Output-only records retain their scores but have a null implementation count and a diagnostic route review; reconcile the actual executed recipe before proposing a code change. These identities assume a complete snapshot: capture intended candidate arguments, feature/data choices and dependency identities in the recipe, while storing declared measurement seeds and run logs separately. Hash equality does not prove that provenance is complete. Earlier costs remain binding, as do user limits that still apply.
 
 The active route is always shown; alternatives are ordered by their measured representatives in the declared direction, not by how few attempts they received. This order does not decide which route deserves the next trial: inspect objective headroom, unresolved mechanisms, maturity and cost. A materially changed successor in any matched route supersedes its parent's old unresolved opportunity; an unchanged measurement does not.
 
@@ -27,7 +27,7 @@ The command checks displayed result and snapshot bytes once per candidate and ch
 
 ## Record One Actionable Proposal
 
-Read the relevant parent code and matched feedback first. Choose the next implementation using the [proposal guidance](score-search.md#propose-from-code-and-history), with remaining budget and the nearest credible alternative in mind. Save one compact JSON proposal and link it from the decision card; do not also write a separate report or duplicate the proposal fields in other notes. For example, an algorithm candidate might use:
+Read the relevant parent code and matched feedback first. Choose the next implementation using the [proposal guidance](score-search.md#propose-from-code-and-history), with applicable resource constraints and the nearest credible alternative in mind. Save one compact JSON proposal and link it from the decision card; do not also write a separate report or duplicate the proposal fields in other notes. For example, an algorithm candidate might use:
 
 ```json
 {
@@ -40,7 +40,7 @@ Read the relevant parent code and matched feedback first. Choose the next implem
   "change": "Implement the complete block reassignment neighborhood and its constraint-preserving decoder.",
   "expected_observation": "Valid block changes escape the stalled state and improve the full development objective within the legal runtime.",
   "validation": "Use the unchanged evaluator/workloads; check constraints, score components and total runtime against parent and incumbent.",
-  "stop_condition": "Stop for reserve, an implementation defect without a useful repair, or no supported follow-up."
+  "stop_condition": "Stop on user request, a currently applicable constraint, an unresolved concrete blocker, or no supported useful follow-up after reviewing diagnostics and alternatives."
 }
 ```
 
@@ -53,7 +53,7 @@ python <skill-dir>/scripts/candidate_archive.py propose `
   --archive <run>/candidate-archive.jsonl --proposal <run>/proposal-07.json
 ```
 
-The proposal is now `pending`. Copy the parent into a new candidate directory, implement the change, check duplicates, and execute the adapter in the same work round. Preserve the parent snapshot. The tool does not run embedded commands, generate a method or grant a new budget. A missing code snapshot should be reconciled from the actual executed artifacts, rather than manufactured for the record.
+The proposal is now `pending`. Copy the parent into a new candidate directory, implement the change, check duplicates, and execute the adapter now. Preserve the parent snapshot. The tool does not run embedded commands, generate a method or impose/renew a budget. A missing code snapshot should be reconciled from the actual executed artifacts, rather than manufactured for the record.
 
 ## Attach the Measured Outcome
 
@@ -78,7 +78,7 @@ When a proposed action cannot be run, preserve it as pending or close it with a 
 ```powershell
 python <skill-dir>/scripts/candidate_archive.py stop `
   --archive <run>/candidate-archive.jsonl --proposal-id complete-neighborhood `
-  --reason "Only the confirmation reserve remains; this implementation cannot fit."
+  --reason "The required input data is unavailable after checking the declared source; preserve this proposal until the blocker is resolved."
 ```
 
 One proposal has one outcome. A repair or revised mechanism gets its own proposal, citing the previous development result. An interrupted process or partial adapter write stays pending until reconciled; do not mark it evaluated merely because a command was launched.
@@ -96,4 +96,4 @@ The default returns the last eight proposals and **all pending IDs**, so older u
 
 Legacy records need no rewrite. Known prediction scope and existing recipe hashes supply their implementation identity when available; older linked outcomes retain their original acceptance scope. The evidence view labels an unavailable recipe, and prospective code-change proposals require the actual executed snapshot. A legacy output link alone does not establish that its source code changed.
 
-On resumption, reconcile pending artifacts/processes before retrying. At delivery, include the compact actual chain, then follow the existing freeze/confirmation rules. A successful trace is evidence of linked execution, not grounds to end a round that still has a useful affordable successor.
+On resumption, reconcile pending artifacts/processes before retrying. At delivery, include the compact actual chain, then follow the existing freeze/confirmation rules. A successful trace is evidence of linked execution, not grounds to stop while a useful feasible successor remains. Retrieval window sizes never limit the number of optimization iterations.
