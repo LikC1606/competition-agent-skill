@@ -227,6 +227,90 @@ class PredictionWorkflowTests(unittest.TestCase):
         self.assertEqual(second.returncode, 2)
         self.assertEqual(output.read_bytes(), before)
 
+    def test_verified_comparison_matches_fast_comparison_for_all_metrics_stages_and_tolerances(self) -> None:
+        self.truth.write_text("id,target\n001,0\n1,1\na,0\nb,1\n", encoding="utf-8")
+        for metric in evaluator.METRIC_DIRECTIONS:
+            for stage in ["development", "confirmation"]:
+                self.predictions.write_text("id,prediction\n001,0.5\n1,0.5\na,0.5\nb,0.5\n", encoding="utf-8")
+                baseline = self.evaluate("--metric", metric, "--stage", stage, "--log-loss-epsilon", "0.01")
+                self.predictions.write_text("id,prediction\nb,1\na,0\n1,0.8\n001,0.2\n", encoding="utf-8")
+                candidate = self.evaluate("--metric", metric, "--stage", stage, "--log-loss-epsilon", "0.01")
+                paths = [Path(value["artifacts"][0]).parent / "result.json" for value in [baseline, candidate]]
+                for epsilon in [0, 1]:
+                    with self.subTest(metric=metric, stage=stage, epsilon=epsilon):
+                        expected = comparator.compare(baseline, candidate, epsilon)
+                        actual = comparator.compare_verified(*paths, self.truth, epsilon)
+                        self.assertEqual({key: actual[key] for key in expected}, expected)
+                        verification = actual["score_verification"]
+                        self.assertEqual(verification["status"], "passed")
+                        self.assertEqual(verification["input_hashes"]["truth"], evaluator.byte_hash(self.truth.read_bytes()))
+                        for role, path in zip(["baseline", "candidate"], paths):
+                            self.assertEqual(verification["input_hashes"][f"{role}_result"], evaluator.byte_hash(path.read_bytes()))
+                        self.assertIn("training_provenance", actual["unchecked_rules"])
+
+    def test_verified_comparison_rejects_an_edited_score_that_fast_comparison_cannot_recompute(self) -> None:
+        baseline, candidate = self.evaluate(), self.evaluate()
+        paths = [Path(value["artifacts"][0]).parent / "result.json" for value in [baseline, candidate]]
+        candidate["score"]["value"] = 0
+        paths[1].write_text(json.dumps(candidate), encoding="utf-8")
+        self.assertEqual(comparator.compare(comparator.load_result(paths[0]), comparator.load_result(paths[1]), 0)
+                         ["metric_preference"], "candidate")
+        with self.assertRaisesRegex(comparator.ComparisonFailure, "Recomputed score differs"):
+            comparator.compare_verified(*paths, self.truth, 0)
+
+    def test_verified_comparison_rejects_changed_truth_and_matching_obsolete_evaluator_records(self) -> None:
+        baseline, candidate = self.evaluate(), self.evaluate()
+        paths = [Path(value["artifacts"][0]).parent / "result.json" for value in [baseline, candidate]]
+        original_truth = self.truth.read_bytes()
+        self.truth.write_bytes(original_truth + b"\n")
+        with self.assertRaisesRegex(comparator.ComparisonFailure, "Truth bytes differ"):
+            comparator.compare_verified(*paths, self.truth, 0)
+        self.truth.write_bytes(original_truth)
+        for path, value in zip(paths, [baseline, candidate]):
+            value["evaluator_hash"] = "0" * 64
+            path.write_text(json.dumps(value), encoding="utf-8")
+        self.assertEqual(comparator.compare(comparator.load_result(paths[0]), comparator.load_result(paths[1]), 0)
+                         ["metric_preference"], "tie")
+        with self.assertRaisesRegex(comparator.ComparisonFailure, "installed prediction evaluator"):
+            comparator.compare_verified(*paths, self.truth, 0)
+
+    def test_verified_comparison_preserves_contract_checks_and_rejects_invalid_tolerance(self) -> None:
+        baseline = self.evaluate()
+        baseline_path = Path(baseline["artifacts"][0]).parent / "result.json"
+        for changes in [("--stage", "confirmation"), ("--split-id", "another-split"),
+                        ("--metric", "mae"), ("--score-kind", "official_metric")]:
+            candidate = self.evaluate(*changes)
+            path = Path(candidate["artifacts"][0]).parent / "result.json"
+            with self.subTest(changes=changes), self.assertRaises(comparator.ComparisonFailure):
+                comparator.compare_verified(baseline_path, path, self.truth, 0)
+        for epsilon in [-1, math.nan, math.inf]:
+            with self.subTest(epsilon=epsilon), self.assertRaises(comparator.ComparisonFailure):
+                comparator.compare_verified(baseline_path, baseline_path, self.truth, epsilon)
+
+    def test_verified_comparator_cli_saves_receipt_preserves_output_and_does_not_fallback_on_bad_truth(self) -> None:
+        baseline, candidate = self.evaluate(), self.evaluate()
+        paths = [Path(value["artifacts"][0]).parent / "result.json" for value in [baseline, candidate]]
+        output = self.root / "核验比较.json"
+        command = [sys.executable, "-X", "utf8", str(SCRIPT_DIR / "compare_prediction_results.py"),
+                   "--baseline", str(paths[0]), "--candidate", str(paths[1]), "--truth", str(self.truth),
+                   "--output", str(output)]
+        completed = subprocess.run(command, capture_output=True, encoding="utf-8", timeout=15)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        saved = output.read_bytes()
+        result = json.loads(saved)
+        self.assertEqual(result["score_verification"]["status"], "passed")
+        self.assertEqual(result["score_verification"]["truth"], str(self.truth.resolve()))
+        repeated = subprocess.run(command, capture_output=True, encoding="utf-8", timeout=15)
+        self.assertEqual(repeated.returncode, 2)
+        self.assertEqual(output.read_bytes(), saved)
+        missing_output = self.root / "bad-truth.json"
+        self.truth.write_text("id,target\na,999\nb,999\nc,999\n", encoding="utf-8")
+        command[-1] = str(missing_output)
+        rejected = subprocess.run(command, capture_output=True, encoding="utf-8", timeout=15)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertEqual(json.loads(rejected.stderr)["status"], "failed")
+        self.assertFalse(missing_output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -61,6 +61,8 @@
 
 流程新增[决策卡与恢复路由](skills/competition-optimize/references/decision-loop.md)：继续任务只补读变化的事件和当前决策所需证据，实验完成但未记账时先核对产物，候选预算耗尽后进入冻结确认。只读的 `inspect_run_resume.py` 自动核验契约/日志检查点，分页返回新增事件，拒绝损坏记录，检查点仅覆盖本页事件。已对两个真实 pilot 的历史记录做回放核对，保留原交付规则与预算；这不代表完整 agent 的提分或耗时对照。
 
+复用预测缓存时，可给[比较命令](skills/competition-optimize/references/data-model.md#compare-local-scores)增加 `--truth`，核验标签/预测字节及安装中的 evaluator，并重算保存的分数，输出独立核验回执。快速比较继续保留；评分口径变化时仅重做受影响的评测，数据或训练变化时另核对拟合来源。
+
 ## 参考项目
 
 | 项目 | 参考重点 |
