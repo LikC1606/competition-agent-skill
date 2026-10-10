@@ -6,6 +6,27 @@ Use this when continuing a run, recovering an interrupted trial, or deciding whe
 
 Read the sealed contract and the compact card first. Check the contract bytes against the card's hash and the ledger prefix against its checkpoint (byte length and SHA-256); these checks can read bytes without loading all events into model context. If both match, read only appended complete events and the evidence needed for the current decision. Verify the dependencies and validity scope of results you intend to reuse. A hash confirms identity, not training provenance or unchecked hard rules.
 
+[`inspect_run_resume.py`](../scripts/inspect_run_resume.py) performs the byte/syntax checks for any adapter's JSON-object events. For the first inspection, omit `--checkpoint`; it reads from the start and can save a new checkpoint file:
+
+```powershell
+python <skill-dir>/scripts/inspect_run_resume.py `
+  --contract <run>/task-contract.json --ledger <run>/trials.jsonl `
+  --max-events 20 --save-checkpoint <run>/checkpoint-001.json
+```
+
+Reconcile the returned events and referenced evidence before linking that checkpoint from `next-action.md`. On the next inspection, use it and save to another new file:
+
+```powershell
+python <skill-dir>/scripts/inspect_run_resume.py `
+  --contract <run>/task-contract.json --ledger <run>/trials.jsonl `
+  --checkpoint <run>/checkpoint-001.json `
+  --max-events 20 --save-checkpoint <run>/checkpoint-002.json
+```
+
+With `has_more: true`, continue reading pages before deciding from the card. A saved checkpoint covers only returned events and intervening blank lines, so later events are not silently skipped. Complete event lines must end in a newline (UTF-8, LF or CRLF); a missing final newline, malformed object, duplicate JSON key, or non-finite number blocks inspection, including malformed events beyond the output page. Contract changes, prefix rewrites, truncation, and wrong checkpoint paths also return code 2 without saving a new checkpoint. Reconcile the defect before rebuilding; omitting a bad checkpoint does not make stale evidence current.
+
+The tool reports checkpoint/JSONL integrity only. It does not infer trial budget, validate candidate artifacts, promote candidates, run commands contained in events, or alter the ledger/card. A new checkpoint is a proposed anchor; saving it does not mean the returned evidence has been reconciled. Source appends during inspection remain for the next page. Existing checkpoint files are never overwritten. Legacy cards with manual byte/hash fields can be checked manually once, then replaced with a file produced by this tool.
+
 If the card is missing, its prefix differs, or the contract changed, rebuild relevant state from the ledger and artifacts. Contract changes invalidate dependent conclusions; they do not erase spent trials. No new event does not prove that an unfinished evaluation failed: inspect its process and output directory before retrying. A successful result missing a completed event can be reconciled only after verifying its completeness, dependencies, and hard checks, then appending the recovered outcome. A truncated final event or partial result remains unresolved; do not invent a completion or overwrite old evidence. Resolve a ledger write failure before appending more events; preserve damaged bytes and record the repair.
 
 Reconcile consumed and remaining trials/time/compute, the confirmation/packaging reserve, the incumbent's promotion scope, alternatives, unfinished work, and frozen shortlist. If records do not establish remaining budget, state the gap and account for visible work conservatively; never reset the allowance. When further improvement is requested after delivery, retain the selected incumbent and spent budget. Further search needs remaining authorized budget and fresh confirmation if earlier confirmation feedback is used for tuning; otherwise deliver the existing evidence and explain the limit.
@@ -40,7 +61,7 @@ Use the fields relevant to the task; this is a copyable example, not a required 
 # Next action
 
 Contract: task-contract.json; SHA-256: <contract hash>
-Ledger checkpoint: <byte length>; prefix SHA-256: <hash>; last event: <trial/event/time>
+Ledger checkpoint: <checkpoint file, or verified byte length + prefix SHA-256>; last event: <trial/event/time>
 Incumbent: <ID>; scope: <development/provisional/confirmed>; evidence: <result and checks>
 Alternatives: <IDs and the uncertainty worth preserving>
 Budget: <consumed / authorized trials, time, compute>; reserved: <confirmation + packaging>
