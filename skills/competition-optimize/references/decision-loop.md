@@ -44,12 +44,14 @@ Choose the first applicable condition; this is routing within the current run, n
 | No credible action fits outside the reserve | Freeze/confirm the shortlist, or deliver if confirmation is done | Apply the sealed delivery rule; preserve remaining uncertainty |
 | No valid credible baseline exists | Establish one affordable reference | Validity, objective, and measured cost for subsequent comparisons |
 | Ranking or mechanism uncertainty prevents choosing a trial | Run a targeted diagnostic or matched repetition | A stated result changes promotion or identifies a testable mechanism |
-| An affordable falsifiable mechanism is ready | Execute its cheapest useful rejection test | Reject, advance to matched full fidelity, or identify missing evidence |
+| An affordable falsifiable mechanism is ready | Compare its route with the strongest affordable alternative, then execute the chosen test | Reject, advance to matched full fidelity, or identify missing evidence |
 | Missing knowledge prevents a viable mechanism | Search for that specific gap | A source-backed test with prerequisites, or retire the route |
 
 Resolve a rules/scoring defect within the authorized budget even when search is exhausted; do not report an invalid comparison as confirmed. An infrastructure failure warrants a bounded repair when useful, not a fresh algorithm conclusion. Repair variants consume trial slots; rerunning unchanged candidates consumes time/compute under the sealed protocol.
 
 Before execution, ask: which observation changes the next decision, which evidence can be reused, and does implementation + execution + analysis + possible full-fidelity follow-up fit outside the reserve? Use measured costs where available and label estimates. No plausible decision change means defer that action. Full-fidelity promotion, provenance checks, and confirmation remain necessary even when intermediate work is cached.
+
+For score-seeking runs, recover the current [route comparison](score-search.md#compare-routes-before-choosing-variants) as well as the incumbent. A ready parameter variant is one option, not an automatic reason to defer a credible structural alternative. When recent gains are negligible, revisit the route's representation or mechanism rather than treating another small edit as progress. Preserve the route map across continuation; rebuild only when task conditions or new evidence change it.
 
 Keep rejected hypotheses with their mechanism, prerequisites, and rejection evidence. Reopen one when a dependency, implementation diagnosis, or new source changes that evidence. A new filename or another request to continue is not new evidence. After a failure, update the mechanism or switch route; do not regenerate the same configuration through repeated broad searches.
 
@@ -66,11 +68,13 @@ Contract: task-contract.json; SHA-256: <contract hash>
 Ledger checkpoint: <checkpoint file, or verified byte length + prefix SHA-256>; last event: <trial/event/time>
 Incumbent: <ID>; scope: <development/provisional/confirmed>; evidence: <result and checks>
 Alternatives: <IDs and the uncertainty worth preserving>
+Routes: <current route; strongest affordable alternative; relevant research.md section>
 Budget: <consumed / authorized trials, time, compute>; reserved: <confirmation + packaging>
 Unfinished: <trial ID and output/process, or none>
 Frozen shortlist: <path/hash, or not yet frozen>
 
 Next action: <one action and parent IDs>
+Change scope and route choice: <method/pipeline replacement, mechanism refinement, tuning, or combination; why this route now>
 Question and prediction: <what is uncertain and the expected observation>
 Evidence to reuse / invalidate: <paths, dependency hashes, affected descendants>
 Execution: <command or implementation target, stage/fidelity, resource cap, total cost estimate>

@@ -1,6 +1,29 @@
 # Search for Score Improvements
 
-Read this when selecting experiments after a verified baseline exists. Optimize the contest objective under the remaining budget; choose actions from evidence and unresolved questions.
+Read this when selecting or revising solution routes and their experiments. Optimize the contest objective under the remaining budget; choose actions from evidence and unresolved questions. A candidate is an executable method/configuration, not a prescribed small mutation.
+
+## Compare Routes Before Choosing Variants
+
+The outer decision is **which solution route deserves effort**; the inner decision is **which implementation or setting tests that route**. Keeping these separate prevents an easy parameter edit from repeatedly winning over a harder method with more headroom. For a score-seeking run, compare credible structural alternatives before a parameter campaign when affordable. If constraints, prior matched evidence, or remaining resources make alternatives unhelpful, state that reason and refine the supported route. Do not force breadth when the baseline is already near a credible bound.
+
+Build a small route map in `research.md` from task structure, baseline behavior, and relevant sources. Drafting ideas does not consume candidate slots; research and implementation still consume time. For a small budget, evaluate only the most informative few routes. For a larger budget, first establish viable representatives, then spend the remaining effort on supported mechanisms instead of giving every route an equal fixed quota.
+
+| Route field | Decision it enables |
+| --- | --- |
+| Route ID and mechanism | Distinguish representation, algorithm/model family, data/training signal, policy, and parameter variants |
+| Evidence and prerequisites | Explain why the route fits this objective, scale, data, rules, and resources; retain the source/version |
+| Objective headroom | Identify a fixable failure, stronger reference, bound, or missing capability; label unsupported gain estimates |
+| Minimal complete prototype | State the smallest executable implementation that actually tests the different method, not an incomplete stub |
+| Cost and continuation | Include implementation, evaluation, likely full-fidelity follow-up and combined inference cost; say what justifies deeper work |
+| Status and best representative | Untested, supported, unresolved, or rejected with candidate/result IDs and the next route-level question |
+
+Compare the next proposed variant with the strongest affordable alternative route. Prefer the action with credible potential to change the best solution or resolve a consequential uncertainty; do not assign numerical expected gains without a basis. A tiny test can reveal a large opportunity, and a large rewrite can still be low value. Record the chosen route and why its nearest alternative was deferred; a short sentence at a decision boundary is enough.
+
+Typical structural changes are algorithm/representation/encoding/neighborhood replacements; model/feature/pipeline changes; different permitted data or training objectives; and changes to observations or planning in a policy. Thresholds, weights, seeds, and neighboring hyperparameters are usually refinements of an existing route. The classification explains the search, not a mandatory schema or a ban on a useful cheap tweak.
+
+Use one interpretable hypothesis or **coherent pipeline transition** per candidate. A new model may need different preprocessing, and a new representation may need a decoder and search moves; implement the coupled change together. Compare the complete candidate first. Use selective ablations only when attribution would change the next investment or final combination; without them, claim the whole pipeline's observed gain rather than identifying one component as the cause.
+
+Repeated refinements with negligible objective gains, improvements within noise, or the same unresolved failure suggest the route's current search has saturated. Revisit assumptions, representation, data/training signal, search space, or policy before more neighboring settings. Keep successful incumbents and rejected evidence. A failed prototype rejects its tested implementation; distinguish a fixable implementation defect from evidence that the mechanism is unsuitable. Budget or confirmation limits still stop exploration.
 
 ## Turn Research into Testable Mechanisms
 
@@ -19,6 +42,7 @@ Maintain a short hypothesis queue in `research.md`:
 | Field | What it must make clear |
 | --- | --- |
 | Mechanism and target | What changes and which score component or case regime should benefit |
+| Route and change scope | Which solution family it tests, and whether it replaces a method/pipeline, refines it, tunes settings, or combines parents |
 | Parent and evidence | Candidate IDs, source or local result, and the remaining uncertainty |
 | Prerequisites | Data, rules, scale, solver behavior, or resources needed for the idea to apply |
 | Prediction and rejection test | An observable outcome and the cheapest useful experiment that could contradict it |
@@ -33,7 +57,9 @@ Prefer plausible objective gain per unit of total experiment cost while keeping 
 | Only one family has been tried, with unclear fit | Explore a materially different route | A valid result, resource fit, and promising objective or complementary behavior |
 | Low score with an unclear cause | Diagnose using case analysis, a profile, ablation, or small reference solution | A bottleneck or falsifiable explanation that suggests an affordable change |
 | A component has a supported improvement mechanism | Refine that component | Matched evaluations that justify another variant or reveal a new testable mechanism |
-| A mechanism works but sensitive settings are unresolved | Tune its parameters | Full-fidelity gains that reproduce beyond the screening setup |
+| A route has evidence and unresolved high-impact mechanisms | Replace or deepen that mechanism | Full-objective gains or a consequential rejected hypothesis |
+| A mechanism works and settings are now the consequential uncertainty | Tune its parameters | Full-fidelity gains that reproduce beyond the screening setup |
+| Repeated tweaks produce negligible gains while structural alternatives remain | Return to the route map | A materially different affordable prototype or a documented reason to stop |
 | Candidates have compatible, complementary strengths | Combine or select by regime | Improvement in the combined candidate's objective within its resource limits |
 | Apparent gain is comparable to measurement variation | Repeat a matched comparison | Enough evidence to resolve the promotion decision |
 | Final reserve is all that remains | Confirm the frozen shortlist | Validity and independent objective measurements for delivery |
@@ -42,7 +68,7 @@ Diagnostics are experiments too and consume budget. Keep their results separate 
 
 ## Refine a Measured Component
 
-When the budget supports deeper search, use a targeted ablation, runtime profile, or small reference solution to choose a component worth refining. Within it, test one explanatory mechanism per trial and use prior results to select the next variant. Include representation, solver encoding, search neighborhoods, features, and training signals where the task supports them; parameter changes are only one search action.
+When the budget supports deeper search, use a targeted ablation, runtime profile, or small reference solution to choose a component worth refining. Within it, test an explanatory mechanism or coherent replacement per trial and use prior results to select the next variant. Include representation, solver encoding, search neighborhoods, features, and training signals where the task supports them; parameter changes are only one search action. Do not limit a route replacement to the incumbent's editable lines if its interface and rules permit a different implementation.
 
 An ablation measures the current solution's reliance on a component, not its remaining improvement potential. Combine that evidence with a plausible improvement mechanism and evaluation cost. Keep the official evaluator fixed. An approximation used inside the candidate's search is itself a hypothesis and still needs confirmation on the declared objective.
 
@@ -50,7 +76,7 @@ Reallocate trials to another component or route when gains fail to reproduce, a 
 
 ## Explore, Refine, Combine
 
-With enough budget, start with materially different solution families rather than many minor edits to the same baseline. Keep their parent IDs and best validated representatives; one route may excel at a different regime or later combine with another. This is a candidate portfolio and can be executed by one agent sequentially.
+Use the route map to start with materially different solution families when affordable. Keep their parent IDs and best validated representatives; one route may excel at a different regime or later combine with another. This is a candidate portfolio and can be executed by one agent sequentially. Exploration is not finished merely because one quick-to-implement variant exists; deepening is not postponed merely to fill a prescribed number of routes.
 
 After a mechanism works, tune its sensitive parameters with a small sweep or adaptive search. Compare candidates at documented evaluation fidelity. If promising gains from routes can coexist, make a separate combination trial with all parent IDs and an ablation where it changes the decision. Gains need not add; evaluate the combination's objective, runtime, and memory including selection or ensemble overhead. Use ensembling only when the submission format and metric support it.
 
