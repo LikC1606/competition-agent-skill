@@ -53,7 +53,7 @@ Before execution, ask: which observation changes the next decision, which eviden
 
 For score-seeking runs, recover the current [route comparison](score-search.md#compare-routes-before-choosing-variants) as well as the incumbent. Recover each relevant route's tested maturity/resource setting and unresolved mechanism: promotion rank alone does not determine investment. Use [failure and maturity evidence](score-search.md#decide-whether-to-repair-deepen-or-retire) to compare a lagging route's bounded rescue with the leader's next refinement. A ready parameter variant is one option, not an automatic reason to defer a credible structural alternative. When recent gains are negligible, revisit the route's representation or mechanism. Preserve the route map across continuation; rebuild only when task conditions or new evidence change it.
 
-Keep rejected hypotheses with their mechanism, prerequisites, and rejection evidence. Reopen one when a dependency, implementation diagnosis, or new source changes that evidence. A new filename or another request to continue is not new evidence. After a failure, update the mechanism or switch route; do not regenerate the same configuration through repeated broad searches.
+Keep rejected hypotheses with their mechanism, prerequisites, and rejection evidence. Recover the applicable [comparison lessons](score-search.md#learn-from-evaluated-pairs), including contradicted predictions and local improvements that did not beat the incumbent. They should identify the next test or constraint, not replace artifact checks. Reopen a rejected hypothesis when a dependency, implementation diagnosis, or new source changes that evidence. A new filename or another request to continue is not new evidence. After a failure, revise the hypothesis or switch route; do not regenerate the same configuration through repeated broad searches.
 
 ## Compact Decision Card
 
@@ -77,6 +77,7 @@ Next action: <one action and parent IDs>
 Change scope and route choice: <method/pipeline replacement, mechanism refinement, tuning, or combination; why this route now>
 Question and prediction: <what is uncertain and the expected observation>
 Prior outcome and investment: <promotion status; defect/cap/plateau evidence; why repair/deepen/retire/defer>
+Applicable lesson: <research.md evidence; supported/contradicted/unresolved prediction; prerequisites still satisfied>
 Evidence to reuse / invalidate: <paths, dependency hashes, affected descendants>
 Execution: <command or implementation target, stage/fidelity, resource cap, total cost estimate>
 If rejected / promising: <next branch, including full-fidelity cost when needed>

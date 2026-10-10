@@ -9,6 +9,7 @@ import random
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -36,7 +37,7 @@ class AlgorithmRoutePilotTests(unittest.TestCase):
 
     def test_both_neighborhoods_preserve_cycles_reduce_actual_score_and_respect_caps(self) -> None:
         rng = random.Random(23)
-        for count, move, limit in itertools.product([6, 12, 25], ["two_opt", "relocate"], [0, 7, 3000]):
+        for count, move, limit in itertools.product([6, 12, 25], ["two_opt", "two_opt_rotate", "relocate"], [0, 7, 3000]):
             points = [[rng.random(), rng.random()] for _ in range(count)]
             matrix, initial = pilot.distances(points), list(range(count))
             rng.shuffle(initial)
@@ -104,6 +105,63 @@ class AlgorithmRoutePilotTests(unittest.TestCase):
         for invalid in [[], [-1], [True], [3 * pilot.MOVE_LIMIT + 1]]:
             with self.subTest(limits=invalid), self.assertRaises(ValueError):
                 pilot.solve(points, {**recipe, "move_limits": invalid})
+
+    def test_rotating_search_covers_the_entire_neighborhood_before_claiming_exhaustion(self) -> None:
+        rng = random.Random(7321)
+        for _ in range(8):
+            points = [[rng.random(), rng.random()] for _ in range(9)]
+            matrix = pilot.distances(points)
+            initial = list(range(len(points)))
+            rng.shuffle(initial)
+            route, work = pilot.improve(initial, matrix, "two_opt_rotate", 10000, trace=True)
+            again, _ = pilot.improve(initial, matrix, "two_opt_rotate", 10000, trace=True)
+            self.assertEqual(route, again)
+            self.assertEqual(work["stop_reason"], "neighborhood_exhausted")
+            final = pilot.tour_length(matrix, route)
+            for left in range(len(route) - 2):
+                for right in range(left + 2, len(route)):
+                    if left == 0 and right == len(route) - 1:
+                        continue
+                    neighbor = route[:left + 1] + list(reversed(route[left + 1:right + 1])) + route[right + 1:]
+                    self.assertGreaterEqual(pilot.tour_length(matrix, neighbor), final - 1e-10)
+
+    def test_feedback_spends_the_third_trial_only_after_the_declared_development_trigger(self) -> None:
+        for cap, sizes in [(0, [6]), (pilot.MOVE_LIMIT, [160])]:
+            with self.subTest(cap=cap), tempfile.TemporaryDirectory() as temporary, mock.patch.object(pilot, "MOVE_LIMIT", cap):
+                output = pathlib.Path(temporary) / "pilot"
+                summary = pilot.run(output, sizes, [8], 1, "feedback_search")
+                contract = json.loads((output / "task-contract.json").read_text())
+                control = json.loads((output / "development-restart-control/result.json").read_text())
+                triggered = any(row["work"][0]["stop_reason"] == "work_cap"
+                                and (row["work"][0]["last_accepted_check"] or 0) > .75 * 3 * cap
+                                for row in control["cases"])
+                self.assertEqual(triggered, cap > 0)  # These fixtures exercise both branches.
+                self.assertEqual(summary["rescue_triggered"], triggered)
+                self.assertEqual(summary["distinct_development_recipes"], 3 if triggered else 2)
+                self.assertEqual(contract["slots_per_arm"], 3)
+                ledger = [json.loads(line) for line in (output / "trials.jsonl").read_text().splitlines()]
+                decision = next(i for i, event in enumerate(ledger) if event["event"] == "feedback_decision")
+                frozen = next(i for i, event in enumerate(ledger) if event["event"] == "shortlist_frozen")
+                if triggered:
+                    planned = next(i for i, event in enumerate(ledger)
+                                   if event["event"] == "planned" and event["candidate"] == "rotating-search")
+                    self.assertLess(decision, planned)
+                    self.assertLess(planned, frozen)
+                    changed = json.loads((output / "development-rotating-search/recipe.json").read_text())
+                    original = json.loads((output / "development-restart-control/recipe.json").read_text())
+                    self.assertEqual({**original, "moves": ["two_opt_rotate"]}, changed)
+                    lesson = json.loads((output / "development-lesson.json").read_text())
+                    changed_score = json.loads((output / "development-rotating-search/result.json").read_text())["score"]
+                    base_score = json.loads((output / "development-baseline/result.json").read_text())["score"]
+                    self.assertEqual(lesson["incumbent_improved"], changed_score < base_score)
+                    self.assertAlmostEqual(lesson["observation"]["improvement"], control["score"] - changed_score)
+                else:
+                    self.assertFalse((output / "development-rotating-search").exists())
+                    self.assertFalse((output / "development-lesson.json").exists())
+                shortlist = json.loads((output / "shortlist.json").read_text())
+                confirmed = {event["candidate"] for event in ledger if event.get("stage") == "confirmation"}
+                self.assertEqual(confirmed, set(shortlist["finalists"]))
+                self.assertTrue(all(i > frozen for i, event in enumerate(ledger) if event.get("stage") == "confirmation"))
 
     def test_investment_study_counts_shared_trials_and_confirms_only_frozen_pipelines(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

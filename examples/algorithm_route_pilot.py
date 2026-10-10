@@ -90,12 +90,15 @@ def mst_preorder(matrix: list[list[float]]) -> list[int]:
 
 def improve(route: list[int], matrix: list[list[float]], move: str,
             limit: int, trace: bool = False) -> tuple[list[int], dict]:
-    if move not in {"two_opt", "relocate"}:
+    if move not in {"two_opt", "two_opt_rotate", "relocate"}:
         raise ValueError("Unknown neighborhood")
     if type(limit) is not int or limit < 0:
         raise ValueError("Move-check limit must be a nonnegative integer")
     route, checks, accepted = list(route), 0, 0
     count = len(route)
+    rotating = move == "two_opt_rotate"
+    neighborhood = "two_opt" if rotating else move
+    pivot = 0
     progress = []
     interval = max(1, (limit + 4) // 5)
 
@@ -108,13 +111,14 @@ def improve(route: list[int], matrix: list[list[float]], move: str,
     stop_reason, last_accepted_check = "work_cap", None
     while checks < limit:
         changed = False
-        for i, j in itertools.product(range(count), repeat=2):
-            if move == "two_opt":
+        indices = itertools.chain(range(pivot, count), range(pivot))
+        for i, j in itertools.product(indices, range(count)):
+            if neighborhood == "two_opt":
                 if j < i + 2 or (i == 0 and j == count - 1):
                     continue
                 a, b, c, d = route[i], route[(i + 1) % count], route[j], route[(j + 1) % count]
                 delta = matrix[a][c] + matrix[b][d] - matrix[a][b] - matrix[c][d]
-            elif move == "relocate":
+            elif neighborhood == "relocate":
                 if j in {i, (i - 1) % count}:
                     continue
                 before, vertex, after = route[(i - 1) % count], route[i], route[(i + 1) % count]
@@ -123,7 +127,7 @@ def improve(route: list[int], matrix: list[list[float]], move: str,
                          - matrix[before][vertex] - matrix[vertex][after] - matrix[a][b])
             checks += 1
             if delta < -1e-12:
-                if move == "two_opt":
+                if neighborhood == "two_opt":
                     route[i + 1:j + 1] = reversed(route[i + 1:j + 1])
                 else:
                     vertex = route.pop(i)
@@ -131,6 +135,9 @@ def improve(route: list[int], matrix: list[list[float]], move: str,
                 accepted += 1
                 last_accepted_check = checks
                 changed = True
+                if rotating:
+                    # Resume with the next anchor instead of rescreening the same prefix.
+                    pivot = (i + 1) % count
             if trace and checks % interval == 0:
                 checkpoint()
             if changed or checks == limit:
@@ -193,7 +200,7 @@ def fixtures(sizes: list[int], repetitions: int, seed_start: int, stage: str) ->
 
 def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], repetitions: int,
         study: str = "route_search") -> dict:
-    if study not in {"route_search", "route_investment"}:
+    if study not in {"route_search", "route_investment", "feedback_search"}:
         raise ValueError("Unknown study")
     if (min(sizes + confirmation_sizes) < 6 or max(sizes + confirmation_sizes) > 500
             or len(set(sizes)) != len(sizes) or len(set(confirmation_sizes)) != len(confirmation_sizes)
@@ -206,17 +213,30 @@ def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], r
     source = pathlib.Path(__file__).read_bytes()
     (output / "pilot-source.py").write_bytes(source)
     investment = study == "route_investment"
-    development_seed, confirmation_seed = (6100, 11100) if investment else (4100, 9100)
+    feedback = study == "feedback_search"
+    development_seed, confirmation_seed = ((8100, 13100) if feedback else
+                                           (6100, 11100) if investment else (4100, 9100))
     contract = {"study": study, "metric": "mean_closed_tour_length", "direction": "minimize", "score_kind": "synthetic_proxy",
                 "validity": "one closed permutation of every input vertex", "seed_development": development_seed,
                 "seed_confirmation": confirmation_seed, "sizes_development": sizes, "sizes_confirmation": confirmation_sizes,
-                "repetitions_per_regime": repetitions, "slots_per_arm": 6, "shared_baseline_counts_in_both_arms": True,
-                "max_distinct_development_recipes": 8 if investment else 11, "max_move_checks_per_case": 3 * MOVE_LIMIT,
+                "repetitions_per_regime": repetitions, "slots_per_arm": 3 if feedback else 6,
+                "shared_baseline_counts_in_both_arms": not feedback,
+                "max_distinct_development_recipes": 3 if feedback else 8 if investment else 11,
+                "max_move_checks_per_case": 3 * MOVE_LIMIT,
                 "confirmation": "Freeze baseline and each arm's development winner before generating confirmation. "
                                 "Deliver an arm's challenger only when it improves both phases, otherwise baseline.",
                 "source_hash": hashlib.sha256(source).hexdigest(), "python": platform.python_version(),
                 "limits": "Candidate counts and hard work caps match; actual compute, implementation effort, "
                           "and runtime differ. This is not an old/new skill or autonomous-agent experiment."}
+    if feedback:
+        contract["allocation"] = {
+            "baseline": "Farthest insertion plus fixed-anchor two-opt at the hard work cap.",
+            "control": "MST preorder plus identical two-opt; inspect development stopping/progress evidence.",
+            "trigger": "If any control case hits the cap and accepts a move in its last quarter, test rotating-anchor two-opt.",
+            "mechanism": "After acceptance, move to the next anchor rather than revisiting the same prefix. "
+                         "Keep constructor, objective, exhaustive neighborhood and total work cap unchanged.",
+            "no_trigger": "Do not spend the third slot without this study's predefined trigger.",
+        }
     if investment:
         contract["allocation"] = {
             "shared_prototypes": ["nearest", "farthest_insertion", "mst_preorder"],
@@ -229,7 +249,8 @@ def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], r
     development = fixtures(sizes, repetitions, development_seed, "development")
     save(output / "development.json", development)
     results, recipes = {}, {}
-    arms = {"greedy_parent": [], "mature_routes": []} if investment else {"parameter_only": [], "route_search": []}
+    arms = ({"feedback_search": []} if feedback else {"greedy_parent": [], "mature_routes": []}
+            if investment else {"parameter_only": [], "route_search": []})
 
     def event(**fields: object) -> None:
         with (output / "trials.jsonl").open("a", encoding="utf-8", newline="\n") as stream:
@@ -270,7 +291,44 @@ def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], r
         arms[arm].append(name)
 
     base = {"constructor": "nearest", "start": 0, "moves": []}
-    if investment:
+    if feedback:
+        full = {"start": 0, "moves": ["two_opt"], "move_limits": [3 * MOVE_LIMIT], "trace": True}
+        trial("baseline", {**full, "constructor": "farthest_insertion"}, "feedback_search", "baseline", None,
+              "Retain the previously supported construction-plus-search route under this protocol", "None")
+        trial("restart-control", {**full, "constructor": "mst_preorder"}, "feedback_search", "route_probe", "baseline",
+              "Determine whether this valid alternative is still progressing at the hard cap",
+              "Nearby leader settings defer to diagnosing the alternative's search allocation")
+        control = results["restart-control"]
+        progressing = [row["id"] for row in control["cases"]
+                       if row["work"][0]["stop_reason"] == "work_cap"
+                       and (row["work"][0]["last_accepted_check"] or 0) > 0.75 * full["move_limits"][0]]
+        decision = {
+            "observation": {"control_score": control["score"], "cap_with_recent_progress": progressing},
+            "explanation": "Repeated scans from anchor zero may underexpose other anchors at this cap; not proven by the trace.",
+            "next_test": "Compare rotating anchors against the same control at the same cap" if progressing else "Freeze without a rescue",
+            "prediction": "Rotating anchors will improve development mean length relative to restart-control",
+            "rejection_test": "No strict development gain against restart-control contradicts this prediction",
+            "scope": "Generated Euclidean instances; this constructor, neighborhood, scale and cap",
+        }
+        save(output / "feedback-decision.json", decision)
+        event(event="feedback_decision", **decision)
+        if progressing:
+            trial("rotating-search", {**recipes["restart-control"], "moves": ["two_opt_rotate"]},
+                  "feedback_search", "search_allocation", "restart-control", decision["prediction"],
+                  "A specific unresolved work-allocation mechanism precedes another neighboring cap variant")
+            gain = control["score"] - results["rotating-search"]["score"]
+            lesson = {"observation": {"control_score": control["score"],
+                                       "changed_score": results["rotating-search"]["score"], "improvement": gain},
+                      "prediction_status": "supported_on_development" if gain > 0 else "contradicted_on_development",
+                      "incumbent_improved": results["rotating-search"]["score"] < results["baseline"]["score"],
+                      "explanation_status": "Ordering changed alone; this does not prove prefix rescans were the cause",
+                      "prerequisites": decision["scope"],
+                      "reuse": "Retest scan scheduling when capped iterative search leaves other moves underexposed; "
+                               "do not assume rotating order transfers or every weak route deserves a rescue",
+                      "evidence": ["development-restart-control/result.json", "development-rotating-search/result.json"]}
+            save(output / "development-lesson.json", lesson)
+            event(event="development_lesson", **lesson)
+    elif investment:
         for name, constructor in [("baseline", "nearest"), ("farthest_insertion", "farthest_insertion"),
                                   ("mst_preorder", "mst_preorder")]:
             trial(name, {**base, "constructor": constructor}, "greedy_parent", "route_prototype", None,
@@ -364,6 +422,10 @@ def run(output: pathlib.Path, sizes: list[int], confirmation_sizes: list[int], r
                        for row in result["cases"])}
             for name, result in results.items() if recipes[name]["moves"]
         }
+    if feedback:
+        summary["rescue_triggered"] = bool(progressing)
+        if progressing:
+            summary["rescue_vs_control_fraction"] = 1 - results["rotating-search"]["score"] / control["score"]
     save(output / "summary.json", summary)
     if source != pathlib.Path(__file__).read_bytes():
         raise ValueError("Pilot implementation changed during execution")
@@ -376,7 +438,7 @@ def main() -> None:
     parser.add_argument("--sizes", nargs="+", type=int, default=[60, 100, 160])
     parser.add_argument("--confirmation-sizes", nargs="+", type=int, default=[80, 140])
     parser.add_argument("--cases-per-regime", type=int, default=2)
-    parser.add_argument("--study", choices=["route_search", "route_investment"], default="route_search")
+    parser.add_argument("--study", choices=["route_search", "route_investment", "feedback_search"], default="route_search")
     args = parser.parse_args()
     print(json.dumps(run(args.output_dir, args.sizes, args.confirmation_sizes, args.cases_per_regime, args.study), indent=2))
 

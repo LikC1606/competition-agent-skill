@@ -110,7 +110,21 @@ Reuse intermediates only when their dependencies match. A changed feature pipeli
 
 ## Learn from Evaluated Pairs
 
-Compare an informative candidate with its parent or another matched candidate using code differences, objective deltas, case-level behavior, and cost. Record the observation, the proposed explanation, and the next falsifiable test separately. A model-generated explanation does not establish causality. Use failed predictions to revise or retire hypotheses. Retain lessons in `research.md` with task/metric/constraints, success and failure regimes, and result paths. On a later task, recheck prerequisites and run a transfer test; do not turn a historical lesson into a universal rule.
+Use an informative matched comparison to change the next decision, not merely to narrate a score. Contrast candidate code/configuration, full-objective results, representative regimes, stopping behavior and actual cost. Reuse existing artifacts; extra profiling, ablation or measurements need a consequential question and budget.
+
+Keep three layers separate in `research.md`:
+
+| Layer | Useful content |
+| --- | --- |
+| Observation | Parent/candidate IDs and result paths; tested change, matched fidelity, gain/regressions and cost. State whether the prediction was supported, contradicted or unresolved. |
+| Explanation | The proposed reason and an alternative explanation still compatible with the evidence. An improving trace may motivate work-allocation changes without proving wasted work caused the loss. |
+| Next test or scoped lesson | A specific change, prerequisites, expected observation, rejection condition, and why it outranks the nearest affordable alternative; or a bounded lesson when no trial fits. |
+
+If a prediction fails, revise its mechanism, applicability or expected observation; do not preserve the same claim behind a new candidate name. If the result is unresolved because of defects or uncertainty, retain that limitation rather than rewriting it as a method failure. If a change improves its parent but loses to the incumbent, retain both conclusions: local progress supports that tested implementation, while promotion still follows the full-objective comparison. Another refinement needs its own headroom and cost argument.
+
+Carry only decision-relevant lessons forward, with task/metric, scale/resources, success and failure regimes, and linked evidence. Preserve contradictory findings instead of accumulating only successful advice. A learning entry should change an action, constraint or falsifiable prediction; skip generic reflections that do not. On resumption, check the lesson's dependencies before using it. On a different task, verify prerequisites and make a budgeted transfer test; prior gains are not promised gains. Learned-model examples concern experiment records, not online weight updates or permission to reuse held-out labels.
+
+Examples of testable feedback are replacing search order when capped work still progresses, revising training signal when permitted labels/features leave systematic errors, or changing solver encoding when the measured scale bottleneck persists. These are task-qualified choices, not defaults. A candidate's internal objective approximation, schedule or training loss may change; the official evaluator and confirmation separation remain fixed. Stop at the remaining budget even when feedback suggests another useful test.
 
 ## Spend Evaluation Budget Where It Changes Decisions
 
