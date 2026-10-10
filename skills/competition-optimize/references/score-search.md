@@ -76,6 +76,14 @@ Evaluate the most promising candidates at full fidelity against the incumbent on
 
 Distinguish execution/training randomness from finite-sample uncertainty and distribution mismatch. For fixed scalar predictions evaluated on exchangeable samples, [paired row/group bootstrap](data-model.md#estimate-paired-sampling-uncertainty) can estimate sensitivity to the validation sample. Declare independent units and sampling settings before interpreting the result; dependent groups stay together. For training randomness, rerun matched training seeds; for distribution shifts, confirm on task-appropriate independent scenarios. More draws on the same cached predictions do not resolve either issue. Report uncertain gains and retain promising alternatives without making significance a universal promotion gate, especially for exact deterministic contest objectives.
 
+### Check Whether the Evidence Can Rank Candidates
+
+Before a fine parameter or weight sweep, ask whether the current ranking is stable enough to guide it. Small development sets, loss concentrated in a handful of cases, contradictory regimes, or gains comparable to variation suggest a measurement experiment. Choose matched folds, training seeds, instances, or episodes according to the task's uncertainty and remaining budget. Keep confirmation untouched. Preserve each repetition's score and compute the contract's aggregation; the best fold or luckiest seed is not the comparison score.
+
+For learned models, declare internal folds in the training/development pool and fit every learned transform inside each fold. Compare the same pipelines on the same folds; specify pooled predictions versus mean fold scores because they can rank candidates differently. For algorithms and policies, use the same instances and environment seeds with the full declared resource limit. A cheap repeat can reveal unstable selection without changing either candidate.
+
+Unchanged candidates repeated under a declared measurement protocol consume time/compute. Searching for a favorable seed is candidate selection, and tested seed variants consume trial slots. A multi-seed model ensemble is also a new candidate with combined inference costs. Save enough budget to evaluate the mechanism actually selected; do not silently add a large cross-validation campaign to a small run.
+
 ## Keep Search and Confirmation Separate
 
 Freeze the development metric, evaluation split, case weights, and final confirmation protocol before tuning. Choose a split appropriate to deployment: group or time splits when samples are dependent, fresh instances for combinatorial tasks, and matched repeated seeds for stochastic simulations.
@@ -83,6 +91,8 @@ Freeze the development metric, evaluation split, case weights, and final confirm
 Keep repetitions of one candidate distinct from independent complete agent runs when assessing the skill itself.
 
 Use development results to select a small final shortlist. Evaluate the frozen shortlist on the confirmation set within the reserved budget. If its errors guide another edit, that set has become development evidence; document the reuse and arrange fresh confirmation where possible. Do not describe repeatedly inspected fixtures as unseen.
+
+Record a `shortlist.json` before reading confirmation scores: finalist IDs and artifact hashes, reference/fallback, shortlist size, comparison protocol, and the decision rule for ties, uncertain gains, or ranking reversal. The rule should suit the task: a fixed exhaustive contest objective may permit direct metric choice, while estimated generalization needs its sampling limits stated. Apply the recorded rule instead of inventing a new one after seeing the outcomes. Confirmation can evaluate a frozen shortlist under that policy; tuning another configuration or expanding the shortlist from its feedback needs fresh evidence.
 
 Report the best development result separately when confirmation is unavailable or disagrees. Full-data retraining produces final artifacts, not a new unbiased validation score.
 

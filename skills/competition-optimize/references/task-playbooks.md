@@ -8,6 +8,8 @@ For unweighted scalar regression or binary CSV predictions, [the local predictio
 
 Identify the statistical unit and intended test conditions before training. Determine whether samples share patients/users/devices, follow time order, or contain duplicates; choose group/time separation where appropriate. Check distribution shifts using features permitted by the rules. Keep target-dependent feature generation inside training folds.
 
+Inspect loader/cache preprocessing and retain fitting-row and pipeline lineage as described in [training and validation evidence](data-model.md#establish-training-and-validation-evidence). Small held-out sets can reverse model rankings; resolve close comparisons with affordable matched internal folds or seeds before deep tuning. Freeze a delivery rule for confirmation disagreements rather than selecting a new rule from held-out outcomes.
+
 Build a cheap sanity baseline and, when budget allows, a credible model from a different family suggested by task evidence. Compare the official metric from aligned validation predictions; the training loss or accuracy may not be the contest objective. Interpret model rankings jointly with feature/data quality and error regimes.
 
 | Observation | Experiment to consider | Confirmation needed |
