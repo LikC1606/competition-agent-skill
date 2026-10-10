@@ -83,6 +83,12 @@ profile 显示旧实现每次 bootstrap draw 都重建标签/预测数组，重�
 
 性能复现：`python examples/benchmark_prediction_batch.py --output-dir <仓库外的新目录>`。本次计时与源码 hashes 在 `D:\华为云\tmp\batch-efficiency-20261010\benchmark.json`，真实预测复测及摘要在 `D:\华为云\tmp\batch-real-predictions-20261010\audit.json`。
 
+## 训练前检查与复用
+
+训练前新增[划分检查](../skills/competition-optimize/references/validation-split.md)：先核对 ID，再按验证协议检查分组、前向时间和标签可用边界，失败时先修正协议，避免继续基于错误划分训练。回执覆盖输入与检查器 hash 和配置；同一划分下多个模型可复用一次检查，不代表实际拟合自动得到验证。本轮未测量整体提速或提分。
+
+新增 13 项测试覆盖重叠、元数据覆盖、多个分组边界、时间倒序/并列、标签延迟、时区、精确间隔、输入变化和拒绝覆盖；全部 119 项测试通过。两项真实数据 pilot 的 12 份评分/预测和交付选择保持一致，并拒绝注入的 ID 重叠；合成 CLI 分组和标签延迟案例与预期相符。真实分组/时间任务的完整训练效果仍待验证，详见 [pilot 记录](tabular-pilot.md)。
+
 ## 复现与证据
 
 先创建仓库外的新目录，保存来自自己仓库的可信旧脚本，再执行对照：

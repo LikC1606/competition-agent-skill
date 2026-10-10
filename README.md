@@ -63,6 +63,8 @@
 
 复用预测缓存时，可给[比较命令](skills/competition-optimize/references/data-model.md#compare-local-scores)增加 `--truth`，核验标签/预测字节及安装中的 evaluator，并重算保存的分数，输出独立核验回执。快速比较继续保留；评分口径变化时仅重做受影响的评测，数据或训练变化时另核对拟合来源。
 
+训练前可用[数据划分检查](skills/competition-optimize/references/validation-split.md)核对 ID 重叠，并按协议检查分组隔离、时间边界与标签可用时间。回执可在依赖一致时复用，避免逐模型重复检查；它核验声明的划分记录，实际拟合与上游预处理仍需另查。
+
 ## 参考项目
 
 | 项目 | 参考重点 |

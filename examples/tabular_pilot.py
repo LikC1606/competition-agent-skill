@@ -150,9 +150,8 @@ def run_task(output: pathlib.Path, name: str, binary: bool) -> dict:
                                                stratify=target if binary else None)
     train, development = train_test_split(remaining, test_size=0.25, random_state=SEED + 1,
                                          stratify=target[remaining] if binary else None)
-    assert not (set(train) & set(development) or set(train) & set(confirmation)
-                or set(development) & set(confirmation))
-    assert len(np.unique(features, axis=0)) == len(target), "Duplicate rows require another split policy"
+    if len(np.unique(features, axis=0)) != len(target):
+        raise RuntimeError("Duplicate rows require another split policy")
     sample_id = lambda index: f"{int(index):04d}"
     split_ids = {stage: [sample_id(index) for index in sorted(values)] for stage, values in
                  [("train", train), ("development", development), ("confirmation", confirmation)]}
@@ -183,6 +182,11 @@ def run_task(output: pathlib.Path, name: str, binary: bool) -> dict:
         "third_trial": "Equal blend of baseline and best tree if both win some development cases; no weight sweep",
     }
     save_json(root / "task-contract.json", contract)
+    save_csv(root / "row-metadata.csv", ["id"], [(sample_id(index),) for index in indexes])
+    tool(root, "audit_data_split.py", [
+        "--splits", root / "splits.json", "--metadata", root / "row-metadata.csv",
+        "--output", root / "split-audit.json",
+    ])
     with (root / "research.md").open("x", encoding="utf-8", newline="\n") as stream:
         stream.write("# Fixed pilot hypotheses\n\n"
                      "Dataset provenance: sklearn's bundled loader and saved dataset-description.txt.\n"
@@ -220,6 +224,7 @@ def run_task(output: pathlib.Path, name: str, binary: bool) -> dict:
             "model_hash": digest((candidate / "model.joblib").read_bytes()),
             "configuration_hash": digest((candidate / "configuration.json").read_bytes()),
             "train_id_hash": digest(json.dumps(split_ids["train"]).encode()),
+            "split_audit_hash": digest((root / "split-audit.json").read_bytes()),
             "fit_seconds": fit_seconds, "development_prediction_seconds": prediction_seconds,
             "model_bytes": (candidate / "model.joblib").stat().st_size,
         }
