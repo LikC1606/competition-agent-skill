@@ -14,6 +14,8 @@ Stages are `smoke` (one small correctness run), `short` (N 100/400/10000, Q 1/10
 
 The official per-testcase score is `0.55 * Scoreuniformity + 0.35 * Scorevariance + 0.10 * Scorespeed`. Speed is 1 when measured time `t <= tfast`, 0 when `t >= tslow`, and otherwise `1 - ln(t / tfast) / ln(tslow / tfast)`. The published problem statement does not provide numeric `tfast` and `tslow`; the adapter therefore reports the local quality proxy `0.55 * uniformity + 0.35 * stability` and operation/init timing separately. It does not calculate the official total score. Do not infer the missing speed contribution or official test aggregation.
 
+For a different scheduling method, validate counts, interface behavior and score calculations independently; its valid grid may differ from the incumbent. Exact-grid equality is appropriate for a deliberately equivalent speed optimization, not a default restriction on score search. Preserve quality/runtime tradeoffs when speed parameters are unknown: a self-chosen slowdown ceiling cannot prove a net official-score loss. Prioritize credible time-limit risks with the timing boundary and hardware scope stated, rather than repeatedly polishing equivalent grids while feasibility remains unresolved.
+
 The adapter snapshots the candidate and writes binaries, logs, CSV, JSON, and package artifacts only under the requested output directory. It reuses the competition harness and is not a sandbox; only run candidate code you are authorized to execute. The candidate is a single UTF-8 C++ source file using the provided `solution.h` interface and standard library.
 
 Compare completed runs with:

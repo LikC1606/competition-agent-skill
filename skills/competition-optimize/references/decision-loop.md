@@ -31,7 +31,9 @@ If the card is missing, its prefix differs, or the contract changed, rebuild rel
 
 For reused prediction CSV scores, [comparison with `--truth`](data-model.md#compare-local-scores) can audit recorded scores against frozen truth and snapshots once before relying on them. The ledger inspector's `ready` status does not perform this check. Reuse a passed audit only while its recorded dependencies match; preserve unaffected artifacts and redo the specific invalidated work.
 
-Reconcile consumed and remaining trials/time/compute, the confirmation/packaging reserve, the incumbent's promotion scope, alternatives, unfinished work, and frozen shortlist. If records do not establish remaining budget, state the gap and account for visible work conservatively; never reset the allowance. When further improvement is requested after delivery, retain the selected incumbent and spent budget. Further search needs remaining authorized budget and fresh confirmation if earlier confirmation feedback is used for tuning; otherwise deliver the existing evidence and explain the limit.
+Reconcile trials/time/compute, the confirmation/packaging reserve, incumbent scope, alternatives, unfinished work and frozen shortlist. Establish the origin and scope of a recorded limit: an explicit user cap, a skill default or an agent estimate. Preserve consumed work and never reset a user cap. Missing records do not establish extra allowance under an explicit limit; reconcile the gap conservatively.
+
+After a completed default work round, a new user request to continue permits another bounded round under `SKILL.md` when no explicit user cap prevents it. Preserve the same task history and cumulative costs; record the new round and default limits prospectively, without rewriting old contracts or treating historical counts as a lifetime default cap. An old skill default is not itself a user-imposed limit. Actual user caps and explicit extensions remain binding at their stated scope. Never renew a round without a user request. If confirmation feedback guides new search, it becomes development evidence and fresh confirmation is needed.
 
 ## Route the Current Decision
 
@@ -69,7 +71,7 @@ Ledger checkpoint: <checkpoint file, or verified byte length + prefix SHA-256>; 
 Incumbent: <ID>; scope: <development/provisional/confirmed>; evidence: <result and checks>
 Alternatives: <IDs and the uncertainty worth preserving>
 Routes: <current/alternative routes; tested maturity/resource setting; unresolved mechanism; research.md section>
-Budget: <consumed / authorized trials, time, compute>; reserved: <confirmation + packaging>
+Budget: <limit origin/scope; round consumed / limits; cumulative costs; explicit cap remaining>; reserved: <confirmation + packaging>
 Unfinished: <trial ID and output/process, or none>
 Frozen shortlist: <path/hash, or not yet frozen>
 

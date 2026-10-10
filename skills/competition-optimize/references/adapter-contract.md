@@ -12,6 +12,8 @@ Before search, the adapter or sealed task contract must identify:
 - Development and validation workloads, data splits, seeds, and repetition policy.
 - Which measurements are score inputs and which are diagnostics only, and which measured costs count toward the experiment budget.
 
+Identify the origin and scope of constraints: competition rules, explicit user limits, or provisional agent policies/defaults. A convenient acceptance threshold, speed-only search scope or exact-incumbent-output check is not a task requirement merely because the agent recorded it in a contract. Preserve evaluation identity, but do not restrict permissible solution changes to simplify comparison.
+
 If the official score cannot be computed, return its value as unavailable. Do not silently replace it with a convenient proxy. Preserve individual score components so the optimizer can compare tradeoffs without inventing weights.
 
 ## Verify the Executable Meaning
@@ -53,7 +55,7 @@ Each invocation should produce an immutable machine-readable result with informa
 }
 ```
 
-`status` describes whether evaluation executed; `valid` describes whether the candidate passed the hard rules checked at that stage. Preserve individual check outcomes and expected/completed case counts so an inexpensive stage cannot imply all rules passed. Partial or failed evaluations cannot promote a candidate. Numeric score inputs must be finite; missing values need an explicit reason or officially specified failure treatment.
+`status` describes whether evaluation executed; `valid` describes whether the candidate passed the hard rules checked at that stage. Check task feasibility/invariants, not output identity with the incumbent, unless unique output, user requirements or an intentionally equivalent optimization calls for it. Preserve individual check outcomes and expected/completed case counts so an inexpensive stage cannot imply all rules passed. Partial or failed evaluations cannot promote a candidate. Numeric score inputs must be finite; missing values need an explicit reason or officially specified failure treatment.
 
 `score.kind` is `official_metric` (the specified formula), `proxy`, or `unknown`; `score.origin` is `local` or `platform`. A local evaluation using the official metric is still a local estimate, not a leaderboard result. `score.direction` is `maximize` or `minimize`. A proxy must name its formula and assumptions. An unknown score has a null value and explicit missing terms. For tasks with multiple test cases, report per-case scores and use the official aggregation rather than an unweighted average chosen by the adapter author.
 
