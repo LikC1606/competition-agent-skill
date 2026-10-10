@@ -53,7 +53,7 @@ Resolve a rules/scoring defect within the authorized budget even when search is 
 
 Before execution, ask: which observation changes the next decision, which evidence can be reused, and does implementation + execution + analysis + possible full-fidelity follow-up fit outside the reserve? Use measured costs where available and label estimates. No plausible decision change means defer that action. Full-fidelity promotion, provenance checks, and confirmation remain necessary even when intermediate work is cached.
 
-For score-seeking runs, inspect the current implementation and pertinent successful/failed source changes, then recover the [route comparison](score-search.md#compare-routes-before-choosing-variants). Recover tested maturity/resource settings and unresolved mechanisms: promotion rank alone does not determine investment. Use [code/history proposal guidance](score-search.md#propose-from-code-and-history) and [failure evidence](score-search.md#decide-whether-to-repair-deepen-or-retire) to choose the next concrete implementation. When recent gains are negligible, revisit the representation or mechanism. Preserve the route map across continuation; rebuild only when conditions or new evidence change it. Resumption does not start a parameter campaign.
+For score-seeking runs, inspect the current implementation and pertinent successful/failed source changes, then recover the [route comparison](score-search.md#compare-routes-before-choosing-variants) and candidate archive. Recover tested maturity/resource settings and unresolved mechanisms: promotion rank alone does not determine investment. Use [code/history proposal guidance](score-search.md#propose-from-code-and-history), [archive and route switching](score-search.md#candidate-archive-and-route-switching) and [failure evidence](score-search.md#decide-whether-to-repair-deepen-or-retire) to choose the next concrete implementation. When recent gains are negligible, revisit the representation or mechanism. Preserve the archive and route map across continuation; rebuild only when conditions or new evidence change them. Resumption does not start a parameter campaign.
 
 Keep rejected hypotheses with their mechanism, prerequisites, and rejection evidence. Recover the applicable [comparison lessons](score-search.md#learn-from-evaluated-pairs), including contradicted predictions and local improvements that did not beat the incumbent. They should identify the next test or constraint, not replace artifact checks. Reopen a rejected hypothesis when a dependency, implementation diagnosis, or new source changes that evidence. A new filename or another request to continue is not new evidence. After a failure, revise the hypothesis or switch route; do not regenerate the same configuration through repeated broad searches.
 
@@ -79,10 +79,12 @@ Frozen shortlist: <path/hash, or not yet frozen>
 
 Next action: <one action and parent IDs>
 Feedback source: <trial/result path; measured comparison vs parent/best; validity and cost; prediction status>
+Archive update: <candidate ID/fingerprint/status; retained route; failure mechanism or unresolved opportunity>
 Reconnaissance: <code path, relevant history, hashes checked; reused evidence and unresolved gap>
 Code basis: <current snapshot/hash; relevant function/component and limiting behavior>
 Related history: <pertinent successful/failed trial IDs; lessons and scope; why this differs from rejected attempts>
 Optimization proposal: <specific code/pipeline change, mechanism and parent; expected observation; why this change now>
+Route decision: <exploit/explore; why this route now; switch trigger>
 Quality gate: <interface/rules/evaluator/artifact/screen checks and outcome>
 Evidence to reuse / invalidate: <paths, dependency hashes, affected descendants>
 Execution: <command or implementation target, stage/fidelity, resource cap, total cost estimate>

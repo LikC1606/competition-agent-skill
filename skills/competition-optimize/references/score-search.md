@@ -29,10 +29,24 @@ Produce one short actionable proposal using the existing decision card or notes:
 | Historical evidence | Trial/result IDs, what worked or failed, and why the proposal differs from a rejected implementation |
 | Optimization mechanism | Concrete replacement or change, coupled components, expected effect on the declared objective and resources |
 | Test and cost | Observable prediction, validity checks, matched comparison, rejection condition and implementation/evaluation cost |
+| Novelty and decision | Fingerprint/parent, archive entries it differs from, route choice (exploit/explore), and what result would trigger the next switch |
 
 Treat the diagnosis as a hypothesis when evidence does not establish its cause. Compare the proposal with the nearest credible affordable alternative when that changes the choice. Implement the chosen proposal in the same round. The proposal is an execution decision, not another report to finish before coding.
 
 Parameter search is not the default: no automatic grids, random/Bayesian searches, neighboring-value sweeps or seed hunting. Run a dedicated tuning campaign only when the user explicitly requests one. Internal settings may change as part of a code-supported mechanism; the tested proposal must explain that mechanism rather than enumerate values. History may favor a local change or a complete method replacement; do not force either solely from an action menu.
+
+## Candidate Archive and Route Switching
+
+Keep `candidate-archive.json` or an equivalent append-only record in the run directory. Each entry should include candidate ID, parent IDs, source/configuration fingerprint, route/mechanism, evaluator and workload hashes, validity, objective components, resource cost, status (`incumbent`, `runner_up`, `promising`, `rejected`, or `unresolved`), and the evidence that permits or blocks further investment. Store a short failure mechanism for invalid or weak candidates instead of only a score.
+
+Before a new implementation, compare its fingerprint and mechanism with the archive. A duplicate or near-duplicate needs a changed prerequisite, a diagnosed defect, or a new resource/evaluation regime; a new filename is not novelty. Preserve a runner-up when its tradeoff or route may matter, even if it does not beat the incumbent.
+
+Choose between two actions after each valid comparison:
+
+- **Exploit** a route when its code/history shows a specific unresolved mechanism, progress at a legal cap, or a complementary strength worth completing.
+- **Explore** a different route when the current route has repeated comparable weak results, a saturated mechanism, or no supported follow-up. Change representation, model family, neighborhood, data signal, objective component, or policy logic as the task permits.
+
+Switching routes consumes a candidate implementation, but prevents a cheap sequence of edits from monopolizing the round. Do not impose a fixed exploration quota; use the archive evidence and remaining confirmation reserve. Report the reason for every switch or continued investment.
 
 ## Compare Routes Before Choosing Variants
 
