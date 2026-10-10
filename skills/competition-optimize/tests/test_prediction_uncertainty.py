@@ -20,6 +20,56 @@ evaluator = importlib.import_module("evaluate_predictions")
 
 
 class BootstrapTests(unittest.TestCase):
+    def assert_matches_resampled_metric(self, metric: str, labels: list[float], baseline: list[float],
+                                       candidate: list[float], units: list[list[int]], seed: int = 8301) -> None:
+        rows, draws = estimator.bootstrap(metric, labels, baseline, candidate, units, 200, seed, 1e-15, 10000)
+        rng, expected_draws = random.Random(seed), 0
+        for row in rows:
+            indexes = [index for _ in units for index in units[rng.randrange(len(units))]]
+            expected_draws += len(indexes)
+            truth = [labels[index] for index in indexes]
+            if metric == "roc_auc" and len(set(truth)) < 2:
+                self.assertEqual(row["status"], "unavailable")
+                continue
+            expected = [evaluator.calculate_metric(metric, truth, [values[index] for index in indexes])
+                        for values in [baseline, candidate]]
+            self.assertEqual(row["case_count"], len(indexes))
+            self.assertEqual(row["baseline_score"], expected[0])
+            self.assertEqual(row["candidate_score"], expected[1])
+            improvement = (expected[1] - expected[0] if metric == "roc_auc" else expected[0] - expected[1])
+            self.assertEqual(row["objective_improvement"], improvement)
+        self.assertEqual(draws, expected_draws)
+
+    def test_cached_metrics_match_full_resampling_for_all_metrics_and_unequal_groups(self) -> None:
+        labels = [0, 1, 1, 0, 1, 0, 0]
+        baseline, candidate = [0, 1, 0.5, 0.5, 0, 1, 0.25], [0.7, 0.7, 0.5, 0.2, 1, 0, 0.7]
+        for metric in evaluator.METRIC_DIRECTIONS:
+            for units in [[[index] for index in range(7)], [[0], [1, 2, 3, 4], [5, 6]]]:
+                with self.subTest(metric=metric, units=units):
+                    self.assert_matches_resampled_metric(metric, labels, baseline, candidate, units)
+
+    def test_regression_rescales_each_draw_when_extreme_rows_are_absent(self) -> None:
+        labels, baseline, candidate = [0] * 4, [1e308, 1e-300, 2e-300, 3e-300], [5e307, 0, 1e-300, 2e-300]
+        for metric in ["rmse", "mae"]:
+            with self.subTest(metric=metric):
+                self.assert_matches_resampled_metric(metric, labels, baseline, candidate, [[i] for i in range(4)])
+                rows, _ = estimator.bootstrap(metric, labels, baseline, candidate, [[i] for i in range(4)],
+                                              200, 8301, 1e-15, 10000)
+                self.assertTrue(any(0 < row["baseline_score"] < 1e-299 for row in rows))
+
+    def test_cached_auc_handles_signed_zero_extreme_ranks_and_unselected_tie_end_rows(self) -> None:
+        labels = [0, 1, 1, 0, 0, 1]
+        baseline, candidate = [-1e308, -0.0, 0.0, 1e308, 0.0, 1e308], [1e308, 0, 0, -1e308, 0, 0]
+        self.assert_matches_resampled_metric("roc_auc", labels, baseline, candidate, [[0, 1], [2], [3, 4, 5]])
+
+    def test_invalid_full_inputs_are_rejected_before_cached_sampling(self) -> None:
+        cases = [("rmse", [0, 0], [1]), ("mae", [0, 0], [0, math.nan]),
+                 ("rmse", [1e308, 0], [-1e308, 0]), ("binary_log_loss", [0, 1], [0, 2]),
+                 ("roc_auc", [0, 0.5], [0, 1]), ("unknown", [0, 1], [0, 1])]
+        for metric, labels, values in cases:
+            with self.subTest(metric=metric, values=values), self.assertRaises(evaluator.PredictionFailure):
+                estimator.bootstrap(metric, labels, values, values, [[0], [1]], 100, 0, 1e-15, 1000)
+
     def test_identical_predictions_have_exactly_zero_difference_in_every_paired_draw(self) -> None:
         labels = [1, 2, 3, 4]
         predictions = [1.2, 1.5, 3.7, 3]

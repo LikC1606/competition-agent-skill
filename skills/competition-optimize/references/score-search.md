@@ -76,6 +76,14 @@ Evaluate the most promising candidates at full fidelity against the incumbent on
 
 Distinguish execution/training randomness from finite-sample uncertainty and distribution mismatch. For fixed scalar predictions evaluated on exchangeable samples, [paired row/group bootstrap](data-model.md#estimate-paired-sampling-uncertainty) can estimate sensitivity to the validation sample. Declare independent units and sampling settings before interpreting the result; dependent groups stay together. For training randomness, rerun matched training seeds; for distribution shifts, confirm on task-appropriate independent scenarios. More draws on the same cached predictions do not resolve either issue. Report uncertain gains and retain promising alternatives without making significance a universal promotion gate, especially for exact deterministic contest objectives.
 
+### Avoid Work That Cannot Change the Next Decision
+
+Measure wall time by phase so research, setup, candidate execution, and diagnostic overhead are visible. Resume from the latest decisions and unresolved trials; reopen raw logs or sources only for a current uncertainty. Reuse a verified contract, source finding, or baseline while its prerequisites and dependency hashes still match. Load only the relevant task/reference section.
+
+Start with a cheap valid score comparison. Use detailed slicing, profiling, bootstrap, or repeated training for pairs whose outcome could change promotion or suggest the next mechanism. A clearly rejected candidate may need only its rejection evidence; a close finalist may justify a fuller analysis. These tools remain available when a weak route has informative complementary errors or another unresolved mechanism. Cache verified predictions and deterministic intermediates at their dependency boundaries; recompute only affected descendants after a change.
+
+When a stage dominates cost, profile it before increasing search breadth. Improve loading, preprocessing, compilation, or score calculation when that buys useful trials within the same budget. Validate equivalent outputs against the original path and include required setup/verification cost in the efficiency claim. Keep full-fidelity hard checks and the independent confirmation reserve; computational speed alone does not establish a score gain.
+
 ### Check Whether the Evidence Can Rank Candidates
 
 Before a fine parameter or weight sweep, ask whether the current ranking is stable enough to guide it. Small development sets, loss concentrated in a handful of cases, contradictory regimes, or gains comparable to variation suggest a measurement experiment. Choose matched folds, training seeds, instances, or episodes according to the task's uncertainty and remaining budget. Keep confirmation untouched. Preserve each repetition's score and compute the contract's aggregation; the best fold or luckiest seed is not the comparison score.
