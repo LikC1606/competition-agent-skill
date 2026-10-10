@@ -202,15 +202,26 @@ class IterationTraceTests(unittest.TestCase):
     def test_source_only_candidates_do_not_require_a_configuration_artifact(self) -> None:
         # A code candidate without a separate training snapshot still has to
         # change its evaluated source; configuration-specific checks are not universal.
+        # Use program evidence, rather than calling prediction CSVs source code.
+        candidates = {}
+        for name in ("parent-code", "child-code"):
+            source = self.root / (name + ".py")
+            source.write_text(f"def solve(): return {name!r}\n", encoding="utf-8")
+            result = self.root / (name + "-result.json")
+            result.write_text(json.dumps({"status": "success", "valid": True,
+                                          "candidate_hash": archive.hash_path(source), "candidate_scope": "program_source",
+                                          "validity_scope": "program_and_fixture_checks"}) + "\n", encoding="utf-8")
+            candidates[name] = {"source": source, "result": result}
         root = self.root / "code-archive.jsonl"
         old = self.path
         self.path = root
         try:
-            self.call("record", "--candidate-id", "baseline", "--source", str(self.baseline["source"]),
-                      "--result", str(self.baseline["result"]), "--route", "representation", "--mechanism", "code",
+            parent = candidates["parent-code"]
+            self.call("record", "--candidate-id", "baseline", "--source", str(parent["source"]),
+                      "--result", str(parent["result"]), "--route", "representation", "--mechanism", "code",
                       "--status", "incumbent")
-            self.propose(target=self.baseline["source"])
-            child = self.candidate("code-successor", [1, 4, 9])
+            self.propose(target=parent["source"])
+            child = candidates["child-code"]
             self.call("record", "--candidate-id", "child", "--parent", "baseline", "--source", str(child["source"]),
                       "--result", str(child["result"]), "--route", "representation", "--mechanism", "new code",
                       "--status", "runner_up", "--proposal-id", "nonlinear", "--prediction-status", "supported",

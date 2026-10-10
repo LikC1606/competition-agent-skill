@@ -17,6 +17,8 @@ Use a bounded reconnaissance pass before expensive implementation: map the entry
 
 Maintain a compact candidate archive in the run directory. Keep the incumbent, the best representative of each materially different route, promising unresolved candidates, and rejected mechanisms with their evidence. Give each candidate a code/configuration fingerprint and parent IDs. Before implementing, compare the proposed change with the archive; a near-duplicate of a rejected change needs new evidence or a changed prerequisite, otherwise replace the proposal.
 
+Separate implementation identity from output identity. Different stochastic predictions from unchanged code/recipe are measurements of one implementation; preserve their scores and costs, and resolve consequential uncertainty under the declared repetition protocol. Improve the actual code or complete recipe next. For algorithm source plus configuration, a genuine source change can retain the same settings.
+
 For repeated trials, use [`candidate_archive.py`](scripts/candidate_archive.py) or verified equivalent records. Start the next decision with `brief`: retrieve matched best versions, recent feedback/failures, code paths and pending proposals once, then inspect the relevant code and implement. The latest experiment is not necessarily the best parent. Check snapshots, bind the proposal to code/feedback, and record its measured successor; only evaluated outcomes count as executed changes. Use [archive checks](references/score-search.md#candidate-archive-and-route-switching) and [evidence retrieval and proposal/result links](references/iteration-trace.md) as needed.
 
 ## Bound Work Without Repeated Approval

@@ -34,6 +34,8 @@ class ArchiveFailure(Exception):
 STATUSES = {"incumbent", "runner_up", "promising", "rejected", "unresolved"}
 DIRECTIONS = {"maximize", "minimize"}
 KINDS = {"official_metric", "proxy", "unknown"}
+PIPELINE_SCOPES = {"training_pipeline", "execution_pipeline"}
+OUTPUT_ONLY_SCOPES = {"prediction_artifact_only", "generated_artifact_only"}
 
 
 def reject_constant(value: str) -> None:
@@ -174,6 +176,8 @@ def validate_candidate(value: dict[str, Any]) -> None:
     for key, field in [("direction", "direction"), ("objective_kind", "kind"), ("objective_name", "name")]:
         if value["comparison"].get(key) != value["objective"].get(field):
             raise ArchiveFailure("invalid_archive", "Objective metadata differs from its comparison identity")
+    if "implementation" in value and value["implementation"] != implementation_identity(value):
+        raise ArchiveFailure("invalid_archive", "Implementation identity differs from its artifact scope/hashes")
 
 
 def result_metadata(path: pathlib.Path | None) -> dict[str, Any]:
@@ -188,7 +192,7 @@ def result_metadata(path: pathlib.Path | None) -> dict[str, Any]:
                                "execution_status": value.get("status"),
                                "validity_scope": value.get("validity_scope", "adapter_declared_checks"),
                                "unchecked_rules": value.get("unchecked_rules", ["training_and_hard_rule_provenance"])}
-    for key in ("candidate_hash", "evaluator_hash", "workload_hash", "score_model_hash", "stage"):
+    for key in ("candidate_hash", "candidate_scope", "evaluator_hash", "workload_hash", "score_model_hash", "stage"):
         if key in value:
             metadata[key] = value[key]
     if isinstance(value.get("evaluation"), dict):
@@ -251,6 +255,33 @@ def make_fingerprint(source: pathlib.Path | None, configuration: pathlib.Path | 
 def duplicate_matches(old: list[dict[str, Any]], fingerprint: str) -> list[str]:
     return [entry["candidate_id"] for entry in old
             if entry["event"] == "candidate" and entry["fingerprint"] == fingerprint]
+
+
+def implementation_identity(entry: dict[str, Any]) -> dict[str, Any]:
+    """Keep stochastic prediction bytes separate from the snapshotted recipe."""
+    result, artifacts = entry["result"], entry["artifacts"]
+    prediction = (result.get("candidate_scope") == "prediction_csv" or
+                  result.get("candidate_scope") is None and
+                  result.get("validity_scope") == "prediction_artifact_and_metric_inputs")
+    generated = result.get("candidate_scope") == "generated_artifact"
+    if (prediction or generated) and "configuration" in artifacts:
+        scope = "training_pipeline" if prediction else "execution_pipeline"
+        identity_artifacts = {"configuration": artifacts["configuration"]}
+    else:
+        scope = "prediction_artifact_only" if prediction else "generated_artifact_only" if generated else "evaluated_artifacts"
+        identity_artifacts = dict(artifacts)
+    value = {"scope": scope, "artifacts": identity_artifacts}
+    # Both output contracts identify the same executable recipe. Changing the
+    # scope label must not turn its next measurement into a new implementation.
+    fingerprint_value = {**value, "scope": "training_pipeline" if scope in PIPELINE_SCOPES else scope}
+    return {**value, "fingerprint": sha256(canonical(fingerprint_value))}
+
+
+def changed_implementation(child: dict[str, Any], parent: dict[str, Any]) -> bool:
+    child_identity, parent_identity = implementation_identity(child), implementation_identity(parent)
+    if {child_identity["scope"], parent_identity["scope"]} & OUTPUT_ONLY_SCOPES:
+        return False
+    return child_identity["fingerprint"] != parent_identity["fingerprint"]
 
 
 def check_candidate(args: argparse.Namespace) -> dict[str, Any]:
@@ -355,7 +386,13 @@ def propose_candidate(args: argparse.Namespace) -> dict[str, Any]:
         entry = candidates[candidate_id]
         verify_result(entry)
         if candidate_id in value["parent_ids"]:
-            parent_roots.extend(verify_artifacts(entry))
+            roots = verify_artifacts(entry)
+            identity = implementation_identity(entry)
+            if identity["scope"] in OUTPUT_ONLY_SCOPES:
+                raise ArchiveFailure("missing_implementation_snapshot", "Reconcile the executed code/recipe before proposing a code change")
+            if identity["scope"] in PIPELINE_SCOPES:
+                roots = [pathlib.Path(entry["artifact_paths"]["configuration"]).resolve(strict=True)]
+            parent_roots.extend(roots)
     for target in value["code_targets"]:
         path = pathlib.Path(target["path"])
         if not path.is_file() or not any(path == root or root.is_dir() and path.is_relative_to(root) for root in parent_roots):
@@ -371,9 +408,14 @@ def validate_successor(candidate: dict[str, Any], proposal: dict[str, Any], reco
     parents = candidate_index(records)
     if any(candidate["fingerprint"] == parents[i]["fingerprint"] for i in proposal["parent_ids"]):
         raise ArchiveFailure("unchanged_successor", "An unchanged measurement cannot fulfill an implementation proposal")
-    configured = [parents[i] for i in proposal["parent_ids"] if "configuration" in parents[i]["artifacts"]]
+    # Old events retain their original acceptance scope. New events distinguish
+    # a prediction pipeline from algorithm source plus ordinary configuration.
+    configured = [parents[i] for i in proposal["parent_ids"]
+                  if implementation_identity(parents[i])["scope"] in PIPELINE_SCOPES or
+                  "implementation" not in candidate and "configuration" in parents[i]["artifacts"]]
+    unchanged = any if "implementation" in candidate else all
     if configured and ("configuration" not in candidate["artifacts"] or
-                       all(candidate["artifacts"]["configuration"] == parent["artifacts"]["configuration"] for parent in configured)):
+                       unchanged(candidate["artifacts"]["configuration"] == parent["artifacts"]["configuration"] for parent in configured)):
         raise ArchiveFailure("unchanged_pipeline", "An implementation proposal requires changed code/recipe, not only new predictions")
     nonempty_text(candidate.get("feedback"), "successor.feedback")
     if candidate.get("prediction_status") not in {"supported", "contradicted", "unresolved"}:
@@ -381,6 +423,11 @@ def validate_successor(candidate: dict[str, Any], proposal: dict[str, Any], reco
     result = candidate["result"]
     if not result.get("result_path") or result.get("execution_status") not in {"success", "failed"}:
         raise ArchiveFailure("missing_execution_evidence", "A proposal successor requires a completed adapter result")
+    if "implementation" in candidate:
+        if any(implementation_identity(parents[i])["scope"] in OUTPUT_ONLY_SCOPES for i in proposal["parent_ids"]):
+            raise ArchiveFailure("missing_implementation_snapshot", "Output-only parents do not identify the executed code/recipe")
+        if configured and implementation_identity(candidate)["scope"] not in PIPELINE_SCOPES:
+            raise ArchiveFailure("missing_implementation_snapshot", "Keep the changed pipeline snapshot with its evaluated outputs")
     if any(entry["result"].get("result_sha256") == result["result_sha256"] for entry in parents.values()):
         raise ArchiveFailure("reused_execution_evidence", "An old result cannot complete a new implementation proposal")
 
@@ -403,7 +450,7 @@ def evidence_summary(entry: dict[str, Any]) -> dict[str, Any]:
     return {"candidate_id": entry["candidate_id"], "valid": entry["valid"],
             "objective": entry["objective"], "feedback": entry["feedback"],
             "result_path": result.get("result_path"), "result_sha256": result.get("result_sha256"),
-            "validity_scope": result.get("validity_scope")}
+            "validity_scope": result.get("validity_scope"), "implementation": implementation_identity(entry)}
 
 
 def iteration_trace(records: list[dict[str, Any]], recent: int | None = None) -> list[dict[str, Any]]:
@@ -561,6 +608,10 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
         "reused_from": duplicate_matches(old, fingerprint),
         "result": result,
     }
+    record["implementation"] = implementation_identity(record)
+    record["reused_implementation_from"] = [entry["candidate_id"] for entry in old if entry["event"] == "candidate"
+                                            and entry["role"] == "development"
+                                            and implementation_identity(entry)["fingerprint"] == record["implementation"]["fingerprint"]]
     if args.proposal_id is not None:
         proposal = next((entry for entry in old if entry["event"] == "proposal" and entry["proposal_id"] == args.proposal_id), None)
         if proposal is None:
@@ -608,11 +659,10 @@ def route_decision(args: argparse.Namespace) -> dict[str, Any]:
     # Compare only complete, valid measurements in the latest evaluation regime.
     # A rebound below the route's best is not new progress; repeats do not add
     # distinct implementation evidence to the stagnation window.
-    measured, seen = [], set()
-    for entry in current:
-        if measurable(entry) and entry["comparison"] == context and entry["fingerprint"] not in seen:
-            measured.append(entry)
-            seen.add(entry["fingerprint"])
+    representatives = distinct_implementations([entry for entry in development
+                                                 if measurable(entry) and entry["comparison"] == context
+                                                 and implementation_identity(entry)["scope"] not in OUTPUT_ONLY_SCOPES])
+    measured = [entry for entry in representatives if entry["route"] == current_route]
     recent = measured[-args.recent:]
     progress: set[str] = set()
     best_value: float | None = None
@@ -625,7 +675,8 @@ def route_decision(args: argparse.Namespace) -> dict[str, Any]:
     unresolved = [entry for entry in current[-args.recent:]
                   if entry["comparison"] == context and entry["status"] in {"promising", "unresolved"}
                   and entry.get("feedback") and not any(entry["candidate_id"] in later["parent_ids"]
-                                                       for later in current)]
+                                                       and later["comparison"] == context and changed_implementation(later, entry)
+                                                       for later in development)]
     for entry in measured:
         verify_result(entry)
     if latest["valid"] is False:
@@ -634,6 +685,9 @@ def route_decision(args: argparse.Namespace) -> dict[str, Any]:
     elif not measurable(latest):
         action = "diagnose"
         reason = "Comparable development evidence is insufficient; inspect code/history or gather the smallest decision-changing diagnostic."
+    elif implementation_identity(latest)["scope"] in OUTPUT_ONLY_SCOPES:
+        action = "diagnose"
+        reason = "Output scores are available, but the executed pipeline snapshot is missing; reconcile it before judging distinct implementation progress."
     elif recent_progress or unresolved:
         action = "exploit"
         reason = "Route has a new historical best or a feedback-supported unresolved opportunity; propose a specific successor from its code and evidence."
@@ -701,12 +755,13 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def distinct_implementations(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Use the first supplied observation of each fingerprint, not its luckiest repeat."""
+    """Use the first recipe/code observation, not its luckiest output repeat."""
     distinct, seen = [], set()
     for entry in entries:
-        if entry["fingerprint"] not in seen:
+        fingerprint = implementation_identity(entry)["fingerprint"]
+        if fingerprint not in seen:
             distinct.append(entry)
-            seen.add(entry["fingerprint"])
+            seen.add(fingerprint)
     return distinct
 
 
@@ -763,7 +818,7 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
     recent = distinct_implementations(by_route[anchor["route"]])[-args.recent:]
     recent_ids = [include(entry) for entry in recent]
     superseded = {parent_id for child in scoped for parent_id in child["parent_ids"]
-                  if parent_id in index and child["fingerprint"] != index[parent_id]["fingerprint"]}
+                  if parent_id in index and changed_implementation(child, index[parent_id])}
     routes = []
     for route in selected_routes:
         entries = by_route[route]
@@ -773,7 +828,10 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
         failure = next((entry for entry in reversed(entries)
                         if not entry["valid"] or entry["status"] == "rejected" or entry.get("failure_mechanism")), None)
         routes.append({"route": route, "measurements": len(entries),
-                       "distinct_implementations": len(distinct_implementations(entries)),
+                       "distinct_artifact_fingerprints": len({entry["fingerprint"] for entry in entries}),
+                       "distinct_implementations": (len(distinct_implementations(entries))
+                                                    if all(implementation_identity(entry)["scope"] not in OUTPUT_ONLY_SCOPES
+                                                           for entry in entries) else None),
                        "best": include(route_bests[route]), "latest": include(entries[-1]),
                        "unresolved": include(unresolved), "latest_failure": include(failure)})
     closed = {entry["proposal_id"] for entry in records
@@ -785,6 +843,12 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
     for proposal in details:
         for candidate_id in proposal["parent_ids"] + proposal["feedback_from"]:
             include(index[candidate_id])
+    implementation_groups: dict[str, list[str]] = defaultdict(list)
+    reused: dict[str, list[str]] = {}
+    for entry in scoped:
+        fingerprint = implementation_identity(entry)["fingerprint"]
+        reused[entry["candidate_id"]] = list(implementation_groups[fingerprint])
+        implementation_groups[fingerprint].append(entry["candidate_id"])
     cards = {}
     for candidate_id, entry in selected.items():
         verify_result(entry)
@@ -793,6 +857,8 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
                                               "valid", "status", "objective", "cost", "feedback", "failure_mechanism",
                                               "proposal_id", "prediction_status", "reused_from")}
         result = entry["result"]
+        card["implementation"] = implementation_identity(entry)
+        card["reused_implementation_from"] = reused[candidate_id]
         card["result"] = {key: result.get(key) for key in ("result_path", "result_sha256", "execution_status",
                                                          "validity_scope", "unchecked_rules")}
         card["identity_checks"] = {"result_bytes": "checked" if result.get("result_path") else "not_recorded",
@@ -819,7 +885,8 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
             "omitted": {"routes": len(by_route) - len(routes), "current_comparison_candidates": len(scoped) - len(cards),
                         "other_development_comparisons": len(development) - len(scoped),
                         "pending_details": len(pending) - len(details)},
-            "scope": "Development retrieval only; first valid observation per fingerprint ranks representatives. "
+            "scope": "Development retrieval only; first valid observation per implementation identity ranks representatives. "
+                     "Output-only artifacts do not establish distinct code/recipe counts. "
                      "Identity checks cover displayed evidence, not all history, score recomputation, causality or promotion. "
                      "Inspect relevant code and raw results before proposing the next implementation."}
 
