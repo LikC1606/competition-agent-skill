@@ -59,6 +59,8 @@
 
 错误分析可用 [`--summary-only`](skills/competition-optimize/references/data-model.md#diagnose-development-errors)保留全样本核验、分组摘要和最差案例，按需导出完整逐例表。50,000 行 RMSE 对照中，摘要诊断约提速 1.89 倍，Python 分配峰值从 66.5 MB 降到 35.3 MB；两项真实数据的 6 个候选对照诊断一致，默认完整导出字节不变。
 
+决定是否尝试两模型组合时，可按需增加 [`--check-blend-direction`](skills/competition-optimize/references/data-model.md#check-whether-a-two-parent-blend-has-a-useful-direction)：对 RMSE/MAE 检查目标函数方向，排除无法严格超过最好单体的理想凸组合，并识别较弱模型可能提供的组合价值。它不选择权重或给出组合分数；每个实际测试的配方仍计一次 trial，其他指标需另作判断。已通过 144 项测试和两题集成复跑，尚未证明完整 agent 的试验节省或提分效果。
+
 新增同契约预测的[批量评测入口](skills/competition-optimize/references/data-model.md#batch-ready-candidates)：单进程顺序评分、独立候选证据和可选基线比较。两项 CLI 对照约提速 4.5–5 倍；12 份既有真实数据预测的分数、hash 与契约一致，未重训模型。批量数量不改变试验预算，确认只处理冻结候选。
 
 流程新增[决策卡与恢复路由](skills/competition-optimize/references/decision-loop.md)：继续任务只补读变化的事件和当前决策所需证据，实验完成但未记账时先核对产物，候选预算耗尽后进入冻结确认。只读的 `inspect_run_resume.py` 自动核验契约/日志检查点，分页返回新增事件，拒绝损坏记录，检查点仅覆盖本页事件。已对两个真实 pilot 的历史记录做回放核对，保留原交付规则与预算；这不代表完整 agent 的提分或耗时对照。

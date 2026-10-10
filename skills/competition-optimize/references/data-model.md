@@ -163,9 +163,23 @@ Case-win counts do not determine the official metric. Error shares are normalize
 
 Turn a diagnostic observation into one affordable next test, such as a fold-safe feature, preprocessing correction, targeted data check, or complementary blend. A selector may use only permitted inference-time features, never per-sample truth or observed errors. Validate changes on the unchanged full development objective and independently confirm the frozen shortlist. Editing after inspecting confirmation errors makes that evidence development data; this tool deliberately keeps exploratory slicing on the development path.
 
+### Check Whether a Two-Parent Blend Has a Useful Direction
+
+When deciding whether to spend a trial on two compatible predictions, add `--check-blend-direction` to the error analysis command, optionally with `--summary-only`. For unweighted RMSE/MAE, `blend_direction` checks the signs of each endpoint's **inward one-sided loss derivative** along `(1-w)*baseline + w*candidate`, `0 <= w <= 1`. It neither constructs weights nor evaluates a recipe. It uses exact rational arithmetic on the parsed finite float values so cancellation, squared-error overflow/underflow, and MAE zero-residual kinks do not flip the signs. Its additional computation is optional and consumes diagnostic time; the case-tie epsilon does not change this check.
+
+| Result | Development-only implication | Next decision |
+| --- | --- | --- |
+| Both inward signs negative; `strict_gain_over_best_parent_possible: true` | Some ideal interior weight beats both parents on these rows | Consider one affordable recipe; equal weights can still lose |
+| Any inward sign zero or positive; `minimizing_endpoints` names that parent | That endpoint minimizes this convex segment; no strict gain over the best parent is possible | Skip weight trials whose only goal is improving this same split/metric with these two parents |
+| `status: unavailable` | This check supports neither clipped binary log loss nor ROC-AUC | Use metric-specific evidence; unavailable does not reject a blend |
+
+For RMSE the convex loss is MSE, which has the same minima. Let `r0 = baseline-target`, `r1 = candidate-target`, and `d = candidate-baseline`. The two inward derivative signs are those of `sum(r0*d)` and `-sum(r1*d)`. For MAE the baseline contribution is `sign(r0)*d` when `r0 != 0`, otherwise `abs(d)`; at the candidate use direction `-d`. A non-negative endpoint derivative of a convex loss makes that endpoint a minimum. Both negative imply a minimum strictly below both endpoints. This concerns ideal real-arithmetic blending of the parsed inputs; constructed CSVs and evaluator rounding still need separate scoring. Log-loss clipping can introduce flat boundary regions, and AUC depends on ordering, so these criteria are not transferred to them.
+
+Case wins are neither necessary nor sufficient: with targets `[0,0]`, baseline `[1,2]` and candidate `[4,1]` each wins one case, yet no blend beats baseline RMSE. Conversely baseline `[1,1]` and candidate `[-2,2]` gives the candidate no wins, yet an interior blend can improve RMSE. The check gives no practical gain size, selected weight, training/resource validation, or independent evidence. Any chosen weight recipe remains a candidate trial, including a rejected recipe; do not hide weight selection or score sweeps as diagnostics. The criterion covers exactly two fixed parents on this declared development objective and does not establish other splits, metrics, nonlinear combinations, or ensemble gains.
+
 ## Construct and Confirm a Prediction Blend
 
-When compatible models have complementary held-out errors, use `blend_predictions.py` to test a convex weighted mean without retraining. This is candidate construction; evaluate its output with the same frozen evaluator and compare against the best individual candidate. A weaker individual model can help a blend, while highly similar predictions can add cost without gain. Check the actual metric rather than inferring improvement from diversity alone.
+When compatible models have evidence of useful held-out error interaction, use `blend_predictions.py` to test a convex weighted mean without retraining. If RMSE/MAE error diagnostics are needed for this decision, [check the two-parent direction](#check-whether-a-two-parent-blend-has-a-useful-direction) instead of relying on case wins alone. This is candidate construction; evaluate its output with the same frozen evaluator and compare against the best individual candidate. A weaker individual model can help a blend, while highly similar predictions can add cost without gain. Check the actual metric rather than inferring improvement from diversity alone.
 
 Create a recipe from at least two named, complete **development** evaluations with matching metric, evaluator, split, stage, and configuration:
 

@@ -10,6 +10,7 @@ import json
 import math
 import pathlib
 import sys
+from fractions import Fraction
 from typing import Any
 
 import evaluate_predictions as evaluator
@@ -58,6 +59,42 @@ def subset_scores(metric: str, labels: list[float], baseline: list[float], candi
             "unavailable_reason": None}
 
 
+def blend_directions(metric: str, labels: list[float], baseline: list[float],
+                     candidate: list[float]) -> dict[str, Any]:
+    """Check convex-loss endpoint directions without choosing or scoring weights."""
+    if metric not in {"rmse", "mae"}:
+        return {"status": "unavailable", "reason": "unsupported_metric",
+                "metric": metric, "recipe_evaluated": False}
+    derivatives = {"baseline": Fraction(0), "candidate": Fraction(0)}
+    for label, before, after in zip(labels, baseline, candidate):
+        # Exact signs matter at cancellation and MAE kinks. Fractions of finite
+        # parsed floats also avoid overflow when residuals/differences are squared.
+        target = Fraction(label)
+        r0, r1 = Fraction(before) - target, Fraction(after) - target
+        delta = r1 - r0
+        if metric == "rmse":
+            # Ignore common positive 2/n: RMSE and MSE have the same minima.
+            derivatives["baseline"] += r0 * delta
+            derivatives["candidate"] -= r1 * delta
+        else:
+            derivatives["baseline"] += abs(delta) if r0 == 0 else delta if r0 > 0 else -delta
+            derivatives["candidate"] += abs(delta) if r1 == 0 else -delta if r1 > 0 else delta
+    signs = {name: "negative" if value < 0 else "positive" if value > 0 else "zero"
+             for name, value in derivatives.items()}
+    return {"status": "available", "metric": metric,
+            "convex_loss": "mean_squared_error" if metric == "rmse" else "mean_absolute_error",
+            "endpoint_inward_loss_derivative_sign": signs,
+            "strict_gain_over_best_parent_possible": all(value < 0 for value in derivatives.values()),
+            "minimizing_endpoints": [name for name, value in derivatives.items() if value >= 0],
+            "recipe_evaluated": False,
+            "calculation": "exact_rational_of_parsed_floats",
+            "scope": "Ideal convex blends (1-w)*baseline + w*candidate, 0 <= w <= 1, on these "
+                     "development rows only. Negative inward derivatives at both endpoints imply some "
+                     "interior weight beats both parents; a non-negative endpoint derivative makes that "
+                     "parent a minimum. No weight, candidate score, practical gain size, or independent "
+                     "evidence is supplied. Evaluate any constructed recipe, including rounding, separately."}
+
+
 def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any]:
     if (not 1 <= args.top_k <= 100 or args.max_groups < 1
             or not math.isfinite(args.error_tie_epsilon) or args.error_tie_epsilon < 0):
@@ -86,6 +123,8 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
     before_errors, after_errors = local_errors(metric, truth, before, epsilon), local_errors(metric, truth, after, epsilon)
     before_shares = error_shares(before_errors, metric == "rmse") if before_errors is not None else None
     after_shares = error_shares(after_errors, metric == "rmse") if after_errors is not None else None
+    check_blend = getattr(args, "check_blend_direction", False)
+    blend_report = blend_directions(metric, truth, before, after) if check_blend else None
     squared_error_scale = max(max(before_errors), max(after_errors)) if metric == "rmse" else None
     counts = {"baseline": 0, "candidate": 0, "tie": 0} if before_errors is not None else None
 
@@ -172,6 +211,8 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
     diagnostic_config = {"top_k": args.top_k, "error_tie_epsilon": args.error_tie_epsilon,
                          "slice_columns": columns, "max_groups": args.max_groups,
                          "slice_hash": evaluator.byte_hash(slices_raw) if slices_raw is not None else None}
+    if check_blend:
+        diagnostic_config["check_blend_direction"] = True
     inputs = {key: str(path) for key, path in pair.paths.items()}
     input_hashes = dict(pair.input_hashes)
     if summary_only:
@@ -189,6 +230,7 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
         "error_share_kind": None if metric == "roc_auc" else "squared_error" if metric == "rmse" else
         "clipped_log_loss" if metric == "binary_log_loss" else "absolute_error",
         "largest_candidate_errors": worst, "largest_regressions": regressions, "slices": slice_results,
+        **({"blend_direction": blend_report} if check_blend else {}),
         "configuration": diagnostic_config, "config_hash": evaluator.object_hash(diagnostic_config),
         "analyzer_hash": evaluator.object_hash({name: evaluator.byte_hash(pathlib.Path(__file__).with_name(name).read_bytes())
                                                 for name in ["analyze_prediction_errors.py", "prediction_evidence.py", "evaluate_predictions.py",
@@ -213,6 +255,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--error-tie-epsilon", type=float, default=1e-12)
     parser.add_argument("--summary-only", action="store_true",
                         help="same diagnostic scores/top cases; skip full cases CSV and copied input snapshots")
+    parser.add_argument("--check-blend-direction", action="store_true",
+                        help="RMSE/MAE convex-loss endpoint signs; no weight search or recipe score")
     return parser
 
 

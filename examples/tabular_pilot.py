@@ -179,7 +179,8 @@ def run_task(output: pathlib.Path, name: str, binary: bool) -> dict:
             "bootstrap_samples": 1000, "seed": 0, "confidence_level": 0.95, "minimum_improvement": 0,
             "uncertainty_use": "Descriptive evidence; not an automatic statistical promotion gate",
         },
-        "third_trial": "Equal blend of baseline and best tree if both win some development cases; no weight sweep",
+        "third_trial": "Equal blend of baseline and best tree when RMSE directions allow strict gain; "
+                       "for unsupported metrics require both to win some development cases; no weight sweep",
     }
     save_json(root / "task-contract.json", contract)
     save_csv(root / "row-metadata.csv", ["id"], [(sample_id(index),) for index in indexes])
@@ -191,7 +192,8 @@ def run_task(output: pathlib.Path, name: str, binary: bool) -> dict:
         stream.write("# Fixed pilot hypotheses\n\n"
                      "Dataset provenance: sklearn's bundled loader and saved dataset-description.txt.\n"
                      "Regularized linear reference; shallow boosting and randomized trees test nonlinear signal.\n"
-                     "A single equal blend tests complementary development errors; no weight sweep.\n"
+                     "A single equal blend tests development error interaction; check RMSE directions first, "
+                     "otherwise use complementary cases as a tentative hypothesis; no weight sweep.\n"
                      "Reject by the full declared metric, then apply the sealed confirmation decision rule.\n"
                      "These hypotheses are scripted and do not establish autonomous skill effectiveness.\n")
     with (root / "dataset-description.txt").open("x", encoding="utf-8", newline="\n") as stream:
@@ -243,13 +245,18 @@ def run_task(output: pathlib.Path, name: str, binary: bool) -> dict:
     tool(root, "analyze_prediction_errors.py", [
         "--baseline", development_results["baseline"], "--candidate", development_results[tree_name],
         "--truth", root / "development-truth.csv", "--output-dir", diagnostics,
+        "--check-blend-direction", "--summary-only",
     ])
-    counts = read_json(diagnostics / "report.json")["case_preference_counts"]
+    report = read_json(diagnostics / "report.json")
+    counts, direction = report["case_preference_counts"], report["blend_direction"]
+    eligible = (direction["strict_gain_over_best_parent_possible"] if direction["status"] == "available"
+                else bool(counts.get("baseline", 0) and counts.get("candidate", 0)))
     blend = root / "candidates" / "blend"
-    if counts.get("baseline", 0) and counts.get("candidate", 0):
+    if eligible:
         event(root, event="planned", trial="blend", parents=["baseline", tree_name],
-              hypothesis="Complementary held-out errors may improve an equal convex blend",
-              evidence=counts, rejection_test="Full development metric must improve on the best individual",
+              hypothesis="Development error interaction justifies one blend trial; equal weights may still lose",
+              evidence={"case_preference_counts": counts, "blend_direction": direction},
+              rejection_test="Full development metric must improve on the best individual",
               cost="One cached-prediction recipe; no weight search")
         tool(root, "blend_predictions.py", [
             "create", "--member", "baseline", development_results["baseline"],
@@ -263,6 +270,10 @@ def run_task(output: pathlib.Path, name: str, binary: bool) -> dict:
         compare(root, development_results[individual], development_results["blend"], "development-blend-vs-best")
         event(root, event="completed", trial="blend", score=scores["blend"],
               result=str(development_results["blend"]), remaining_challenger_trials=0)
+    else:
+        event(root, event="diagnostic_decision", action="skip_blend", evidence=direction,
+              reason="No supported strict development gain for these parents under the fixed pilot protocol",
+              remaining_challenger_trials=1)
 
     challenger = min((name for name in scores if name != "baseline"), key=scores.get)
     shortlist = {"baseline": "baseline", "challenger": challenger, "development_scores": scores,

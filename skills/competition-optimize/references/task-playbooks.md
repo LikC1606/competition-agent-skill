@@ -20,7 +20,7 @@ Build a cheap sanity baseline and, when budget allows, a credible model from a d
 | Errors cluster by group, time, class, or input regime | Investigate split mismatch, missing signal, label noise, or weighting | Mechanism-specific ablation and evidence beyond the tuned regime |
 | Useful interactions or domain signals are absent | Add a targeted feature or preprocessing component | Fold-safe fitting, no target leakage, and metric gain |
 | Allowed external or unlabeled data could improve coverage | Try additional data, pretraining, or soft pseudo-labels | Provenance, rule permission, and a teacher that did not train on held-out labels |
-| Predictions show complementary errors | Search blending or stacking on cached OOF predictions | Correct ID alignment and independent confirmation of the frozen ensemble |
+| Predictions show objective-relevant error interaction | Consider a small blend or stacking trial on cached OOF predictions; for two-parent RMSE/MAE, check convex-loss directions when useful | Case wins alone are insufficient; correct ID alignment, full objective, inference cost, and independent confirmation of the frozen ensemble |
 | Training is stable but the metric depends on output interpretation | Tune allowed thresholds, calibration, or decoding | Development-only selection and final confirmation under the official metric |
 
 Use the simplest pipeline that lets the next hypothesis be tested cheaply. After a mechanism is supported, test sensitive hyperparameters, additional seeds, or training duration within budget. Final retraining on all permitted labeled data must keep the selected pipeline fixed and satisfy inference limits; preserve the earlier validation evidence rather than claiming a new full-data validation score.

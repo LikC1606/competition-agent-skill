@@ -5,11 +5,13 @@ import csv
 import importlib
 import json
 import math
+import random
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from fractions import Fraction
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -323,16 +325,151 @@ class PredictionErrorAnalysisTests(unittest.TestCase):
     def test_summary_cli_saves_only_report_and_refuses_overwrite(self) -> None:
         output = self.root / "cli-summary"
         command = [sys.executable, str(SCRIPT_DIR / "analyze_prediction_errors.py"),
-                   *self.arguments(output, "--summary-only")]
+                   *self.arguments(output, "--summary-only", "--check-blend-direction")]
         result = subprocess.run(command, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({path.name for path in output.iterdir()}, {"report.json"})
         report = json.loads((output / "report.json").read_text())
         self.assertEqual(report["configuration"]["output_mode"], "summary")
         self.assertEqual(report["case_count"], 4)
+        self.assertEqual(report["blend_direction"]["status"], "available")
         original = (output / "report.json").read_bytes()
         self.assertEqual(subprocess.run(command, capture_output=True, timeout=15).returncode, 2)
         self.assertEqual((output / "report.json").read_bytes(), original)
+
+
+    def test_complementary_case_wins_can_have_no_beneficial_rmse_blend(self) -> None:
+        self.baseline = self.evaluate("id,prediction\n001,1\n1,2\na,1\nb,2\n")
+        self.candidate = self.evaluate("id,prediction\n001,4\n1,1\na,4\nb,1\n")
+        report, _ = self.analyze("--check-blend-direction", "--summary-only")
+        self.assertEqual(report["case_preference_counts"], {"baseline": 2, "candidate": 2, "tie": 0})
+        direction = report["blend_direction"]
+        self.assertFalse(direction["strict_gain_over_best_parent_possible"])
+        self.assertEqual(direction["minimizing_endpoints"], ["baseline"])
+        self.assertEqual(direction["endpoint_inward_loss_derivative_sign"],
+                         {"baseline": "positive", "candidate": "negative"})
+        self.assertFalse(direction["recipe_evaluated"])
+
+    def test_worse_parent_without_case_wins_can_still_help_but_equal_blend_can_fail(self) -> None:
+        self.baseline = self.evaluate("id,prediction\n001,1\n1,1\na,1\nb,1\n")
+        self.candidate = self.evaluate("id,prediction\n001,-2\n1,2\na,-2\nb,2\n")
+        report, _ = self.analyze("--check-blend-direction")
+        self.assertEqual(report["case_preference_counts"], {"baseline": 4, "candidate": 0, "tie": 0})
+        direction = report["blend_direction"]
+        self.assertTrue(direction["strict_gain_over_best_parent_possible"])
+        self.assertEqual(direction["minimizing_endpoints"], [])
+        self.assertEqual(direction["endpoint_inward_loss_derivative_sign"],
+                         {"baseline": "negative", "candidate": "negative"})
+        self.assertGreater(math.sqrt((0.5 ** 2 + 1.5 ** 2) / 2), 1)  # Equal weights fail.
+        self.assertLess(math.sqrt((0.4 ** 2 + 1.2 ** 2) / 2), 1)  # An interior weight helps.
+
+    def test_descent_from_one_parent_does_not_establish_gain_over_the_best_parent(self) -> None:
+        direction = analyzer.blend_directions("rmse", [0.0], [2.0], [1.0])
+        self.assertFalse(direction["strict_gain_over_best_parent_possible"])
+        self.assertEqual(direction["minimizing_endpoints"], ["candidate"])
+        self.assertEqual(direction["endpoint_inward_loss_derivative_sign"],
+                         {"baseline": "negative", "candidate": "positive"})
+
+    def test_mae_zero_residual_kinks_and_flat_segment_have_no_strict_gain(self) -> None:
+        self.truth.write_text("id,target\n001,0\n1,0\n", encoding="utf-8")
+        self.baseline = self.evaluate("id,prediction\n001,0\n1,2\n", "--metric", "mae")
+        self.candidate = self.evaluate("id,prediction\n001,1\n1,1\n", "--metric", "mae")
+        report, _ = self.analyze("--check-blend-direction")
+        direction = report["blend_direction"]
+        self.assertEqual(direction["convex_loss"], "mean_absolute_error")
+        self.assertEqual(direction["endpoint_inward_loss_derivative_sign"],
+                         {"baseline": "zero", "candidate": "zero"})
+        self.assertEqual(direction["minimizing_endpoints"], ["baseline", "candidate"])
+        self.assertFalse(direction["strict_gain_over_best_parent_possible"])
+
+    def test_identical_and_perfect_parents_cannot_be_strictly_improved(self) -> None:
+        for metric in ["rmse", "mae"]:
+            for labels, before, after in [([0.0], [2.0], [2.0]), ([1.0], [1.0], [-2.0]),
+                                          ([1.0], [1.0], [1.0])]:
+                with self.subTest(metric=metric, before=before, after=after):
+                    direction = analyzer.blend_directions(metric, labels, before, after)
+                    self.assertFalse(direction["strict_gain_over_best_parent_possible"])
+                    self.assertIn("baseline", direction["minimizing_endpoints"])
+
+    def test_exact_signs_handle_overflow_underflow_and_near_cancellation(self) -> None:
+        for metric in ["rmse", "mae"]:
+            for residual in [1e308, 5e-324]:
+                with self.subTest(metric=metric, residual=residual):
+                    direction = analyzer.blend_directions(metric, [0.0], [residual], [-residual])
+                    self.assertTrue(direction["strict_gain_over_best_parent_possible"])
+                    json.dumps(direction, allow_nan=False)
+        direction = analyzer.blend_directions("rmse", [0.0, 0.0], [1.0, 1.0], [0.0, 2 + 2 ** -51])
+        self.assertEqual(direction["endpoint_inward_loss_derivative_sign"]["baseline"], "positive")
+        self.assertFalse(direction["strict_gain_over_best_parent_possible"])
+        self.baseline = self.evaluate("id,prediction\n001,1e308\n1,-1e308\na,1e308\nb,-1e308\n")
+        self.candidate = self.evaluate("id,prediction\n001,-1e308\n1,1e308\na,-1e308\nb,1e308\n")
+        report, _ = self.analyze("--summary-only", "--check-blend-direction")
+        self.assertTrue(report["blend_direction"]["strict_gain_over_best_parent_possible"])
+        json.dumps(report, allow_nan=False)
+
+    def test_direction_matches_independent_exact_minima_and_parent_reversal(self) -> None:
+        rng = random.Random(7)
+        for metric in ["rmse", "mae"]:
+            for _ in range(100):
+                labels, before, after = [[Fraction(rng.randrange(-3, 4)) for _ in range(3)] for _ in range(3)]
+                residual = [b - y for b, y in zip(before, labels)]
+                delta = [c - b for b, c in zip(before, after)]
+
+                def loss(weight: Fraction) -> Fraction:
+                    errors = [r + weight * d for r, d in zip(residual, delta)]
+                    return sum(e * e if metric == "rmse" else abs(e) for e in errors)
+
+                weights = [Fraction(0), Fraction(1)]
+                if metric == "rmse":
+                    curvature = sum(d * d for d in delta)
+                    if curvature:
+                        weights.append(max(Fraction(0), min(Fraction(1),
+                                           -sum(r * d for r, d in zip(residual, delta)) / curvature)))
+                else:
+                    weights.extend(-r / d for r, d in zip(residual, delta) if d and 0 < -r / d < 1)
+                expected = min(map(loss, weights)) < min(loss(Fraction(0)), loss(Fraction(1)))
+                direction = analyzer.blend_directions(metric, labels, before, after)
+                reverse = analyzer.blend_directions(metric, labels, after, before)
+                self.assertEqual(direction["strict_gain_over_best_parent_possible"], expected)
+                self.assertEqual(reverse["strict_gain_over_best_parent_possible"], expected)
+                signs = direction["endpoint_inward_loss_derivative_sign"]
+                self.assertEqual(reverse["endpoint_inward_loss_derivative_sign"],
+                                 {"baseline": signs["candidate"], "candidate": signs["baseline"]})
+
+    def test_direction_is_opt_in_mode_independent_and_not_controlled_by_case_tolerance(self) -> None:
+        default, _ = self.analyze()
+        full, _ = self.analyze("--check-blend-direction")
+        summary, _ = self.analyze("--check-blend-direction", "--summary-only", "--error-tie-epsilon", "100")
+        self.assertNotIn("blend_direction", default)
+        self.assertNotIn("check_blend_direction", default["configuration"])
+        self.assertTrue(full["configuration"]["check_blend_direction"])
+        self.assertEqual(full["blend_direction"], summary["blend_direction"])
+        self.assertEqual(full["aggregate_comparison"], default["aggregate_comparison"])
+        self.assertNotEqual(full["config_hash"], default["config_hash"])
+        self.assertEqual(summary["case_preference_counts"]["tie"], 4)
+
+    def test_binary_metrics_report_unavailable_instead_of_assuming_convexity(self) -> None:
+        self.truth.write_text("id,target\n001,0\n1,1\na,0\nb,1\n", encoding="utf-8")
+        for metric in ["binary_log_loss", "roc_auc"]:
+            with self.subTest(metric=metric):
+                self.baseline = self.evaluate("id,prediction\n001,0.5\n1,0.5\na,0.5\nb,0.5\n", "--metric", metric)
+                self.candidate = self.evaluate("id,prediction\n001,0\n1,1\na,1\nb,0\n", "--metric", metric)
+                report, _ = self.analyze("--check-blend-direction")
+                self.assertEqual(report["status"], "success")
+                self.assertEqual(report["blend_direction"],
+                                 {"status": "unavailable", "reason": "unsupported_metric",
+                                  "metric": metric, "recipe_evaluated": False})
+
+    def test_direction_option_preserves_development_and_evidence_requirements(self) -> None:
+        self.baseline = self.evaluate("id,prediction\n001,1\n1,1\na,1\nb,1\n", "--stage", "confirmation")
+        self.candidate = self.evaluate("id,prediction\n001,0\n1,0\na,0\nb,0\n", "--stage", "confirmation")
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "development evaluations"):
+            self.analyze("--check-blend-direction")
+        self.baseline = self.evaluate("id,prediction\n001,1\n1,1\na,1\nb,1\n")
+        self.candidate = self.evaluate("id,prediction\n001,0\n1,0\na,0\nb,0\n")
+        self.truth.write_bytes(self.truth.read_bytes() + b"\n")
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "Truth bytes differ"):
+            self.analyze("--check-blend-direction")
 
 
 if __name__ == "__main__":

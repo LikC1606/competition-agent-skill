@@ -9,7 +9,7 @@
 - 先划出 20% 确认集，seed `1729`；再从其余样本划出 25% 开发集，seed `1730`。分类两次切分均分层。回归 train/development/confirmation 为 `264/89/89`，分类为 `341/114/114`。
 - 使用原始特征，所有学习型预处理和模型仅拟合训练行。Diabetes 显式设 `scaled=False`，避免 loader 默认的全数据归一化。检查完整特征行无重复、三个集合 ID 互斥，并保存切分与数据 hash。
 - 可信基线为训练集内 `StandardScaler + Ridge(alpha=1)` 或 `StandardScaler + LogisticRegression(C=1, max_iter=2000, tol=1e-6)`。
-- 每题三个改进 trial：浅层 HistGradientBoosting、ExtraTrees，以及基线与开发集最好的树模型的等权组合。仅在逐例诊断显示双方各有胜例时测试组合；不扫描权重。完整参数保存在各候选的 `configuration.json`。
+- 原始 pilot 每题三个改进 trial：浅层 HistGradientBoosting、ExtraTrees，以及基线与开发集最好的树模型的等权组合。逐例诊断显示双方各有胜例时测试组合；不扫描权重。完整参数保存在各候选的 `configuration.json`。当前示例的组合条件已按下文方向检查修正。
 - 拟合顺序执行，线程上限为 1，模型 seed `1729`。确认先保存 `shortlist.json`，再使用其模型文件生成预测；混合配方通过 `apply` 原样复用。
 - 运行前的交付规则：只有开发集和确认集指标均优于基线才选择 challenger，否则保留基线。确认 shortlist 为基线和开发指标最低的一个 challenger；未根据确认结果扩张候选或修改规则。
 - 1000 次配对 row bootstrap，seed `0`、95% 区间、实用提升阈值 `0`。区间只是描述性证据，没有自动显著性晋升门槛。患者行独立可交换是此小实验的假设，不能替代临床、分组或时间外验证。
@@ -39,6 +39,8 @@
 总计 6 次模型拟合、2 个组合配方和 12 次 CSV 指标评测。12 项指标均与 sklearn 独立实现核对，容差 `1e-12`；各阶段的预测、配置、模型、父配方、evaluator 与 split hash 都保留在运行目录。另已检查 scaler 均值仅来自训练行、短名单事件先于确认计分、预测 ID 匹配切分、全部预测 hash 可复现、拒绝仓库内输出，以及已有目录不会被覆盖，审计摘要为运行目录中的 `audit.json`。一次完整运行约 8 秒，属于本机小数据结果，不能外推到比赛训练成本；已记录模型大小、各模型拟合/预测时间，未测峰值内存或证明比赛资源合规。
 
 入口现已在模型拟合前调用[划分检查](../skills/competition-optimize/references/validation-split.md)，保存完整 ID 元数据和 `split-audit.json`，三个模型的 `fit.json` 引用同一个检查回执 hash。以原分割、配置和种子完整复跑后，12 份评分与预测字节、两题交付选择均与之前一致；检查事件先于首个拟合计划。另向两题划分各注入一个开发行重叠，均返回拒绝。产物在 `D:\华为云\tmp\split-audit-pilot-20261010-02`，独立核对脚本与摘要在 `D:\华为云\tmp\split-audit-review-20261010-01`。这次复跑用于验证接入，不增加独立样本或自主提分证据。
+
+后续将示例的 RMSE 组合条件改为[两端目标函数方向](../skills/competition-optimize/references/data-model.md#check-whether-a-two-parent-blend-has-a-useful-direction)：只有存在严格超过两个父模型的理想内部组合时，才花一次 trial 测试原来的等权配方；存在方向仍不保证等权有效。未支持此检查的分类 LogLoss 沿用逐例互补作为待验证假设。诊断改为 `--summary-only`，账本保存方向及胜例计数。以相同配置复跑，12 份评分和预测字节、两题交付选择仍一致，sklearn 交叉计分通过，组合计划先于冻结短名单和确认计分。产物及 `integration-audit.json` 在 `D:\华为云\tmp\blend-direction-pilot-20261010-01`，检查源码在 `D:\华为云\tmp\blend-direction-review-20261010-01\pilot-check.py`。这是接入验证；未优化新权重，也不增加独立提分证据。
 
 ## 对 skill 的具体修正
 

@@ -107,6 +107,16 @@ profile 显示旧实现每次 bootstrap draw 都重建标签/预测数组，重�
 
 复现：`python examples/benchmark_prediction_errors.py --rows 50000 --output-dir <仓库外的新目录>`，默认比较当前完整/摘要模式。`--reference <可信旧版/analyze_prediction_errors.py>` 可对照旧分析器，需在其旁保存 `prediction_evidence.py`、`evaluate_predictions.py` 和 `compare_prediction_results.py` 供源码 hash 核对。两条路径导入当前安装的核验/评分模块，因此这三份依赖必须与当前版本一致；该比较只隔离分析器变化。它会导入指定 Python 文件，仅使用可信代码。本次旧源码与 profile 在 `D:\华为云\tmp\error-summary-20261010-01`，顺序计时记录在 `D:\华为云\tmp\error-summary-benchmark-20261010-02\benchmark.json`，真实预测核对在前者的 `real-prediction-check.json`。
 
+## 在组合前检查目标函数方向
+
+原表格示例以“双方各有开发胜例”作为尝试等权组合的条件。该条件既可能鼓励无效组合，也可能错过较弱模型的价值。新增可选 [`--check-blend-direction`](../skills/competition-optimize/references/data-model.md#check-whether-a-two-parent-blend-has-a-useful-direction)，对两份固定开发预测检查 RMSE 的 MSE 损失或 MAE 损失的端点向内导数符号。两个端点均为负时，存在严格超过双方的理想内部组合；端点非负时，该父模型已是这条凸组合线段上的最小值。检查不生成权重、组合预测或组合分数，没有暗中执行权重搜索。
+
+手算反例覆盖了两种错判：目标 `[0,0]`、基线 `[1,2]`、候选 `[4,1]` 双方各赢一行，但任何凸组合都无法超过基线 RMSE；基线 `[1,1]`、候选 `[-2,2]` 时，候选没有逐例胜出，仍可帮助某些内部组合。后一例等权组合反而更差，因此“存在有益方向”不能代替一次有预算的配方试验。精确有理计算保留解析浮点输入的符号，在极值、微小值、抵消及 MAE 零残差处可核验；只报告理想实数运算的方向，CSV 舍入及官方评测仍需另测。LogLoss 裁剪与 AUC 不适用这些判据，工具明确返回不可用。
+
+新增 10 项测试包含 200 组固定种子的随机小案例，对照独立的精确最小值计算，并检查父模型互换、默认模式不变、开发/证据限制、摘要及 CLI；全套 144 项测试与 skill 校验通过。复用两题各 3 组真实开发对照，回归的 3 组方向均与独立残差内积计算一致；分类的 3 组均报告不支持该检查。默认统计、配置与 CSV 字节和修改前一致，原输入 hash 未变；此核对没有模型拟合、新配方或权重评分。脚本及 `audit.json` 在 `D:\华为云\tmp\blend-direction-review-20261010-01`。
+
+示例流程接入该检查及摘要诊断后，以同样的切分、seed、模型和等权配方复跑；12 份评分及预测字节、两题交付选择均不变，分别与 sklearn 计分核对。6 次拟合和 2 个原配方用于集成验证，产物与独立检查在 `D:\华为云\tmp\blend-direction-pilot-20261010-01\integration-audit.json`。本次真实回归对照均仍有组合方向，没有据此减少实际配方次数；尚未测量完整 agent 的净时间、试验节省或提分。按当前决策需要启用检查，其额外计算计入诊断成本，实际配方仍逐项计 trial。
+
 ## 复现与证据
 
 ### 先校准筛选能否节省有效工作
