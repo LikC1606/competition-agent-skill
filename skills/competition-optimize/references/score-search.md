@@ -2,6 +2,21 @@
 
 Read this when selecting or revising solution routes and their experiments. Optimize the contest objective under the remaining budget; choose actions from evidence and unresolved questions. A candidate is an executable method/configuration, not a prescribed small mutation.
 
+## Efficient Proposal and Quality Gate
+
+Use one short reconnaissance pass before implementation. Read the task contract and current candidate identity, map the entry point and score-affecting path, inspect profiles or error slices if already available, and retrieve only historical trials that share the evaluator, workload/split and relevant mechanism. Reuse hashes and summaries instead of rereading unchanged logs. The pass ends when it has either a supported bottleneck and a proposal or a smallest diagnostic that can distinguish the leading explanations.
+
+Choose the next proposal by four practical questions: does it address a measured limitation, is the mechanism supported by code/history or a task source, can it be implemented and evaluated within the remaining reserve, and would its result change promotion or the next proposal? Prefer a complete change with meaningful headroom. Do not spend the round making a longer route list or polishing an explanation after these questions are answered.
+
+Before a full evaluation, run a quality gate appropriate to the adapter:
+
+- Candidate source/configuration is snapshotted and hashable; the evaluator, fixtures, split/workload and score model are unchanged.
+- The interface, hard rules, known-answer checks and required output/package files pass at the declared stage.
+- Any cheap screen has a documented relation to the full objective and is used only to reject invalid or clearly weak candidates; otherwise go directly to the matched full comparison.
+- The comparison records parent/current-best IDs, objective direction and components, worst relevant regime, runtime/memory or inference cost, and the exact reproduction command.
+
+Failing the gate is an implementation or measurement problem, not evidence that the proposed mechanism loses. Fix it once when the cause is identifiable; otherwise preserve the failure and choose the next proposal. Passing the gate does not promote a candidate without the full declared comparison. This gate reduces wasted runs while keeping quality decisions tied to the actual objective.
+
 ## Propose from Code and History
 
 Use the current candidate's source/configuration, matched results and relevant successful/failed implementations to derive the next optimization. Inspect the actual execution path, representation, objective updates, model pipeline or policy logic involved. Retrieve only pertinent history, preserving its evaluator, scale and resource scope; a remembered summary is reusable only when its referenced artifacts still match.

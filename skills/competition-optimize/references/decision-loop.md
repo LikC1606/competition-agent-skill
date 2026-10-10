@@ -79,9 +79,11 @@ Frozen shortlist: <path/hash, or not yet frozen>
 
 Next action: <one action and parent IDs>
 Feedback source: <trial/result path; measured comparison vs parent/best; validity and cost; prediction status>
+Reconnaissance: <code path, relevant history, hashes checked; reused evidence and unresolved gap>
 Code basis: <current snapshot/hash; relevant function/component and limiting behavior>
 Related history: <pertinent successful/failed trial IDs; lessons and scope; why this differs from rejected attempts>
 Optimization proposal: <specific code/pipeline change, mechanism and parent; expected observation; why this change now>
+Quality gate: <interface/rules/evaluator/artifact/screen checks and outcome>
 Evidence to reuse / invalidate: <paths, dependency hashes, affected descendants>
 Execution: <command or implementation target, stage/fidelity, resource cap, total cost estimate>
 If rejected / promising: <next branch, including full-fidelity cost when needed>
