@@ -27,4 +27,4 @@ python <skill-dir>/scripts/compare_timeslot_results.py `
   --output <new-comparison.json>
 ```
 
-The comparator requires successful, complete results with matching evaluator hashes, runtime environments, and workload keys. Timing deltas are local measurements and need repeat confirmation before they are used to select a candidate.
+The comparator requires successful, complete results with matching evaluator hashes, runtime environments, and workload keys. Matching environment metadata alone does not establish timing comparability under concurrent load. Use [timing recovery](plateau-recovery.md#make-timing-interpretable) for consequential comparisons; preserve valid deterministic quality evidence and remeasure affected resource items separately. Timing deltas remain local and need matched repeat confirmation before selection. Do not mark an incompatible result comparable to bypass the tool's checks.

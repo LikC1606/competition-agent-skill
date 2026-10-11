@@ -11,7 +11,7 @@ Choose the next proposal by four practical questions: does it address a measured
 Before a full evaluation, run a quality gate appropriate to the adapter:
 
 - Candidate source/configuration is snapshotted and hashable; the evaluator, fixtures, split/workload and score model are unchanged.
-- The interface, hard rules, known-answer checks and required output/package files pass at the declared stage.
+- The interface, hard rules, known-answer checks and files needed to execute the declared stage pass. Submission packaging belongs to delivery unless execution/interface validation or an explicit user request needs it earlier.
 - Any cheap screen has a documented relation to the full objective and is used only to reject invalid or clearly weak candidates; otherwise go directly to the matched full comparison.
 - The comparison records parent/current-best IDs, objective direction and components, worst relevant regime, runtime/memory or inference cost, and the exact reproduction command.
 
@@ -125,7 +125,7 @@ A cache, a target-window filter or an extra cleanup pass inside the same optimiz
 
 Use one interpretable hypothesis or **coherent pipeline transition** per candidate. A new model may need different preprocessing, and a new representation may need a decoder and search moves; implement the coupled change together. Compare the complete candidate first. Use selective ablations only when attribution would change the next investment or final combination; without them, claim the whole pipeline's observed gain rather than identifying one component as the cause.
 
-Repeated refinements with negligible objective gains, improvements within noise, or the same unresolved failure warrant reconsidering the route's current search. Check [maturity and stopping evidence](#decide-whether-to-repair-deepen-or-retire) before attributing a plateau to the method. Revisit assumptions, representation, data/training signal, search space, or policy before more neighboring settings. Keep successful incumbents and rejected evidence; budget or confirmation limits still stop exploration.
+Repeated refinements with negligible objective gains, improvements within noise, or the same unresolved failure warrant [plateau recovery](plateau-recovery.md): distinguish score headroom from unavoidable loss, use feasible stronger solutions when informative, and test the missing capability in a complete prototype. Check [maturity evidence](#decide-whether-to-repair-deepen-or-retire) before attributing flatness to the method. Keep successful incumbents and rejected evidence; apply only actual constraints, without inventing a gain threshold or round cap.
 
 ## Turn Research into Testable Mechanisms
 
@@ -219,7 +219,7 @@ Every completed trial must inform the next implementation decision or an explici
 | Measurement cannot resolve the comparison | Run the smallest diagnostic or matched repetition that could decide it; do not tune to noise |
 | Eligible objective improvement | Update the best development candidate; test the newly limiting mechanism or a stronger affordable alternative |
 | Valid weaker candidate, with supported missing capability or progress at its legal cap | Keep the incumbent; implement the supported complete pipeline or improve work allocation within hard limits |
-| Repeated comparable negligible gains with maturity evidence | Replace the representation, neighborhood, training signal or route when a credible alternative fits |
+| Repeated comparable negligible gains with maturity evidence | Reassess attainable score and the missing capability using [plateau recovery](plateau-recovery.md), then execute a complete alternative or a diagnostic that can choose it |
 | Compatible complementary strengths | Implement and evaluate a combined candidate, including all inference/selection costs |
 
 These choices depend on task evidence; they are not automatic quotas or proof of causation. Missing official score terms still require provisional comparisons and retained tradeoffs. Use [failure/maturity evidence](#decide-whether-to-repair-deepen-or-retire) when a weak score has several explanations.
@@ -258,7 +258,7 @@ For paired scalar reference scores, [calibrate the proposed screen](screening.md
 
 If screening ordering fails, revise that screen and reevaluate affected candidates at comparable fidelity. Optimizing the development pipeline can buy more experiments without improving the submission itself; record which cost was reduced.
 
-Evaluate the most promising candidates at full fidelity against the incumbent on matched cases. For noisy metrics, use repetitions to resolve a decision rather than choosing the largest single observed gain. Maintain validity, screening, and confirmation outcomes separately; a partial or failed run cannot establish a new best.
+Evaluate the most promising candidates at full fidelity against the incumbent on matched development cases. Keep snapshots and results for other alternatives without automatically sending each to independent confirmation and package validation. Confirmation should resolve actual finalist selection or an explicitly requested validated alternative; use [verification stages](plateau-recovery.md#match-verification-to-the-decision) when that work dominates search. For noisy metrics, repeat to resolve a decision rather than choose the largest observed gain. Maintain validity, screening, and confirmation outcomes separately; a partial or failed run cannot establish a new best.
 
 Distinguish execution/training randomness from finite-sample uncertainty and distribution mismatch. For fixed scalar predictions evaluated on exchangeable samples, [paired row/group bootstrap](data-model.md#estimate-paired-sampling-uncertainty) can estimate sensitivity to the validation sample. Declare independent units and sampling settings before interpreting the result; dependent groups stay together. For training randomness, rerun matched training seeds; for distribution shifts, confirm on task-appropriate independent scenarios. More draws on the same cached predictions do not resolve either issue. Report uncertain gains and retain promising alternatives without making significance a universal promotion gate, especially for exact deterministic contest objectives.
 
@@ -270,7 +270,7 @@ Start with a cheap valid score comparison. Use detailed slicing, profiling, boot
 
 For CSV error analysis, use [summary output](data-model.md#diagnose-development-errors) when top cases and slice statistics resolve the question. It preserves full-split diagnostics while avoiding a redundant per-case export; retain referenced inputs and request the full table when other cases need inspection.
 
-When a stage dominates cost, profile it before increasing search breadth. Improve loading, preprocessing, compilation, or score calculation when that buys useful trials within the same budget. Validate equivalent outputs against the original path and include required setup/verification cost in the efficiency claim. Keep full-fidelity hard checks and the independent confirmation reserve; computational speed alone does not establish a score gain.
+When a stage dominates cost, check whether it is needed for the current decision before optimizing its implementation. Improve loading, preprocessing, compilation, or score calculation when that buys useful trials. Validate equivalent outputs against the original path and include setup/verification cost in the efficiency claim. Keep required full-fidelity and final confirmation checks; reserve resources only under an actual finite constraint. Computational speed alone does not establish a score gain. For disturbed shared-machine measurements, use [timing recovery](plateau-recovery.md#make-timing-interpretable) rather than rerunning unaffected quality evaluations.
 
 ### Check Whether the Evidence Can Rank Candidates
 
