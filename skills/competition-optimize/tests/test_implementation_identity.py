@@ -185,7 +185,7 @@ class ImplementationIdentityTests(unittest.TestCase):
                 entry["artifact_paths"].pop("configuration")
                 entry["fingerprint"] = archive.sha256(archive.canonical(entry["artifacts"]))
                 entry.pop("implementation")
-                entry.pop("reused_implementation_from")
+                entry.pop("reused_implementation_from", None)
                 entry["result"].pop("candidate_scope")
             elif entry["event"] == "proposal":
                 path = self.entries["first"]["artifact_paths"]["source"]

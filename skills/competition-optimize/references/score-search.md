@@ -4,9 +4,9 @@ Read this when selecting or revising solution routes and their experiments. Opti
 
 ## Efficient Proposal and Quality Gate
 
-Use one short reconnaissance pass before implementation. Read the task contract and current candidate identity, map the entry point and score-affecting path, inspect profiles or error slices if already available, and retrieve only historical trials that share the evaluator, workload/split and relevant mechanism. Reuse hashes and summaries instead of rereading unchanged logs. The pass ends when it has either a supported bottleneck and a proposal or a smallest diagnostic that can distinguish the leading explanations.
+Use one short reconnaissance pass before implementation. Read the task contract and current candidate identity, recover the independent task formulation, map the score-affecting path, inspect profiles or error slices if already available, and retrieve only relevant matched trials. Reuse hashes and summaries instead of rereading unchanged logs. The pass ends when it supports choosing a concrete mechanism or a specific diagnostic would change that choice. A task-derived construction or representation need not first appear as a measured code bottleneck.
 
-Choose the next proposal by four practical questions: does it address a measured limitation, is the mechanism supported by code/history or a task source, is it feasible with applicable resources, and would its result change promotion or the next proposal? Prefer a complete change with meaningful headroom. Stop expanding the route list or polishing an explanation once these questions are answered and implement.
+Choose the next proposal by four practical questions: does it address a task-derived opportunity or observed limitation, is there a coherent mechanism with applicable prerequisites, is it feasible with available resources, and would its result change promotion or the next proposal? Prefer a complete change with meaningful headroom. Prior measured gain is not an entry requirement for a novel mechanism. Stop expanding the route list or polishing an explanation once these questions are answered and implement within the requested scope.
 
 Before a full evaluation, run a quality gate appropriate to the adapter:
 
@@ -17,16 +17,17 @@ Before a full evaluation, run a quality gate appropriate to the adapter:
 
 Failing the gate is an implementation or measurement problem, not evidence that the proposed mechanism loses. Repair an identifiable cause when a useful correction exists; each retry needs a changed implementation or resolved prerequisite. Otherwise preserve the failure and choose the next proposal. Passing the gate does not promote a candidate without the full declared comparison. This gate reduces wasted runs while keeping quality decisions tied to the actual objective.
 
-## Propose from Code and History
+## Propose from Task Structure, Code and History
 
-Use the current candidate's source/configuration, matched results and relevant successful/failed implementations to derive the next optimization. Inspect the actual execution path, representation, objective updates, model pipeline or policy logic involved. Retrieve only pertinent history, preserving its evaluator, scale and resource scope; a remembered summary is reusable only when its referenced artifacts still match.
+Use the problem's objective and constraints, user ideas, applicable strong solutions, and the current implementation's evidence to derive the next optimization. At initial formulation or after a consequential new source, use [strategy derivation](strategy-design.md) to ask what a good solution would look like without the incumbent's design. Then inspect its representation, execution path, objective updates, pipeline or policy to identify the actual capability difference. Retrieve only pertinent history, preserving its evaluator, scale and resource scope; a remembered summary is reusable only when its referenced artifacts still match. Ordinary refinements can reuse this model.
 
 Produce one short actionable proposal using the existing decision card or notes:
 
 | Basis | Content needed for the next implementation |
 | --- | --- |
-| Current code | Snapshot/path and relevant function/component; the limiting behavior or missing capability |
-| Historical evidence | Trial/result IDs, what worked or failed, and why the proposal differs from a rejected implementation |
+| Task or source basis | The task fact and derivation, or inspected reference mechanism and its prerequisites; label conjectures |
+| Current code | Snapshot/path and relevant component or standalone replacement target; the limiting behavior or missing capability |
+| Historical evidence, when available | Pertinent trial/result IDs, what worked or failed, and why this differs from a rejected implementation; missing history does not bar a new route |
 | Optimization mechanism | Concrete replacement or change, coupled components, expected effect on the declared objective and resources |
 | Test and cost | Observable prediction, validity checks, matched comparison, rejection condition and implementation/evaluation cost |
 | Novelty and decision | Fingerprint/parent, archive entries it differs from, route choice (exploit/explore), and what result would trigger the next switch |
@@ -45,6 +46,7 @@ Accept natural-language input without a mandatory form. Retain the short origina
 | “Try this first” or “implement and compare this” | Prioritize that legal feasible test; a speculative low gain is not grounds to silently substitute the agent's preferred route |
 | An explicit requirement or prohibition | Apply it at its stated scope; check its compatibility with competition rules and update affected implementation decisions |
 | “Discuss only” or “do not change code yet” | Analyze the idea within that scope; do not count discussion as an executed candidate |
+| “Learn this high-scoring solution's thinking” | Explain its central design, derivation, component dependencies and difference from our method using [strategy learning](strategy-design.md#read-a-strong-solution-as-a-system); benchmark only when needed for the requested conclusion |
 
 Translate the intended mechanism into a complete minimal implementation, not merely a nearby parameter change. For example, “perhaps pair swaps get stuck” can motivate a larger valid neighborhood after inspecting the move generator and stalled trace; “these errors may depend on time” can motivate a permitted time signal or a split-mismatch diagnostic. These are interpretations to test, not facts supplied by the user. Check the smallest consequential uncertainty first; absence of a previous measured gain does not disqualify a novel hypothesis.
 
@@ -104,7 +106,7 @@ Record route switches as candidate implementations and use them to avoid a seque
 
 ## Compare Routes Before Choosing Variants
 
-The outer decision is **which mechanism deserves effort**; the inner decision is **which concrete implementation tests it**. Derive both from current code and history. Compare credible structural alternatives when repeated refinements leave headroom. If constraints, prior matched evidence or remaining resources favor a supported local change, explain that choice. Do not force breadth when the baseline is already near a credible bound.
+The outer decision is **which mechanism deserves effort**; the inner decision is **which concrete implementation tests it**. Derive alternatives from the task independently of the incumbent, then use code and history to judge their actual differences, prerequisites and cost. Do not wait for repeated failed patches before considering a different formulation or learning a newly supplied strong solution. If constraints, prior matched evidence or resources favor a supported local change, explain that choice. Do not force breadth when the baseline is already near a credible bound.
 
 Compare a few routes from task structure, baseline behavior and relevant sources. Keep only the information needed to choose an executable test in `research.md` or existing notes; the table below is optional. Drafting ideas does not consume candidate slots, but research and implementation consume time. Do not postpone a complete prototype to fill a route inventory. Establish viable representatives, then invest in supported mechanisms rather than giving every route an equal quota.
 
@@ -129,7 +131,7 @@ Repeated refinements with negligible objective gains, improvements within noise,
 
 ## Turn Research into Testable Mechanisms
 
-Search using the task family, candidate representation, metric, input scale, resource constraints, and a concrete bottleneck. Prefer relevant original writeups, task documentation, and source code; check the actual evaluator when a reported objective or validity claim matters. Once an executable test is available, spend the next budget on it rather than extending a general literature list. Search again when an observed failure identifies missing knowledge.
+Search from the task family, objective, ideal solution structure, scale and constraints, adding the incumbent's representation or a concrete bottleneck when relevant. Searching only the current implementation's vocabulary can hide other formulations. Prefer relevant original writeups, task documentation and corresponding source versions. Use [strategy learning](strategy-design.md#read-a-strong-solution-as-a-system) to reconstruct the design before extracting a module or constant; check the evaluator when a reported objective or validity claim matters. For implementation requests, move to a complete prototype once the mechanism and prerequisites are understood. For learning requests, deliver the reasoning and its implications before proposing tests.
 
 Convert useful sources into the hypothesis queue below. Record URL/version, license where reuse matters, prerequisites, and a cheap transfer test. Separate author-reported outcomes, inspected implementation, and local measurements. Historical wins, stars, or votes do not establish transfer. Read only the relevant section of [the task-family guide](task-playbooks.md) for concrete experiment options.
 
@@ -139,7 +141,7 @@ Break the baseline down by score component and representative case group. For ea
 
 For supported CSV predictions, [paired development error analysis](data-model.md#diagnose-development-errors) can expose concentrated loss and slice regressions using saved predictions. Use its observations to propose a falsifiable mechanism, then evaluate any change on the full declared objective. A slice metric, majority of case wins, or loss concentration is diagnostic evidence; none changes the official aggregation or establishes that the errors can be fixed. Use the corresponding workload/episode diagnostics for algorithm and simulation tasks when available.
 
-Maintain a short hypothesis queue in `research.md`:
+Keep only decision-relevant hypotheses in the existing proposal/notes or `research.md`; do not duplicate a proposal to populate another queue. Useful fields are:
 
 | Field | What it must make clear |
 | --- | --- |
@@ -182,7 +184,7 @@ Keep the route's best representative, tested scope, unresolved mechanism and nex
 | A valid lagging prototype leaves a credible mechanism unresolved | Compare a bounded repair/deepening or complete pipeline against the leader's next refinement | Cause/maturity evidence, a useful rejection test, and a full candidate within the intended limits |
 | A component has a supported improvement mechanism | Refine that component | Matched evaluations that justify another variant or reveal a new testable mechanism |
 | A route has evidence and unresolved high-impact mechanisms | Replace or deepen that mechanism | Full-objective gains or a consequential rejected hypothesis |
-| Repeated tweaks produce negligible gains while structural alternatives remain | Return to the route map | A materially different affordable prototype or a documented reason to stop |
+| Repeated tweaks produce negligible gains while structural alternatives remain | Return to the route map | A materially different affordable prototype or a documented reason to retire this route |
 | Candidates have compatible, complementary strengths | Combine or select by regime | Improvement in the combined candidate's objective within its resource limits |
 | Apparent gain is comparable to measurement variation | Repeat a matched comparison | Enough evidence to resolve the promotion decision |
 | A currently applicable finite limit leaves only confirmation resources | Confirm the frozen shortlist | Validity and independent objective measurements for delivery |
@@ -306,4 +308,4 @@ If a full score cannot be calculated, preserve tradeoff candidates and label any
 
 Append planned and completed events under each trial ID in `trials.jsonl`; do not rewrite old outcomes. Before implementation include parent IDs, preceding feedback/result evidence, action/target, hypothesis, predicted observation, rejection test, planned fidelity and cost. After execution include candidate/configuration hashes, evaluation and comparison paths, validity/fidelity, objective kind/direction, actual cost, prediction status and the concrete follow-up or stop reason. Link the next trial back to that feedback and retain its actual change/result; reference immutable files instead of copying raw logs into the ledger.
 
-At decision boundaries, refresh `next-action.md` using [the compact card](decision-loop.md#compact-decision-card). On resumption, reconcile its ledger checkpoint with new events; a missing or stale card is rebuilt from evidence. Partial, invalid, or interrupted runs remain diagnostic evidence. Reuse results only when their dependencies still match. Keep executing useful feedback-driven follow-ups without round renewal. When stalled, investigate a specific uncertainty or test a materially different supported mechanism. Stop for a user stop request, a currently applicable limit, an unresolved concrete blocker, or no credible useful follow-up after considering diagnostics and alternatives. Preserve cumulative costs, confirm/deliver as feasible and state the actual stop reason; historical default quotas are not stop reasons.
+At decision boundaries, refresh `next-action.md` using [the compact card](decision-loop.md#compact-decision-card). On resumption, reconcile its ledger checkpoint with new events; a missing or stale card is rebuilt from evidence. Partial, invalid, or interrupted runs remain diagnostic evidence. Reuse results only when their dependencies still match. Keep executing useful feedback-driven follow-ups without round renewal. When stalled, investigate a specific uncertainty or test a materially different supported mechanism. An unattended campaign uses a fresh-context review when no successor is apparent; a model's lack of ideas cannot end it. Stop for a user stop request, a currently applicable hard/resource limit, an observed unresolved blocker or verified task completion. Preserve cumulative costs, confirm/deliver as feasible and state the actual stop reason; historical default quotas are not stop reasons.

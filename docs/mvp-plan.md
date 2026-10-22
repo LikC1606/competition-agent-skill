@@ -1,5 +1,7 @@
 # MVP 实施方案
 
+> 这是早期实施计划。用户在 2026-10-22 明确要求长周期无人值守优化，现已增加[可恢复的 campaign driver](../skills/competition-optimize/references/unattended-campaign.md)；下文“暂不做 runner”仅记录当时的范围，不再代表当前能力边界。
+
 ## 目标
 
 建立一个以改善官方比赛指标为目标、可跨竞赛题型复用的 Codex skill 核心：固定指标方向和评分契约，按题型选择 evaluator adapter，建立 baseline，再用预算内的实测实验改进候选。

@@ -2,6 +2,8 @@
 
 Read this when comparable refinements have weak returns, local metrics conflict with platform feedback, or verification dominates useful implementation. Use existing evidence and notes; this is a decision boundary, not a new report or mandatory diagnostic campaign.
 
+First distinguish missing candidate ideas from uncertainty about existing candidates. More repetitions can clarify a ranking; they cannot propose a missing representation. If recent work only adjusts the incumbent's windows, caches or cleanup, revisit the [task formulation and strong-solution strategy](strategy-design.md) before scheduling more of the same comparisons. A coherent task-derived alternative can justify a complete prototype without a newly measured hotspot or guaranteed gain.
+
 ## Establish What Can Actually Improve
 
 Separate the contest objective from local proxies, hard feasibility from ranking, and a runtime hotspot from score headroom. For thresholded or saturated score terms, determine the relevant operating range when evidence permits: faster execution may buy feasibility or more experiments without buying contest points. If thresholds, case weights or hidden terms are unknown, retain raw components and tradeoff candidates; state what could reverse the choice. Check proxy ordering against available platform feedback without fitting away contradictory outcomes or assuming a submission authorization.
@@ -12,11 +14,11 @@ Ask what capability would reach the better solution: a different representation,
 
 ## Test a Different Mechanism
 
-Compare the next refinement with a complete alternative aimed at the remaining limitation. Choose the parent from matched historical best versions and relevant simpler baselines, not automatically the latest or largest implementation. Allow a standalone prototype behind the same task interface instead of inheriting every old heuristic, cache and fallback. Implement the coupled components needed to test the new representation; keep the incumbent available.
+Compare the next refinement with a complete alternative aimed at the remaining limitation or structural opportunity. Choose the parent from matched historical best versions and relevant simpler baselines, not automatically the latest or largest implementation. Allow a standalone prototype behind the same task interface instead of inheriting every old heuristic, cache and fallback. When learning from a stronger solution, reconstruct the construction, cost model and maintenance dependencies before transplanting a module. Implement the coupled components needed to test the new representation; keep the incumbent available.
 
 State the concrete capability and expected observable difference. A renamed route, wider local window, another cleanup pass or cache remains a refinement unless it changes the limiting mechanism. When component interactions matter to the next choice, use a selective ablation or replacement comparison; retain, replace or delete layers according to their measured contribution. Code length alone cannot establish quality or overhead.
 
-A retired route returns control to the next supported mechanism or consequential diagnostic. It does not automatically trigger packaging or end the task. If no credible useful successor remains after considering alternatives, explain the precise unresolved obstacle and stop honestly; do not manufacture endless edits or require the user to renew a round.
+A retired route returns control to the next supported mechanism or consequential diagnostic. It does not automatically trigger packaging or end the task. If no concrete successor is apparent, identify the missing evidence and revisit the formulation, using a fresh context in an unattended campaign. Stop for a user request, an applicable hard/resource constraint, an observed unresolved blocker or verified task completion. An exhausted idea list calls for strategy review; arbitrary edits and repeated requests to renew a round do not resolve it.
 
 ## Match Verification to the Decision
 

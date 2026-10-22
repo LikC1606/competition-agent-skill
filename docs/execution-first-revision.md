@@ -32,7 +32,7 @@
 
 最终交付展示实际执行链“结果 → 反馈决定 → 后继改动 → 新结果/停止原因”。这要求记录反馈的去向，也要求真的实施评测；建议和未执行计划保持待执行状态。详细分支见 [反馈规则](../skills/competition-optimize/references/score-search.md#close-the-feedback-loop)。
 
-下一步方案默认由 agent 根据当前实际源码、匹配的成功/失败结果及相关历史改动提出：指出代码中的限制、历史依据、具体机制、与被否定实现的区别以及验证预期，随后直接实施。已移除自动调参分支和“成功后扫描敏感参数”的指令；专门的参数搜索仅在用户明确要求时开启。方案细节见 [代码与历史驱动的优化](../skills/competition-optimize/references/score-search.md#propose-from-code-and-history)。
+下一步方案默认由 agent 根据当前实际源码、匹配的成功/失败结果及相关历史改动提出：指出代码中的限制、历史依据、具体机制、与被否定实现的区别以及验证预期，随后直接实施。已移除自动调参分支和“成功后扫描敏感参数”的指令；专门的参数搜索仅在用户明确要求时开启。方案细节见 [题目结构、代码与历史驱动的优化](../skills/competition-optimize/references/score-search.md#propose-from-task-structure-code-and-history)。
 
 为提高效率和质量，新增一次有边界的侦察与候选质量门：只读取当前代码路径、匹配的历史证据和评测身份；证据足够后停止泛读。候选先检查接口、硬规则、评测/fixture 身份、产物可复现性和目标口径，必要时用经过说明的廉价阶段淘汰明显无效候选，再进入完整对比。
 

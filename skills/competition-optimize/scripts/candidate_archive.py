@@ -20,7 +20,7 @@ import pathlib
 import re
 import sys
 from collections import defaultdict
-from typing import Any
+from typing import Any, Callable
 
 
 class ArchiveFailure(Exception):
@@ -257,6 +257,12 @@ def duplicate_matches(old: list[dict[str, Any]], fingerprint: str) -> list[str]:
             if entry["event"] == "candidate" and entry["fingerprint"] == fingerprint]
 
 
+def reuse_prefix(matches: list[str]) -> dict[str, Any]:
+    """Summarize an earlier matching prefix without copying it into every event."""
+    return {"count": len(matches), "first": matches[0] if matches else None,
+            "previous": matches[-1] if matches else None}
+
+
 def implementation_identity(entry: dict[str, Any]) -> dict[str, Any]:
     """Keep stochastic prediction bytes separate from the snapshotted recipe."""
     result, artifacts = entry["result"], entry["artifacts"]
@@ -453,7 +459,17 @@ def evidence_summary(entry: dict[str, Any]) -> dict[str, Any]:
             "validity_scope": result.get("validity_scope"), "implementation": implementation_identity(entry)}
 
 
-def iteration_trace(records: list[dict[str, Any]], recent: int | None = None) -> list[dict[str, Any]]:
+def _verify_proposal_targets(proposal: dict[str, Any], checked: set[tuple[str, str]]) -> None:
+    for target in proposal["code_targets"]:
+        identity = (target["path"], target["sha256"])
+        if identity not in checked:
+            if hash_path(pathlib.Path(target["path"])) != target["sha256"]:
+                raise ArchiveFailure("parent_artifact_changed", f"Pending code target changed: {target['path']}")
+            checked.add(identity)
+
+
+def iteration_trace(records: list[dict[str, Any]], recent: int | None = None, *,
+                    proposal_id: str | None = None) -> list[dict[str, Any]]:
     candidates = candidate_index(records)
     outcomes = {entry["proposal_id"]: entry for entry in records
                 if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
@@ -465,12 +481,21 @@ def iteration_trace(records: list[dict[str, Any]], recent: int | None = None) ->
             verify_artifacts(entry)
             verified.add(entry["candidate_id"])
     proposals = [entry for entry in records if entry["event"] == "proposal"]
+    if proposal_id is not None:
+        proposals = [entry for entry in proposals if entry["proposal_id"] == proposal_id]
+        if not proposals:
+            raise ArchiveFailure("unknown_proposal", f"No archived proposal {proposal_id!r}")
+    checked_targets: set[tuple[str, str]] = set()
     for proposal in proposals if recent is None else proposals[-recent:]:
         outcome = outcomes.get(proposal["proposal_id"])
-        row = {key: proposal[key] for key in ("proposal_id", "parent_ids", "feedback_from", "route", "basis", "change", "expected_observation")}
+        row = {key: proposal[key] for key in ("proposal_id", "parent_ids", "feedback_from", "route", "basis", "change",
+                                              "expected_observation", "code_targets", "validation", "stop_condition")}
+        row["input_sha256"] = proposal.get("input_sha256")
         row["feedback_evidence"] = [evidence_summary(candidates[i]) for i in proposal["feedback_from"]]
-        for candidate_id in proposal["feedback_from"]:
+        for candidate_id in proposal["parent_ids"] + proposal["feedback_from"]:
             verify(candidates[candidate_id])
+        _verify_proposal_targets(proposal, checked_targets)
+        row["identity_checks"] = {"code_targets": "checked"}
         row["state"] = "pending"
         if outcome is not None and outcome["event"] == "proposal_stop":
             row.update(state="stopped", reason=outcome["reason"])
@@ -501,10 +526,13 @@ def trace_report(args: argparse.Namespace) -> dict[str, Any]:
     proposals = [entry for entry in records if entry["event"] == "proposal"]
     closed = {entry["proposal_id"] for entry in records
               if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
-    trace = iteration_trace(records, None if args.all else args.recent)
+    requested = getattr(args, "proposal_id", None)
+    trace = iteration_trace(records, None if args.all or requested is not None else args.recent,
+                            proposal_id=requested)
     return {"schema_version": 1, "total_iterations": len(proposals),
             "omitted_iterations": len(proposals) - len(trace),
-            "pending_proposals": [entry["proposal_id"] for entry in proposals if entry["proposal_id"] not in closed],
+            "pending_proposals": [entry["proposal_id"] for entry in proposals if entry["proposal_id"] not in closed
+                                  and (requested is None or entry["proposal_id"] == requested)],
             "iterations": trace,
             "scope": "Linked code/result identities and adapter-declared checks; mechanism causality and promotion are not certified"}
 
@@ -612,6 +640,9 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
     record["reused_implementation_from"] = [entry["candidate_id"] for entry in old if entry["event"] == "candidate"
                                             and entry["role"] == "development"
                                             and implementation_identity(entry)["fingerprint"] == record["implementation"]["fingerprint"]]
+    record["reuse_links"] = {"format": "candidate-prefix-v1",
+                            "artifacts": reuse_prefix(record["reused_from"]),
+                            "implementation": reuse_prefix(record["reused_implementation_from"])}
     if args.proposal_id is not None:
         proposal = next((entry for entry in old if entry["event"] == "proposal" and entry["proposal_id"] == args.proposal_id), None)
         if proposal is None:
@@ -622,7 +653,12 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
         record["prediction_status"] = args.prediction_status
         validate_successor(record, proposal, old)
     validate_candidate(record)
-    append_record(archive, record)
+    # Repeated measurements can share one implementation for a long campaign.
+    # Persisting every earlier ID in each event makes that history quadratic.
+    # Keep old events intact; these optional presentation lists are derived from
+    # identities for briefs. The Python/CLI return retains its complete lists.
+    append_record(archive, {key: value for key, value in record.items()
+                            if key not in {"reused_from", "reused_implementation_from"}})
     return record
 
 
@@ -769,11 +805,98 @@ def directed_score(entry: dict[str, Any]) -> float:
     return entry["objective"]["value"] * (-1 if entry["objective"]["direction"] == "minimize" else 1)
 
 
-def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
+def _executed_snapshot(entry: dict[str, Any], identity: dict[str, Any]) -> bool:
+    """A claimed parent link or output file alone is not an implementation run."""
+    result = entry["result"]
+    return bool(entry["role"] == "development" and result.get("result_path")
+                and result.get("result_sha256") and result.get("execution_status")
+                and identity["scope"] not in OUTPUT_ONLY_SCOPES
+                and set(identity["artifacts"]) <= entry["artifact_paths"].keys())
+
+
+def _observed_snapshot(entry: dict[str, Any], identity: dict[str, Any]) -> bool:
+    result, objective = entry["result"], entry["objective"]
+    return bool(_executed_snapshot(entry, identity) and measurable(entry)
+                and result.get("execution_status") == "success" and not result.get("partial")
+                and result.get("valid") is not False and all(
+                    result.get(result_key) == objective.get(objective_key)
+                    for result_key, objective_key in (
+                        ("objective_value", "value"), ("objective_direction", "direction"),
+                        ("objective_kind", "kind"), ("objective_name", "name"))))
+
+
+def _review_opportunities(scoped: list[dict[str, Any]], index: dict[str, dict[str, Any]],
+                          rankable: Callable[[dict[str, Any]], bool] | None) -> tuple[
+                              dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Replay open implementation opportunities and their actual successors.
+
+    Opportunity declarations and runs stay separate: a repeat can add useful
+    feedback, but neither another route name nor a lucky score creates a node.
+    """
+    identities = {entry["candidate_id"]: implementation_identity(entry) for entry in scoped}
+    observed = {entry["candidate_id"] for entry in scoped
+                if _observed_snapshot(entry, identities[entry["candidate_id"]])
+                and (rankable is None or rankable(entry))}
+    representatives: dict[str, dict[str, Any]] = {}
+    opportunities: dict[str, dict[str, Any]] = {}
+    for position, entry in enumerate(scoped):
+        if entry["candidate_id"] not in observed:
+            continue
+        fingerprint = identities[entry["candidate_id"]]["fingerprint"]
+        representatives.setdefault(fingerprint, entry)
+        if (fingerprint not in opportunities and entry["status"] in {"promising", "unresolved"}
+                and entry.get("feedback")):
+            opportunities[fingerprint] = {"candidate": representatives[fingerprint],
+                                          "feedback_candidate": entry, "position": position,
+                                          "successors": set(), "measured_successors": set(),
+                                          "latest_successor": None, "superseded": False}
+    for position, child in enumerate(scoped):
+        child_identity = identities[child["candidate_id"]]
+        if not _executed_snapshot(child, child_identity):
+            continue
+        # Parent IDs can name earlier aliases. Use implementation identities so
+        # renaming a route or repeating a run cannot hide related descendants.
+        parent_fingerprints = {identities[parent_id]["fingerprint"]
+                               for parent_id in child["parent_ids"] if parent_id in identities
+                               and index[parent_id]["comparison"] == child["comparison"]}
+        for fingerprint in parent_fingerprints:
+            opportunity = opportunities.get(fingerprint)
+            if (opportunity is None or position <= opportunity["position"]
+                    or fingerprint == child_identity["fingerprint"]):
+                continue
+            opportunity["successors"].add(child_identity["fingerprint"])
+            opportunity["latest_successor"] = child
+            if child["candidate_id"] in observed:
+                opportunity["measured_successors"].add(child_identity["fingerprint"])
+                if child.get("prediction_status") != "unresolved":
+                    opportunity["superseded"] = True
+    return ({fingerprint: value for fingerprint, value in opportunities.items()
+             if not value["superseded"]}, identities)
+
+
+def optimization_brief(args: argparse.Namespace,
+                       records: list[dict[str, Any]] | None = None, *,
+                       rankable: Callable[[dict[str, Any]], bool] | None = None,
+                       frontier_seen: dict[str, int] | None = None,
+                       pending_seen: dict[str, int] | None = None) -> dict[str, Any]:
     """Retrieve decision-relevant development evidence without another ledger/card."""
     if args.recent < 1 or args.routes < 1:
         raise ArchiveFailure("invalid_config", "recent and routes must be positive")
-    records = read_records(args.archive.expanduser().resolve())
+    frontier_limit = getattr(args, "frontier", 2)
+    if type(frontier_limit) is not int or frontier_limit < 0:
+        raise ArchiveFailure("invalid_config", "frontier must be a nonnegative integer")
+    if frontier_seen is None:
+        frontier_seen = {}
+    if (not isinstance(frontier_seen, dict) or any(
+            not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+            or type(turn) is not int or turn < 0 for fingerprint, turn in frontier_seen.items())):
+        raise ArchiveFailure("invalid_config", "frontier_seen must map implementation SHA-256 hashes to nonnegative checkpoint turns")
+    if pending_seen is not None and (not isinstance(pending_seen, dict) or any(
+            not isinstance(proposal_id, str) or not proposal_id.strip() or type(turn) is not int or turn < 0
+            for proposal_id, turn in pending_seen.items())):
+        raise ArchiveFailure("invalid_config", "pending_seen must map nonempty proposal IDs to nonnegative checkpoint turns")
+    if records is None:
+        records = read_records(args.archive.expanduser().resolve())
     index = candidate_index(records)
     if not index:
         raise ArchiveFailure("empty_archive", "Record a baseline before requesting optimization context")
@@ -793,7 +916,8 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
     by_route: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for entry in scoped:
         by_route[entry["route"]].append(entry)
-    measured = distinct_implementations([entry for entry in scoped if measurable(entry)])
+    measured = distinct_implementations([entry for entry in scoped if measurable(entry)
+                                         and (rankable is None or rankable(entry))])
     measured_ids = {entry["candidate_id"] for entry in measured}
     best = max(measured, key=directed_score) if measured else None
     route_bests = {}
@@ -815,16 +939,61 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
 
     include(anchor)
     include(best)
+    opportunities, identities = _review_opportunities(scoped, index, rankable)
+
+    def include_opportunity(opportunity: dict[str, Any] | None) -> str | None:
+        if opportunity is None:
+            return None
+        candidate_id = include(opportunity["candidate"])
+        include(opportunity["feedback_candidate"])
+        return candidate_id
+
+    # Preserve the actual exploration evidence before route/recent cards when
+    # an automatic handoff must bound a large candidate-card mapping.
+    frontier = sorted(opportunities.items(), key=lambda item: (
+        item[0] in frontier_seen, frontier_seen.get(item[0], 0), item[1]["position"]))
+    frontier_selection = []
+    for fingerprint, opportunity in frontier[:frontier_limit]:
+        candidate_id = include_opportunity(opportunity)
+        frontier_selection.append({"candidate_id": candidate_id,
+                                   "implementation_fingerprint": fingerprint,
+                                   "feedback_candidate_id": opportunity["feedback_candidate"]["candidate_id"],
+                                   "last_exposed_turn": frontier_seen.get(fingerprint),
+                                   "successor_implementations": len(opportunity["successors"]),
+                                   "measured_successor_implementations": len(opportunity["measured_successors"]),
+                                   "latest_successor": include(opportunity["latest_successor"])})
+
+    closed = {entry["proposal_id"] for entry in records
+              if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
+    pending = [entry for entry in records if entry["event"] == "proposal" and entry["proposal_id"] not in closed]
+    # A proposal belongs to its first development parent. Other development
+    # parents/feedback may supply code or repair references under another
+    # contract; requiring every reference to match makes such work invisible.
+    matching_pending = [entry for entry in pending if index[entry["parent_ids"][0]]["comparison"] == context]
+    if pending_seen is None:
+        details = matching_pending[-args.recent:]
+    else:
+        details = sorted(matching_pending, key=lambda entry: (
+            entry["proposal_id"] in pending_seen, pending_seen.get(entry["proposal_id"], 0)))[:args.recent]
+    reference_entries: dict[str, dict[str, Any]] = {}
+    for proposal in details:
+        for candidate_id in proposal["parent_ids"] + proposal["feedback_from"]:
+            entry = index[candidate_id]
+            if entry["role"] != "development":
+                raise ArchiveFailure("confirmation_feedback", "Confirmation evidence cannot supply pending work or references")
+            if entry["comparison"] == context:
+                include(entry)
+            else:
+                reference_entries[candidate_id] = entry
+
     recent = distinct_implementations(by_route[anchor["route"]])[-args.recent:]
     recent_ids = [include(entry) for entry in recent]
-    superseded = {parent_id for child in scoped for parent_id in child["parent_ids"]
-                  if parent_id in index and changed_implementation(child, index[parent_id])}
     routes = []
     for route in selected_routes:
         entries = by_route[route]
-        unresolved = next((entry for entry in reversed(entries)
-                           if entry["status"] in {"promising", "unresolved"} and entry.get("feedback")
-                           and entry["candidate_id"] not in superseded), None)
+        unresolved = next((opportunities[identities[entry["candidate_id"]]["fingerprint"]]
+                           for entry in reversed(entries)
+                           if identities[entry["candidate_id"]]["fingerprint"] in opportunities), None)
         failure = next((entry for entry in reversed(entries)
                         if not entry["valid"] or entry["status"] == "rejected" or entry.get("failure_mechanism")), None)
         routes.append({"route": route, "measurements": len(entries),
@@ -833,21 +1002,24 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
                                                     if all(implementation_identity(entry)["scope"] not in OUTPUT_ONLY_SCOPES
                                                            for entry in entries) else None),
                        "best": include(route_bests[route]), "latest": include(entries[-1]),
-                       "unresolved": include(unresolved), "latest_failure": include(failure)})
-    closed = {entry["proposal_id"] for entry in records
-              if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
-    pending = [entry for entry in records if entry["event"] == "proposal" and entry["proposal_id"] not in closed]
-    matching_pending = [entry for entry in pending
-                        if all(index[i]["comparison"] == context for i in entry["parent_ids"] + entry["feedback_from"])]
-    details = matching_pending[-args.recent:]
-    for proposal in details:
-        for candidate_id in proposal["parent_ids"] + proposal["feedback_from"]:
-            include(index[candidate_id])
+                       "unresolved": include_opportunity(unresolved),
+                       "unresolved_feedback": (unresolved["feedback_candidate"]["candidate_id"] if unresolved else None),
+                       "latest_failure": include(failure)})
+    artifact_groups: dict[str, list[str]] = defaultdict(list)
+    artifact_reused: dict[str, list[str]] = {}
+    for entry in index.values():
+        fingerprint = entry["fingerprint"]
+        if entry["candidate_id"] in selected:
+            artifact_reused[entry["candidate_id"]] = list(artifact_groups[fingerprint])
+        artifact_groups[fingerprint].append(entry["candidate_id"])
     implementation_groups: dict[str, list[str]] = defaultdict(list)
     reused: dict[str, list[str]] = {}
     for entry in scoped:
         fingerprint = implementation_identity(entry)["fingerprint"]
-        reused[entry["candidate_id"]] = list(implementation_groups[fingerprint])
+        # Only displayed cards consume these prefixes. Copying a growing list
+        # for every unselected repeat makes long-running retrieval quadratic.
+        if entry["candidate_id"] in selected:
+            reused[entry["candidate_id"]] = list(implementation_groups[fingerprint])
         implementation_groups[fingerprint].append(entry["candidate_id"])
     cards = {}
     for candidate_id, entry in selected.items():
@@ -855,8 +1027,9 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
         verify_artifacts(entry)
         card = {key: entry.get(key) for key in ("parent_ids", "fingerprint", "artifact_paths", "route", "mechanism",
                                               "valid", "status", "objective", "cost", "feedback", "failure_mechanism",
-                                              "proposal_id", "prediction_status", "reused_from")}
+                                              "proposal_id", "prediction_status")}
         result = entry["result"]
+        card["reused_from"] = artifact_reused[candidate_id]
         card["implementation"] = implementation_identity(entry)
         card["reused_implementation_from"] = reused[candidate_id]
         card["result"] = {key: result.get(key) for key in ("result_path", "result_sha256", "execution_status",
@@ -868,20 +1041,48 @@ def optimization_brief(args: argparse.Namespace) -> dict[str, Any]:
         cards[candidate_id] = card
     checked_targets: set[tuple[str, str]] = set()
     for proposal in details:
-        for target in proposal["code_targets"]:
-            identity = (target["path"], target["sha256"])
-            if identity not in checked_targets:
-                if hash_path(pathlib.Path(target["path"])) != target["sha256"]:
-                    raise ArchiveFailure("parent_artifact_changed", f"Pending code target changed: {target['path']}")
-                checked_targets.add(identity)
+        _verify_proposal_targets(proposal, checked_targets)
+    pending_references = {}
+    for candidate_id, entry in reference_entries.items():
+        verify_result(entry)
+        verify_artifacts(entry)
+        result = entry["result"]
+        pending_references[candidate_id] = {
+            "implementation": implementation_identity(entry), "artifact_paths": entry["artifact_paths"],
+            "result": {key: result.get(key) for key in ("result_path", "result_sha256", "execution_status")},
+            "comparison_sha256": sha256(canonical(entry["comparison"])), "requires_revalidation": True,
+            "identity_checks": {"result_bytes": "checked" if result.get("result_path") else "not_recorded",
+                                "snapshot_bytes": "checked" if entry["artifact_paths"] else "not_recorded"},
+            "scope": "Development code/result identity from another comparison. Read cited artifacts for repair or transfer; "
+                     "revalidate under the target contract. Its objective and feedback do not guide active score ranking."}
     return {"schema_version": 1, "archive_path": str(args.archive.expanduser().resolve()),
             "anchor_candidate": anchor["candidate_id"], "comparison": context,
             "best_development": best["candidate_id"] if best else None,
             "recent_current": recent_ids, "routes": routes, "candidates": cards,
+            "pending_references": pending_references,
+            "review_frontier": {"selection": frontier_selection, "available": len(frontier),
+                                "omitted": len(frontier) - len(frontier_selection),
+                                "scope": "Matched development opportunities, separate from elite ranking. "
+                                         "Never exposed implementations precede least recently exposed ones; "
+                                         "archive declaration order breaks ties. Exposure turns are caller-supplied checkpoints. "
+                                         "First valid scored execution represents each code/recipe; feedback may come from an alias. "
+                                         "Successor counts cover distinct executed implementations after the first opportunity declaration. "
+                                         "Only a measured changed successor with a non-unresolved outcome supersedes an opportunity. "
+                                         "This retrieval size does not limit experiments or establish causal value."},
             "pending_proposals": [entry["proposal_id"] for entry in pending],
-            "pending_details": [{key: entry[key] for key in ("proposal_id", "parent_ids", "feedback_from", "route",
-                                                            "code_targets", "basis", "change", "expected_observation",
-                                                            "validation", "stop_condition")} for entry in details],
+            "matched_pending_proposals": [entry["proposal_id"] for entry in matching_pending],
+            "pending_summary": {"available": len(matching_pending), "omitted": len(matching_pending) - len(details),
+                                "selection_policy": "latest" if pending_seen is None else "least_recently_exposed",
+                                "scope": "Unfinished work belongs to its first development parent's complete comparison. "
+                                         "Other development references require revalidation and supply no active objective or feedback. "
+                                         "Exposure turns are caller-supplied successful checkpoints, not execution or closure. "
+                                         "Retrieval windows do not limit experiments."},
+            "pending_details": [{**{key: entry[key] for key in ("proposal_id", "parent_ids", "feedback_from", "route",
+                                                               "code_targets", "basis", "change", "expected_observation",
+                                                               "validation", "stop_condition")},
+                                 "input_sha256": entry.get("input_sha256"),
+                                 "last_exposed_turn": pending_seen.get(entry["proposal_id"]) if pending_seen is not None else None,
+                                 "identity_checks": {"code_targets": "checked"}} for entry in details],
             "omitted": {"routes": len(by_route) - len(routes), "current_comparison_candidates": len(scoped) - len(cards),
                         "other_development_comparisons": len(development) - len(scoped),
                         "pending_details": len(pending) - len(details)},
@@ -910,11 +1111,13 @@ def parser() -> argparse.ArgumentParser:
     trace.add_argument("--archive", type=pathlib.Path, required=True)
     trace.add_argument("--recent", type=int, default=8, help="recent proposals to include; all pending IDs remain visible")
     trace.add_argument("--all", action="store_true", help="include every iteration when a complete audit is needed")
+    trace.add_argument("--proposal-id", help="retrieve one exact proposal and its current outcome, including complete code targets")
     brief = sub.add_parser("brief", help="retrieve matched best versions, recent failures, code paths and pending proposals")
     brief.add_argument("--archive", type=pathlib.Path, required=True)
     brief.add_argument("--anchor", help="development candidate defining the comparison; defaults to the latest development record")
     brief.add_argument("--routes", type=int, default=4, help="routes to show, including the active route")
     brief.add_argument("--recent", type=int, default=4, help="recent distinct active-route candidates and matching pending details")
+    brief.add_argument("--frontier", type=int, default=2, help="open implementation opportunities to retrieve separately from elite routes; 0 disables retrieval, not experiments")
     record = sub.add_parser("record", help="append one candidate evidence record")
     record.add_argument("--archive", type=pathlib.Path, required=True)
     record.add_argument("--candidate-id", required=True)
