@@ -2,14 +2,15 @@
 
 长期驱动将每轮的工作选择、上下文刷新和成功交付确认集中在
 [campaign_policy.py](../skills/competition-optimize/scripts/campaign_policy.py)。
-Driver 继续持有文件、进程、锁、请求封存和持久化顺序。
+Driver 继续持有进程、锁、请求封存和持久化顺序；档案文件的读取、核验和接收
+由 [CampaignArchive](campaign-archive.md) 负责。
 
 ```mermaid
 flowchart LR
     E[核验后的 CampaignEvidence] --> P[Policy.prepare]
     P --> H[prepare_handoff]
     H --> D[Driver 封存与执行]
-    D --> R[核验新增档案与 CLI 结果]
+    D --> R[CampaignArchive.receive 与 CLI 结果核验]
     R --> A[Policy.accept]
     A --> P
 ```
@@ -47,9 +48,15 @@ Policy 请求 review；Handoff 判断所需材料是否实际交付；Policy 在
 
 ## Evidence Interface 与恢复
 
+`CampaignArchive.confirmed` 在构造交接材料前后核对同一前缀；`receive` 返回
+合法新增事件和计数变化；启动及无在途轮次恢复通过 `verified` 核验全量文件。
+CLI 失败与合法档案接收独立，文件隔离规则见[档案接收说明](campaign-archive.md)。
+
 `CampaignEvidence(records)` 借用一个已核验档案前缀。`signals(checkpoint)` 和
 `counts` 不读文件，共用比较投影和派生结果；checkpoint 改变时按该 checkpoint
-返回 continuity。交接核验共用该视图内的 `EvidenceReads`。
+返回 continuity。交接核验共用该视图内的
+[`EvidenceReads`](../skills/competition-optimize/scripts/evidence_files.py)。比较投影
+与文件核验的依赖方向见[候选证据说明](candidate-evidence.md)。
 
 视图存活期间不修改 records。接收新前缀或准备另一个轮次时创建新视图，使结果及
 源码字节继续按原规则复核。缓存只在内存中存在。

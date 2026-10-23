@@ -113,7 +113,7 @@ def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
             if matches and "implementation_review" in entry:
                 card["implementation_review"] = entry["implementation_review"]
             if matches and "learning" in entry:
-                archive_tools.scoped_learning.verify_evidence(entry["learning"], candidates, archive_tools, reads=reads)
+                archive_tools.scoped_learning.verify_evidence(entry["learning"], candidates, reads=reads)
                 card["learning"] = entry["learning"]
             cards[candidate_id] = card
         return cards[candidate_id]

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-import hashlib
 import json
 import os
 import pathlib
@@ -22,10 +21,11 @@ import uuid
 from typing import Any, BinaryIO
 
 import candidate_archive as archive_tools
+from campaign_archive import CampaignArchive
 from campaign_policy import CampaignPolicy, TurnOutcome
 from campaign_search import (
     DEFAULT_COMPARISON_REVIEW_WINDOW, DEFAULT_FAILURE_REVIEW_WINDOW, DEFAULT_SESSION_CHECKPOINTS,
-    DEFAULT_STAGNATION_WINDOW, CampaignEvidence, prepare_handoff,
+    DEFAULT_STAGNATION_WINDOW, prepare_handoff,
 )
 from campaign_runtime import (
     CampaignError, HEARTBEAT_SECONDS, POLL_SECONDS, WORKER_TOKEN, acquire_resources,
@@ -93,107 +93,6 @@ def read_state(campaign: pathlib.Path) -> dict[str, Any]:
 def save_state(campaign: pathlib.Path, state: dict[str, Any]) -> None:
     state["updated_at"] = utc_now()
     atomic_json(campaign / "state.json", state)
-
-
-def archive_snapshot(path: pathlib.Path, prefix_bytes: int | None = None) -> dict[str, Any]:
-    if not path.exists():
-        if prefix_bytes not in (None, 0):
-            raise CampaignError("Candidate archive disappeared")
-        return {"size": 0, "sha256": hashlib.sha256(b"").hexdigest()}
-    if not path.is_file():
-        raise CampaignError("Candidate archive is not a regular file")
-    size = path.stat().st_size
-    if prefix_bytes is not None and size < prefix_bytes:
-        raise CampaignError("Confirmed candidate archive was truncated")
-    remaining = size if prefix_bytes is None else prefix_bytes
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while remaining:
-            chunk = stream.read(min(1024 * 1024, remaining))
-            if not chunk:
-                raise CampaignError("Candidate archive changed while reading")
-            digest.update(chunk)
-            remaining -= len(chunk)
-    return {"size": size if prefix_bytes is None else prefix_bytes, "sha256": digest.hexdigest()}
-
-
-def verified_records(path: pathlib.Path, skip: int = 0) -> list[dict[str, Any]]:
-    records = archive_tools.read_records(path)
-    for entry in records[skip:]:
-        if entry["event"] == "candidate":
-            archive_tools.verify_result(entry)
-            archive_tools.verify_artifacts(entry)
-            result = entry["result"]
-            if result.get("result_path") and archive_tools.result_metadata(
-                    pathlib.Path(result["result_path"]), include_case_profile="case_profile" in result,
-                    include_resource_profile="resource_profile" in result) != result:
-                raise CampaignError(f"Archived result metadata differs from its file: {entry['candidate_id']}")
-    return records
-
-
-def reconcile_archive(campaign: pathlib.Path, state: dict[str, Any]) -> tuple[dict[str, int], bool, CampaignEvidence]:
-    """Accept verified additions, or preserve and quarantine an unconfirmed bad append."""
-    turn = state["inflight"]
-    path = pathlib.Path(state["archive"])
-    prior = turn["archive_before"]
-    if archive_snapshot(path, prior["size"]) != prior:
-        raise CampaignError("Confirmed candidate archive history was edited in place")
-    old_records = verified_records_prefix(path, prior["size"])
-    directory = turn_directory(campaign, turn["number"])
-    repair = directory / "archive-repair.json"
-    quarantined = repair.exists()
-    if quarantined:
-        journal = read_json(repair)
-        if (journal["token"] != turn["token"] or
-                file_hash(pathlib.Path(journal["quarantine"])) != journal["suffix_sha256"]):
-            raise CampaignError("Archive quarantine journal/evidence was modified")
-    try:
-        records = verified_records(path, skip=len(old_records))
-    except (archive_tools.ArchiveFailure, CampaignError, OSError) as exc:
-        # Only bytes beyond the sealed prefix may be quarantined; accepted history stays intact.
-        verified_records_prefix(path, prior["size"])
-        raw = path.read_bytes()
-        suffix = raw[prior["size"]:]
-        if not suffix:
-            raise CampaignError(f"Confirmed archive artifacts failed verification: {exc}") from exc
-        tail = directory / ("quarantined-archive-" + hashlib.sha256(suffix).hexdigest() + ".bin")
-        suffix_hash = hashlib.sha256(suffix).hexdigest()
-        if not tail.exists() or file_hash(tail) != suffix_hash:
-            atomic_bytes(tail, suffix)
-        if file_hash(tail) != suffix_hash:
-            raise CampaignError("Archive suffix was not completely preserved")
-        atomic_json(directory / "archive-repair.json", {
-            "token": turn["token"], "confirmed_prefix": prior, "original": archive_snapshot(path),
-            "quarantine": str(tail), "suffix_sha256": suffix_hash, "reason": str(exc),
-        })
-        with path.open("r+b") as stream:
-            stream.truncate(prior["size"])
-            stream.flush()
-            os.fsync(stream.fileno())
-        append_event(campaign, {"event": "unconfirmed_archive_quarantined", "turn": turn["number"],
-                                "token": turn["token"], "evidence": str(tail), "error": str(exc)})
-        records = old_records
-        quarantined = True
-    current = archive_snapshot(path)
-    evidence = CampaignEvidence(records)
-    previous_counts, current_counts = CampaignEvidence(old_records).counts, evidence.counts
-    delta = {key: current_counts[key] - previous_counts[key] for key in current_counts}
-    state["archive_snapshot"] = current
-    state["progress"] = current_counts
-    return delta, quarantined, evidence
-
-
-def verified_records_prefix(path: pathlib.Path, size: int) -> list[dict[str, Any]]:
-    # Parse the previously verified prefix without rehashing every old artifact.
-    if size == 0:
-        return []
-    raw = path.read_bytes()[:size]
-    # Avoid temporary files in the contest workspace or changing candidate_archive's interface.
-    import tempfile
-    with tempfile.NamedTemporaryFile(prefix="competition-archive-", suffix=".jsonl") as stream:
-        stream.write(raw)
-        stream.flush()
-        return archive_tools.read_records(pathlib.Path(stream.name))
 
 
 def parse_events(path: pathlib.Path) -> dict[str, Any]:
@@ -306,7 +205,7 @@ def completion_check(campaign: pathlib.Path, state: dict[str, Any], turn: dict[s
         if (not result["reason"].strip() or not evidence_exists(result["evidence"], state, campaign) or
                 not state["progress"]["executed_implementations"]):
             raise CampaignError("Completion verifier claimed success without executed implementation/evidence")
-        verified_records(pathlib.Path(state["archive"]))
+        CampaignArchive(pathlib.Path(state["archive"])).verified()
         state["status"] = "complete"
         state["stop_reason"] = result["reason"]
 
@@ -543,19 +442,13 @@ def prepare_turn(campaign: pathlib.Path, state: dict[str, Any]) -> None:
     accepted_state = state
     state = dict(state)
     number = state["turn_number"] + 1
-    archive = pathlib.Path(state["archive"])
-    snapshot = state["archive_snapshot"]
-    if archive_snapshot(archive) != snapshot:
-        raise CampaignError("Candidate archive changed outside a campaign turn; inspect before resume")
-    records = verified_records_prefix(archive, snapshot["size"])
-    evidence = CampaignEvidence(records)
-    prepared = CampaignPolicy().prepare(state, evidence)
-    state.update(prepared.updates)
-    fresh, reason = prepared.fresh_context, prepared.context_refresh_reason
-    handoff = prepare_handoff(state, prepared, evidence, state["protected_files"][str(campaign / "task.md")])
-    context = handoff.packet
-    if archive_snapshot(archive) != snapshot:
-        raise CampaignError("Candidate archive changed while preparing context")
+    archive = CampaignArchive(pathlib.Path(state["archive"]))
+    with archive.confirmed(state["archive_snapshot"]) as evidence:
+        prepared = CampaignPolicy().prepare(state, evidence)
+        state.update(prepared.updates)
+        fresh, reason = prepared.fresh_context, prepared.context_refresh_reason
+        handoff = prepare_handoff(state, prepared, evidence, state["protected_files"][str(campaign / "task.md")])
+        context = handoff.packet
     timeout = state["turn_timeout_seconds"]
     if state["max_wall_seconds"] is not None:
         left = max(0.1, state["created_unix"] + state["max_wall_seconds"] - time.time())
@@ -712,7 +605,12 @@ def consume_turn(campaign: pathlib.Path, state: dict[str, Any], resources: list[
     if result.get("outputs") != output_hashes(directory):
         raise CampaignError("Agent output changed after its durable exit record")
     check_control_files(state)
-    delta, quarantined, evidence = reconcile_archive(campaign, state)
+    received = CampaignArchive(pathlib.Path(state["archive"])).receive(
+        turn["archive_before"], token=turn["token"], directory=directory)
+    if received.quarantine_event is not None:
+        append_event(campaign, {**received.quarantine_event, "turn": turn["number"], "token": turn["token"]})
+    delta, quarantined, evidence = received.delta, received.quarantined, received.evidence
+    state.update(archive_snapshot=received.snapshot, progress=evidence.counts)
     events = parse_events(directory / "events.jsonl")
     for key, value in events["usage"].items():
         state["usage"][key] = state["usage"].get(key, 0) + value
@@ -737,8 +635,7 @@ def consume_turn(campaign: pathlib.Path, state: dict[str, Any], resources: list[
     except CampaignError as exc:
         error = str(exc)
     # New archive evidence is accepted even if invocation delivery failed.
-    new_records = evidence.records[len(evidence.records) - delta["events"]:]
-    outcome = TurnOutcome(evidence, new_records, delta, receipt, time.time())
+    outcome = TurnOutcome(evidence, received.appended_events, delta, receipt, time.time())
     state.update(CampaignPolicy().accept(state, turn, outcome))
     if receipt is None:
         retry_later(state, error)
@@ -802,9 +699,7 @@ def run_campaign(campaign: pathlib.Path, overrides: dict[str, Any] | None = None
         state["manager_generation"] = generation or uuid.uuid4().hex
         check_control_files(state)
         if not state["inflight"]:
-            if state["archive_snapshot"] != archive_snapshot(pathlib.Path(state["archive"])):
-                raise CampaignError("Candidate archive changed outside a campaign turn; inspect before resume")
-            verified_records(pathlib.Path(state["archive"]))
+            CampaignArchive(pathlib.Path(state["archive"])).verified(state["archive_snapshot"])
         if overrides:
             state.update(overrides)
         if state["status"] in TERMINAL:
@@ -871,10 +766,9 @@ def new_campaign(args: argparse.Namespace) -> pathlib.Path:
     if campaign.exists():
         raise CampaignError("Campaign directory already exists; use resume")
     archive = args.archive.expanduser().resolve()
-    records = verified_records(archive)
-    evidence = CampaignEvidence(records)
+    head = CampaignArchive(archive).verified()
+    evidence, snapshot = head.evidence, head.snapshot
     signals = evidence.signals()
-    snapshot = archive_snapshot(archive)
     protected = {}
     checker = None
     if args.completion_check:

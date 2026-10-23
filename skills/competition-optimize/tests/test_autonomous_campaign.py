@@ -105,7 +105,7 @@ if scenario in {"repeat_plan", "repeat_plan_interrupt", "repeat_plan_decision_in
     else:
         records = tools.read_records(archive)
         plan = next(entry for entry in records if entry["event"] == "measurement_plan")
-        status = tools.measurement_plans.status(plan, records, tools)
+        status = tools.measurement_plans.status(plan, records)
         slot = next(((item, name) for item in status["runs"]
                      for name in ("leader", "challenger") if item[name] is None), None)
         if status["stop"] is not None:
@@ -1247,7 +1247,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         records = driver.archive_tools.read_records(self.archive)
         self.assertEqual(records[-1]["event"], "measurement_plan")
         plan = records[-1]
-        self.assertFalse(driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)["complete"])
+        self.assertFalse(driver.archive_tools.measurement_plans.status(plan, records)["complete"])
         self.assertEqual(self.state()["repeat_review_checkpoints"][
             self.turn_context(1)["repeat_conflict"]["comparison_key"]], plan["conflict_signature"])
         result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
@@ -1256,11 +1256,11 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertEqual(second["mode"], "measure")
         self.assertEqual(second["context"]["measurement_plan"]["plan_id"], "paired-repeat")
         records = driver.archive_tools.read_records(self.archive)
-        self.assertFalse(driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)["complete"])
+        self.assertFalse(driver.archive_tools.measurement_plans.status(plan, records)["complete"])
         result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "3")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         records = driver.archive_tools.read_records(self.archive)
-        paired = driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)
+        paired = driver.archive_tools.measurement_plans.status(plan, records)
         self.assertTrue(paired["complete"])
         self.assertEqual((paired["runs"][0]["leader"]["value"], paired["runs"][0]["challenger"]["value"]),
                          (55, 65))
@@ -1272,7 +1272,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertTrue(fourth["context"]["measurement_plan"]["pairs_complete"])
         records = driver.archive_tools.read_records(self.archive)
         self.assertEqual(records[-1]["event"], "measurement_decision")
-        self.assertIsNone(driver.archive_tools.measurement_plans.first_pending(records, driver.archive_tools))
+        self.assertIsNone(driver.archive_tools.measurement_plans.first_pending(records))
         self.assertEqual(self.state()["next_action"], records[-1]["next_action"])
         self.environment["FAKE_SCENARIO"] = "no_progress"
         result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "5")
@@ -1296,7 +1296,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         result = self.start("--max-turns", "3", "--session-checkpoints", "2")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         records = driver.archive_tools.read_records(self.archive)
-        view = driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)
+        view = driver.archive_tools.measurement_plans.status(plan, records)
         self.assertEqual(len(view["attempts"]), 3)
         self.assertFalse(view["complete"])
         self.assertEqual(self.state()["session_turns"], 1)
@@ -1312,7 +1312,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertTrue(self.archive.read_bytes().startswith(prefix))
         records = driver.archive_tools.read_records(self.archive)
         self.assertEqual(sum(entry["event"] == "measurement_plan" for entry in records), 1)
-        view = driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)
+        view = driver.archive_tools.measurement_plans.status(plan, records)
         self.assertTrue(view["complete"])
         self.assertEqual(view["state"], "decided")
         self.assertEqual(len(view["attempts"]), 6)
@@ -1336,7 +1336,7 @@ class AutonomousCampaignTests(unittest.TestCase):
                          ["initial", "scheduled_rotation", "scheduled_rotation", "scheduled_rotation"])
         self.assertEqual(self.state()["strategy_review_checkpoints"], {})
         records = driver.archive_tools.read_records(self.archive)
-        self.assertEqual(driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)["state"],
+        self.assertEqual(driver.archive_tools.measurement_plans.status(plan, records)["state"],
                          "decided")
         self.environment["FAKE_SCENARIO"] = "no_progress"
         result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "8")
@@ -1358,7 +1358,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertEqual([call["number"] for call in self.calls() if "resume" not in call["argv"]], [1])
         self.assertEqual(self.state()["session_turns"], 5)
         view = driver.archive_tools.measurement_plans.status(
-            plan, driver.archive_tools.read_records(self.archive), driver.archive_tools)
+            plan, driver.archive_tools.read_records(self.archive))
         self.assertEqual(len(view["attempts"]), 5)
         self.assertFalse(view["complete"])
 
@@ -1396,7 +1396,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertEqual([event["turn"] for event in prepared if event["fresh_context"]], [1, 3, 6])
         self.assertEqual([call["number"] for call in self.calls() if "resume" not in call["argv"]], [1, 3, 6])
         view = driver.archive_tools.measurement_plans.status(
-            plan, driver.archive_tools.read_records(self.archive), driver.archive_tools)
+            plan, driver.archive_tools.read_records(self.archive))
         self.assertEqual(len(view["attempts"]), 5)
         self.assertEqual(len({(entry["run_id"], entry["implementation"]) for entry in view["attempts"]}), 5)
         self.assertFalse(self.state()["recovery_needed"])
@@ -1411,7 +1411,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         plan = next(entry for entry in records if entry["event"] == "measurement_plan")
         stopped = records[-1]
         self.assertEqual(stopped["event"], "measurement_stop")
-        view = driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)
+        view = driver.archive_tools.measurement_plans.status(plan, records)
         self.assertEqual(view["state"], "stopped_unresolved")
         self.assertFalse(view["complete"])
         self.assertIsNone(view["decision"])
@@ -1436,7 +1436,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertFalse(self.state()["execution_health"]["needs_attention"])
         self.assertEqual(self.state()["objective_progress"]["best_candidate"], "leader-first")
         records = driver.archive_tools.read_records(self.archive)
-        self.assertIsNone(driver.archive_tools.measurement_plans.first_pending(records, driver.archive_tools))
+        self.assertIsNone(driver.archive_tools.measurement_plans.first_pending(records))
         self.assertEqual(sum(entry["event"] == "measurement_plan" for entry in records), 1)
         self.assertEqual(sum(entry["event"] == "measurement_stop" for entry in records), 1)
         self.assertNotIn("measurement_plan_id", driver.archive_tools.candidate_index(records)["candidate-4"]["result"])
@@ -1500,7 +1500,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         state = self.state()
         records = driver.archive_tools.read_records(self.archive)
         self.assertEqual(records[-1]["event"], "measurement_decision")
-        self.assertIsNone(driver.archive_tools.measurement_plans.first_pending(records, driver.archive_tools))
+        self.assertIsNone(driver.archive_tools.measurement_plans.first_pending(records))
         self.assertTrue(state["recovery_needed"])
         self.assertFalse(state["execution_health"]["needs_attention"])
         self.assertEqual(state["next_mode"], "work")
@@ -2024,28 +2024,6 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertEqual([entry["candidate_id"] for entry in records], ["candidate-2"])
         self.assertEqual(self.state()["progress"]["executed_implementations"], 1)
         self.assertIn("quarantined suffixes", self.calls()[1]["prompt"])
-
-    def test_partial_quarantine_from_a_crash_is_replaced_before_truncation(self) -> None:
-        self.environment["FAKE_SCENARIO"] = "partial_archive"
-        self.assertEqual(self.start("--max-turns", "1").returncode, 0)
-        directory = self.campaign / "turns" / "000001"
-        tail = next(directory.glob("quarantined-archive-*.bin"))
-        original_suffix = tail.read_bytes()
-        self.archive.write_bytes(original_suffix)
-        tail.write_bytes(original_suffix[:8])
-        (directory / "archive-repair.json").unlink()
-        state = self.state()
-        request = json.loads((directory / "request.json").read_text())
-        request["prompt"] = (directory / "prompt.txt").read_text()
-        state.update(status="running", inflight=request, usage={}, agent_seconds=0,
-                     archive_snapshot=request["archive_before"])
-        runtime.atomic_json(self.campaign / "state.json", state)
-        result = self.call("resume", "--campaign", str(self.campaign))
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertEqual(tail.read_bytes(), original_suffix)
-        journal = json.loads((directory / "archive-repair.json").read_text())
-        self.assertEqual(journal["suffix_sha256"], runtime.file_hash(tail))
-        self.assertEqual(self.archive.read_bytes(), b"")
 
     def test_confirmed_archive_mutation_blocks_further_launches(self) -> None:
         self.environment["FAKE_SCENARIO"] = "tamper"

@@ -297,6 +297,48 @@ class ScopedLearningTests(unittest.TestCase):
         self.assertIn("long-report", trials.delivered_trials(packet))
         self.assertNotIn("long-report", trials.delivered_trials(search._bounded(packet, 240, 2, {})))
 
+    def test_standalone_learning_reads_revision_and_delivery_without_archive_module(self) -> None:
+        self.learned(lesson=self.lesson(evidence=["control"]))
+        self.propose("revision", learning_from=["first"])
+        head = self.record("head", 95, proposal="revision",
+                           learning=self.lesson(evidence=["first"], revises="first"))
+        program = r'''
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+import scoped_learning as learning
+from candidate_evidence import implementation_identity
+from evidence_files import EvidenceReads
+
+path = Path(sys.argv[2])
+records = [json.loads(line) for line in path.read_text().splitlines()]
+candidates = {}
+for entry in records:
+    if entry["event"] != "candidate":
+        continue
+    if "learning" in entry:
+        learning.validate(entry["learning"], entry, candidates)
+    candidates[entry["candidate_id"]] = entry
+head = candidates["head"]
+history = learning.retrieve(candidates, head["comparison"],
+                            {implementation_identity(head)["fingerprint"]}, 2,
+                            reads=EvidenceReads(), seen={}, archive_path=path)
+packet = {"archive_path": str(path), "development_brief": {
+    "comparison": head["comparison"], "scoped_learning": history}}
+assert "candidate_archive" not in sys.modules
+print(json.dumps({"history": history, "delivered": learning.delivered(packet)}))
+'''
+        run = subprocess.run(["/usr/bin/python3", "-c", program, str(SCRIPTS), str(self.path)],
+                             check=True, capture_output=True, text=True)
+        result = json.loads(run.stdout)
+        self.assertEqual(result["delivered"], ["head"])
+        rows = result["history"]["selection"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["learning"], head["learning"])
+        self.assertEqual(set(rows[0]["evidence"]), {"first", "head"})
+
 
 if __name__ == "__main__":
     unittest.main()

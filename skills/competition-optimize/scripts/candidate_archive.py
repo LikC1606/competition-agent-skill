@@ -12,16 +12,13 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import math
 import os
 import pathlib
 import re
 import sys
-import time
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Any, Callable
 
 import candidate_profiles
@@ -29,112 +26,16 @@ import implementation_reviews
 import measurement_plans
 import resource_profiles
 import scoped_learning
-
-
-class ArchiveFailure(Exception):
-    """A malformed archive or an unsafe archive mutation."""
-
-    def __init__(self, kind: str, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
+from candidate_evidence import (
+    ArchiveFailure, ComparisonEvidence, ComparisonView, DEVELOPMENT_ROLES, DIRECTIONS,
+    KINDS, OUTPUT_ONLY_SCOPES, PIPELINE_SCOPES, candidate_index, canonical, directed_score,
+    executed_snapshot as _executed_snapshot, implementation_identity, load_json, measurable,
+    nonempty_text, observed_snapshot as _observed_snapshot, reject_constant, sha256, unique_object,
+)
+from evidence_files import EvidenceReads, hash_path, verify_artifacts, verify_result
 
 
 STATUSES = {"incumbent", "runner_up", "promising", "rejected", "unresolved"}
-DEVELOPMENT_ROLES = {"development", "diagnostic"}
-DIRECTIONS = {"maximize", "minimize"}
-KINDS = {"official_metric", "proxy", "unknown"}
-PIPELINE_SCOPES = {"training_pipeline", "execution_pipeline"}
-OUTPUT_ONLY_SCOPES = {"prediction_artifact_only", "generated_artifact_only"}
-
-
-def reject_constant(value: str) -> None:
-    raise ValueError(f"Non-finite JSON number: {value}")
-
-
-def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"Duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
-def load_json(raw: bytes, source: str) -> Any:
-    try:
-        value = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique_object,
-                           parse_constant=reject_constant)
-        json.dumps(value, allow_nan=False)
-        return value
-    except (UnicodeError, ValueError, OverflowError, RecursionError) as exc:
-        raise ArchiveFailure("invalid_json", f"{source}: {exc}") from exc
-
-
-def canonical(value: Any) -> bytes:
-    return json.dumps(value, ensure_ascii=False, allow_nan=False,
-                      sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-
-def sha256(raw: bytes) -> str:
-    return hashlib.sha256(raw).hexdigest()
-
-
-class EvidenceReads:
-    """Reuse file digests within one evidence view, never across requests.
-
-    Recheck file identity on every use. Directories are deliberately not cached:
-    their inventories and each member's current identity must still be visited.
-    Only digests are retained, not model/data/result bytes.
-    """
-
-    def __init__(self) -> None:
-        self._files: dict[pathlib.Path, tuple[tuple[int, ...], str]] = {}
-        # Same-size writes can share a filesystem timestamp tick. Recent files
-        # are always reread; archived snapshots older than this view can reuse
-        # digests after their full identity is checked again. No waiting.
-        self._stable_before_ns = time.time_ns() - 1_000_000_000
-
-    @staticmethod
-    def _identity(path: pathlib.Path) -> tuple[int, ...]:
-        info = path.stat()
-        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
-                info.st_mtime_ns, info.st_ctime_ns)
-
-    def digest(self, path: pathlib.Path) -> str:
-        path = path.expanduser().resolve(strict=True)
-        identity = self._identity(path)
-        previous = self._files.get(path)
-        if (previous is not None and previous[0] == identity
-                and max(identity[-2:]) < self._stable_before_ns):
-            return previous[1]
-        return self._read(path, identity)[1]
-
-    def _read(self, path: pathlib.Path, identity: tuple[int, ...]) -> tuple[bytes, str]:
-        raw = path.read_bytes()
-        digest = sha256(raw)
-        if self._identity(path) == identity:
-            self._files[path] = (identity, digest)
-        return raw, digest
-
-    def read_bytes(self, path: pathlib.Path) -> bytes:
-        """Read required contents and share their digest with later checks."""
-        path = path.expanduser().resolve(strict=True)
-        return self._read(path, self._identity(path))[0]
-
-
-def hash_path(path: pathlib.Path, *, reads: EvidenceReads | None = None) -> str:
-    """Hash a file or a deterministic directory listing."""
-    path = path.expanduser().resolve(strict=True)
-    if path.is_file():
-        return reads.digest(path) if reads is not None else sha256(path.read_bytes())
-    if not path.is_dir():
-        raise ArchiveFailure("invalid_artifact", f"Artifact is neither a file nor directory: {path}")
-    members: list[dict[str, str]] = []
-    for item in sorted(path.rglob("*")):
-        if item.is_file():
-            relative = item.relative_to(path).as_posix()
-            members.append({"path": relative, "sha256": reads.digest(item) if reads is not None else sha256(item.read_bytes())})
-    return sha256(canonical({"kind": "directory", "members": members}))
 
 
 def read_records(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -142,8 +43,12 @@ def read_records(path: pathlib.Path) -> list[dict[str, Any]]:
         return []
     if not path.is_file():
         raise ArchiveFailure("invalid_archive", f"Archive is not a file: {path}")
+    return parse_records(path.read_bytes(), str(path))
+
+
+def parse_records(raw: bytes, source: str) -> list[dict[str, Any]]:
+    """Replay JSONL bytes without reading candidate result or artifact files."""
     records: list[dict[str, Any]] = []
-    raw = path.read_bytes()
     if raw and not raw.endswith(b"\n"):
         raise ArchiveFailure("incomplete_event", "Archive ends without a newline; reconcile the interrupted write first")
     seen: set[str] = set()
@@ -157,21 +62,21 @@ def read_records(path: pathlib.Path) -> list[dict[str, Any]]:
     for index, line in enumerate(raw.splitlines(), 1):
         if not line.strip():
             continue
-        value = load_json(line, f"{path}:{index}")
+        value = load_json(line, f"{source}:{index}")
         if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
-            raise ArchiveFailure("invalid_archive", f"{path}:{index}: expected schema_version 1 object")
+            raise ArchiveFailure("invalid_archive", f"{source}:{index}: expected schema_version 1 object")
         if value.get("event") not in {"candidate", "decision", "proposal", "proposal_stop",
                                       "measurement_plan", "measurement_decision", "measurement_stop"}:
-            raise ArchiveFailure("invalid_archive", f"{path}:{index}: unknown event")
+            raise ArchiveFailure("invalid_archive", f"{source}:{index}: unknown event")
         if value["event"] == "candidate":
             validate_candidate(value)
-            slot = measurement_plans.validate_candidate(value, records, sys.modules[__name__],
+            slot = measurement_plans.validate_candidate(value, records,
                                                         plans=plans, candidates=candidates,
                                                         filled_slots=filled_slots,
                                                         closed_plans=closed_plans)
             candidate_id = value["candidate_id"]
             if candidate_id in seen or not set(value["parent_ids"]) <= seen:
-                raise ArchiveFailure("invalid_archive", f"{path}:{index}: duplicate ID or unknown parent")
+                raise ArchiveFailure("invalid_archive", f"{source}:{index}: duplicate ID or unknown parent")
             validate_diagnostic_parent(value, candidates)
             if value.get("proposal_id") is not None:
                 proposal_id = value["proposal_id"]
@@ -182,7 +87,7 @@ def read_records(path: pathlib.Path) -> list[dict[str, Any]]:
                 closed.add(proposal_id)
             if "learning" in value:
                 try:
-                    scoped_learning.validate(value["learning"], value, candidates, sys.modules[__name__])
+                    scoped_learning.validate(value["learning"], value, candidates)
                 except scoped_learning.LearningFailure as exc:
                     raise ArchiveFailure("invalid_learning", str(exc)) from exc
             seen.add(candidate_id)
@@ -199,13 +104,13 @@ def read_records(path: pathlib.Path) -> list[dict[str, Any]]:
                 raise ArchiveFailure("invalid_archive", "Duplicate proposal ID")
             proposals[proposal_id] = value
         elif value["event"] == "measurement_plan":
-            measurement_plans.validate_plan(value, records, sys.modules[__name__])
+            measurement_plans.validate_plan(value, records)
             plans[value["plan_id"]] = value
         elif value["event"] == "measurement_decision":
-            measurement_plans.validate_decision(value, records, sys.modules[__name__])
+            measurement_plans.validate_decision(value, records)
             closed_plans.add(value["plan_id"])
         elif value["event"] == "measurement_stop":
-            measurement_plans.validate_stop(value, records, sys.modules[__name__])
+            measurement_plans.validate_stop(value, records)
             closed_plans.add(value["plan_id"])
         elif value["event"] == "proposal_stop":
             proposal_id = nonempty_text(value.get("proposal_id"), "proposal_id")
@@ -214,15 +119,9 @@ def read_records(path: pathlib.Path) -> list[dict[str, Any]]:
                 raise ArchiveFailure("invalid_archive", "Stop names an unknown or closed proposal")
             closed.add(proposal_id)
         elif value.get("action") not in {"exploit", "explore", "diagnose"}:
-            raise ArchiveFailure("invalid_archive", f"{path}:{index}: invalid route decision")
+            raise ArchiveFailure("invalid_archive", f"{source}:{index}: invalid route decision")
         records.append(value)
     return records
-
-
-def nonempty_text(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ArchiveFailure("invalid_candidate", f"{field} must be a non-empty string")
-    return value.strip()
 
 
 def finite_number(value: Any, field: str) -> float:
@@ -421,26 +320,6 @@ def reuse_prefix(matches: list[str]) -> dict[str, Any]:
             "previous": matches[-1] if matches else None}
 
 
-def implementation_identity(entry: dict[str, Any]) -> dict[str, Any]:
-    """Keep stochastic prediction bytes separate from the snapshotted recipe."""
-    result, artifacts = entry["result"], entry["artifacts"]
-    prediction = (result.get("candidate_scope") == "prediction_csv" or
-                  result.get("candidate_scope") is None and
-                  result.get("validity_scope") == "prediction_artifact_and_metric_inputs")
-    generated = result.get("candidate_scope") == "generated_artifact"
-    if (prediction or generated) and "configuration" in artifacts:
-        scope = "training_pipeline" if prediction else "execution_pipeline"
-        identity_artifacts = {"configuration": artifacts["configuration"]}
-    else:
-        scope = "prediction_artifact_only" if prediction else "generated_artifact_only" if generated else "evaluated_artifacts"
-        identity_artifacts = dict(artifacts)
-    value = {"scope": scope, "artifacts": identity_artifacts}
-    # Both output contracts identify the same executable recipe. Changing the
-    # scope label must not turn its next measurement into a new implementation.
-    fingerprint_value = {**value, "scope": "training_pipeline" if scope in PIPELINE_SCOPES else scope}
-    return {**value, "fingerprint": sha256(canonical(fingerprint_value))}
-
-
 def changed_implementation(child: dict[str, Any], parent: dict[str, Any]) -> bool:
     child_identity, parent_identity = implementation_identity(child), implementation_identity(parent)
     if {child_identity["scope"], parent_identity["scope"]} & OUTPUT_ONLY_SCOPES:
@@ -483,10 +362,6 @@ def append_record(path: pathlib.Path, value: dict[str, Any]) -> None:
         except OSError:
             pass
         raise
-
-
-def candidate_index(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {entry["candidate_id"]: entry for entry in records if entry["event"] == "candidate"}
 
 
 def validate_diagnostic_parent(value: dict[str, Any], candidates: dict[str, dict[str, Any]]) -> None:
@@ -538,7 +413,7 @@ def validate_proposal(value: dict[str, Any], records: list[dict[str, Any]], *,
         if any(candidates[i]["role"] not in DEVELOPMENT_ROLES for i in ids):
             raise ArchiveFailure("confirmation_feedback", "Confirmation evidence cannot supply search parents or feedback")
     try:
-        scoped_learning.validate_references(value, candidates, sys.modules[__name__])
+        scoped_learning.validate_references(value, candidates)
     except scoped_learning.LearningFailure as exc:
         raise ArchiveFailure("invalid_learning", str(exc)) from exc
     validate_construction_targets(value)
@@ -547,31 +422,6 @@ def validate_proposal(value: dict[str, Any], records: list[dict[str, Any]], *,
                 or not pathlib.Path(target["path"]).is_absolute()
                 or not isinstance(target.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", target["sha256"])):
             raise ArchiveFailure("invalid_proposal", "Code targets need absolute paths and SHA-256 hashes")
-
-
-def verify_result(entry: dict[str, Any], *, reads: EvidenceReads | None = None) -> None:
-    result = entry["result"]
-    if result.get("result_path"):
-        path = pathlib.Path(result["result_path"])
-        digest = reads.digest(path) if reads is not None else sha256(path.read_bytes())
-        if digest != result["result_sha256"]:
-            raise ArchiveFailure("result_changed", f"Result bytes changed for {entry['candidate_id']}")
-
-
-def verify_artifacts(entry: dict[str, Any], *, reads: EvidenceReads | None = None) -> list[pathlib.Path]:
-    roots = []
-    for key, name in entry["artifact_paths"].items():
-        path = pathlib.Path(name).resolve(strict=True)
-        if hash_path(path, reads=reads) != entry["artifacts"][key]:
-            raise ArchiveFailure("parent_artifact_changed", f"Archived artifact changed for {entry['candidate_id']}: {key}")
-        roots.append(path)
-    if "implementation_review" in entry:
-        try:
-            implementation_reviews.verify(entry["implementation_review"], entry, implementation_identity(entry),
-                                          lambda path: hash_path(path, reads=reads))
-        except implementation_reviews.ReviewFailure as exc:
-            raise ArchiveFailure("invalid_implementation_review", str(exc)) from exc
-    return roots
 
 
 def propose_candidate(args: argparse.Namespace) -> dict[str, Any]:
@@ -599,7 +449,7 @@ def propose_candidate(args: argparse.Namespace) -> dict[str, Any]:
     value["recorded_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     candidates = candidate_index(records)
     for candidate_id in value.get("learning_from", []):
-        scoped_learning.verify_evidence(candidates[candidate_id]["learning"], candidates, sys.modules[__name__])
+        scoped_learning.verify_evidence(candidates[candidate_id]["learning"], candidates)
     parent_roots = []
     for candidate_id in set(value["parent_ids"] + value["feedback_from"]):
         entry = candidates[candidate_id]
@@ -634,7 +484,7 @@ def record_measurement_plan(args: argparse.Namespace) -> dict[str, Any]:
     plan = {key: authored[key] for key in fields}
     plan.update(schema_version=1, event="measurement_plan", input_sha256=sha256(raw),
                 recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
-    measurement_plans.validate_plan(plan, records, sys.modules[__name__])
+    measurement_plans.validate_plan(plan, records)
     candidates = candidate_index(records)
     for candidate_id in (plan["leader_candidate"], plan["challenger_candidate"], plan["witness_candidate"]):
         verify_result(candidates[candidate_id])
@@ -655,7 +505,7 @@ def record_measurement_decision(args: argparse.Namespace) -> dict[str, Any]:
                  and entry["plan_id"] == authored["plan_id"]), None)
     if plan is None:
         raise ArchiveFailure("unknown_measurement_plan", "Decision requires an earlier measurement plan")
-    view = measurement_plans.status(plan, records, sys.modules[__name__])
+    view = measurement_plans.status(plan, records)
     if view["stop"] is not None:
         raise ArchiveFailure("closed_measurement_plan", "The measurement plan was stopped unresolved")
     if not view["complete"]:
@@ -668,9 +518,9 @@ def record_measurement_decision(args: argparse.Namespace) -> dict[str, Any]:
             verify_artifacts(entry)
     decision = {key: authored[key] for key in fields}
     decision.update(schema_version=1, event="measurement_decision", input_sha256=sha256(raw),
-                    evidence_sha256=measurement_plans.evidence_sha256(view, sys.modules[__name__]),
+                    evidence_sha256=measurement_plans.evidence_sha256(view),
                     recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
-    measurement_plans.validate_decision(decision, records, sys.modules[__name__])
+    measurement_plans.validate_decision(decision, records)
     append_record(args.archive, decision)
     return decision
 
@@ -681,13 +531,13 @@ def record_measurement_stop(args: argparse.Namespace) -> dict[str, Any]:
                  and entry["plan_id"] == args.plan_id), None)
     if plan is None:
         raise ArchiveFailure("unknown_measurement_plan", "Stop requires an earlier measurement plan")
-    view = measurement_plans.status(plan, records, sys.modules[__name__])
+    view = measurement_plans.status(plan, records)
     stop = {"schema_version": 1, "event": "measurement_stop", "plan_id": args.plan_id,
             "reason": args.reason, "next_action": args.next_action,
-            "evidence_sha256": measurement_plans.stop_evidence_sha256(view, sys.modules[__name__]),
+            "evidence_sha256": measurement_plans.stop_evidence_sha256(view),
             "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat()}
-    measurement_plans.validate_stop(stop, records, sys.modules[__name__])
-    measurement_plans.verify_stop_evidence(view, records, sys.modules[__name__], reads=EvidenceReads())
+    measurement_plans.validate_stop(stop, records)
+    measurement_plans.verify_stop_evidence(view, records, reads=EvidenceReads())
     append_record(args.archive, stop)
     return stop
 
@@ -792,7 +642,7 @@ def iteration_trace(records: list[dict[str, Any]], recent: int | None = None, *,
             verify_result(entry, reads=reads)
             verify_artifacts(entry, reads=reads)
             if "learning" in entry:
-                scoped_learning.verify_evidence(entry["learning"], candidates, sys.modules[__name__], reads=reads)
+                scoped_learning.verify_evidence(entry["learning"], candidates, reads=reads)
             verified.add(entry["candidate_id"])
     proposals = [entry for entry in records if entry["event"] == "proposal"]
     if proposal_id is not None:
@@ -815,7 +665,7 @@ def iteration_trace(records: list[dict[str, Any]], recent: int | None = None, *,
         for candidate_id in proposal["parent_ids"] + proposal["feedback_from"] + proposal.get("learning_from", []):
             verify(candidates[candidate_id])
         for candidate_id in proposal.get("learning_from", []):
-            scoped_learning.verify_evidence(candidates[candidate_id]["learning"], candidates, sys.modules[__name__], reads=reads)
+            scoped_learning.verify_evidence(candidates[candidate_id]["learning"], candidates, reads=reads)
         _verify_proposal_targets(proposal, checked_targets, reads=reads)
         row["identity_checks"] = proposal_identity_checks(proposal)
         row["state"] = "pending"
@@ -991,11 +841,11 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
         try:
             record["learning"] = scoped_learning.normalize(
                 load_json(raw_learning, str(args.learning)), raw_learning, record,
-                candidate_index(old), sys.modules[__name__])
+                candidate_index(old))
         except scoped_learning.LearningFailure as exc:
             raise ArchiveFailure("invalid_learning", str(exc)) from exc
     validate_candidate(record)
-    measurement_plans.validate_candidate(record, old, sys.modules[__name__])
+    measurement_plans.validate_candidate(record, old)
     validate_diagnostic_parent(record, candidate_index(old))
     # Repeated measurements can share one implementation for a long campaign.
     # Persisting every earlier ID in each event makes that history quadratic.
@@ -1004,16 +854,6 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
     append_record(archive, {key: value for key, value in record.items()
                             if key not in {"reused_from", "reused_implementation_from"}})
     return record
-
-
-def measurable(entry: dict[str, Any], *, include_diagnostics: bool = False) -> bool:
-    objective, context = entry["objective"], entry["comparison"]
-    required = ("evaluator_hash", "workload_hash", "score_model_hash", "stage", "objective_name")
-    roles = DEVELOPMENT_ROLES if include_diagnostics else {"development"}
-    return (entry["valid"] and entry["role"] in roles
-            and objective.get("value") is not None and objective.get("direction") in DIRECTIONS
-            and objective.get("kind") in {"proxy", "official_metric"}
-            and all(isinstance(context.get(key), str) and context[key] for key in required))
 
 
 def route_decision(args: argparse.Namespace) -> dict[str, Any]:
@@ -1146,147 +986,6 @@ def distinct_implementations(entries: list[dict[str, Any]]) -> list[dict[str, An
             distinct.append(entry)
             seen.add(fingerprint)
     return distinct
-
-
-def directed_score(entry: dict[str, Any]) -> float:
-    return entry["objective"]["value"] * (-1 if entry["objective"]["direction"] == "minimize" else 1)
-
-
-def _executed_snapshot(entry: dict[str, Any], identity: dict[str, Any]) -> bool:
-    """A claimed parent link or output file alone is not an implementation run."""
-    result = entry["result"]
-    return bool(entry["role"] in DEVELOPMENT_ROLES and result.get("result_path")
-                and result.get("result_sha256") and result.get("execution_status")
-                and identity["scope"] not in OUTPUT_ONLY_SCOPES
-                and set(identity["artifacts"]) <= entry["artifact_paths"].keys())
-
-
-def _observed_snapshot(entry: dict[str, Any], identity: dict[str, Any], *,
-                       include_diagnostics: bool = False) -> bool:
-    result, objective = entry["result"], entry["objective"]
-    return bool(_executed_snapshot(entry, identity) and measurable(entry, include_diagnostics=include_diagnostics)
-                and result.get("execution_status") == "success" and not result.get("partial")
-                and result.get("valid") is not False and all(
-                    result.get(result_key) == objective.get(objective_key)
-                    for result_key, objective_key in (
-                        ("objective_value", "value"), ("objective_direction", "direction"),
-                        ("objective_kind", "kind"), ("objective_name", "name"))))
-
-
-@dataclass(frozen=True)
-class ComparisonView:
-    comparison: dict[str, Any]
-    entries: tuple[dict[str, Any], ...]
-    representatives: tuple[dict[str, Any], ...]
-    observations: dict[str, tuple[dict[str, Any], ...]]
-
-    def first_profiles(self, field: str) -> list[dict[str, Any]]:
-        """First eligible profile of each implementation, in archive order."""
-        first = [next((entry for entry in group if field in entry["result"] and
-                       _observed_snapshot(entry, implementation_identity(entry))), None)
-                 for group in self.observations.values()]
-        return [entry for entry in first if entry is not None]
-
-    def ranking_conflict(self) -> dict[str, Any] | None:
-        """Find an actual repeat reversing the first-observation ordering.
-
-        This is a measurement-review hint, never a new score or promotion rule.
-        An alias of the same result file is not another measurement.
-        """
-        if len(self.representatives) < 2:
-            return None
-        leader = max(self.representatives, key=directed_score)
-
-        def runs(group: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
-            seen: set[tuple[str, str]] = set()
-            unique = []
-            for entry in group:
-                result = entry["result"]
-                reference = (result.get("result_path"), result.get("result_sha256"))
-                if not all(reference):
-                    continue
-                if reference not in seen:
-                    seen.add(reference)
-                    unique.append(entry)
-            return unique
-
-        by_first = {group[0]["candidate_id"]: group for group in self.observations.values()}
-        leader_group = by_first[leader["candidate_id"]]
-        leader_runs = runs(leader_group)
-        for challenger in sorted((entry for entry in self.representatives if entry is not leader),
-                                 key=directed_score, reverse=True):
-            challenger_group = by_first[challenger["candidate_id"]]
-            challenger_runs = runs(challenger_group)
-            witness = next((entry for entry in leader_runs[1:]
-                            if directed_score(entry) < directed_score(challenger)), None)
-            reason = "leader_repeat_below_challenger_first"
-            if witness is None:
-                witness = next((entry for entry in challenger_runs[1:]
-                                if directed_score(entry) > directed_score(leader)), None)
-                reason = "challenger_repeat_above_leader_first"
-            if witness is None:
-                continue
-            identity = {"comparison_key": sha256(canonical(self.comparison)),
-                        "leader_candidate": leader["candidate_id"],
-                        "challenger_candidate": challenger["candidate_id"], "reason": reason}
-            return {**identity, "signature": sha256(canonical(identity)),
-                    "witness_candidate": witness["candidate_id"],
-                    "leader_first_value": leader["objective"]["value"],
-                    "challenger_first_value": challenger["objective"]["value"],
-                    "witness_value": witness["objective"]["value"],
-                    "leader_measurements": len(leader_runs),
-                    "challenger_measurements": len(challenger_runs),
-                    "scope": "Repeated development scores reverse first-observation ordering under one "
-                             "complete comparison. This requests a frozen task-specific remeasurement "
-                             "protocol; it is not an uncertainty estimate or automatic promotion."}
-        return None
-
-
-class ComparisonEvidence:
-    """Project ordered development observations once for one archive prefix.
-
-    The caller supplies its existing eligibility rule. Records are borrowed and
-    must not be mutated while this in-memory view is in use. Construction is
-    linear in the supplied records; no file I/O or persistent cache occurs.
-    Only development candidates enter the view. A missing or non-development
-    anchor raises unknown_candidate rather than choosing a different contract.
-    """
-
-    def __init__(self, records: list[dict[str, Any]], *,
-                 eligible: Callable[[dict[str, Any]], bool]) -> None:
-        self._candidates: dict[str, dict[str, Any]] = {}
-        self._entries: dict[bytes, list[dict[str, Any]]] = defaultdict(list)
-        self._groups: dict[bytes, dict[str, list[dict[str, Any]]]] = defaultdict(dict)
-        self._first: list[tuple[bytes, str, dict[str, Any]]] = []
-        for entry in records:
-            if entry.get("event") != "candidate" or entry.get("role") != "development":
-                continue
-            self._candidates[entry["candidate_id"]] = entry
-            comparison = canonical(entry["comparison"])
-            self._entries[comparison].append(entry)
-            if not eligible(entry):
-                continue
-            fingerprint = implementation_identity(entry)["fingerprint"]
-            groups = self._groups[comparison]
-            if fingerprint not in groups:
-                groups[fingerprint] = []
-                self._first.append((comparison, fingerprint, entry))
-            groups[fingerprint].append(entry)
-
-    def for_candidate(self, candidate_id: str) -> ComparisonView:
-        try:
-            comparison = self._candidates[candidate_id]["comparison"]
-        except KeyError as exc:
-            raise ArchiveFailure("unknown_candidate", f"No development candidate {candidate_id!r}") from exc
-        key = canonical(comparison)
-        groups = self._groups.get(key, {})
-        return ComparisonView(comparison, tuple(self._entries[key]),
-                              tuple(group[0] for group in groups.values()),
-                              {fingerprint: tuple(group) for fingerprint, group in groups.items()})
-
-    def first_observations(self) -> tuple[tuple[bytes, str, dict[str, Any]], ...]:
-        """One observed implementation per complete comparison, in archive order."""
-        return tuple(self._first)
 
 
 def _review_opportunities(scoped: list[dict[str, Any]], index: dict[str, dict[str, Any]],
@@ -1485,7 +1184,7 @@ def optimization_brief(args: argparse.Namespace,
             reference_entries[entry["candidate_id"]] = entry
     for proposal in details:
         for candidate_id in proposal.get("learning_from", []):
-            scoped_learning.verify_evidence(index[candidate_id]["learning"], index, sys.modules[__name__], reads=reads)
+            scoped_learning.verify_evidence(index[candidate_id]["learning"], index, reads=reads)
         for candidate_id in proposal["parent_ids"] + proposal["feedback_from"] + proposal.get("learning_from", []):
             entry = index[candidate_id]
             if entry["role"] not in DEVELOPMENT_ROLES:
@@ -1567,7 +1266,7 @@ def optimization_brief(args: argparse.Namespace,
         for key in ("learning", "learning_from"):
             if key in entry:
                 if key == "learning":
-                    scoped_learning.verify_evidence(entry[key], index, sys.modules[__name__], reads=reads)
+                    scoped_learning.verify_evidence(entry[key], index, reads=reads)
                 card[key] = entry[key]
         cards[candidate_id] = card
     checked_targets: set[tuple[str, str]] = set()
@@ -1596,7 +1295,7 @@ def optimization_brief(args: argparse.Namespace,
             "resource_tradeoffs": resource_tradeoffs,
             "scoped_learning": scoped_learning.retrieve(
                 index, context, {implementation_identity(entry)["fingerprint"]
-                                 for entry in (anchor, best) if entry is not None}, sys.modules[__name__], reads=reads,
+                                 for entry in (anchor, best) if entry is not None}, reads=reads,
                 seen=learning_seen, archive_path=args.archive),
             "diagnostic_evidence": {"selection": [entry["candidate_id"] for entry in selected_diagnostics],
                                     "available": len(diagnostics), "omitted": len(diagnostics) - len(selected_diagnostics),
@@ -1748,7 +1447,7 @@ def main() -> int:
                          and entry["plan_id"] == args.plan_id), None)
             if plan is None:
                 raise ArchiveFailure("unknown_measurement_plan", "No such measurement plan")
-            result = measurement_plans.status(plan, records, sys.modules[__name__])
+            result = measurement_plans.status(plan, records)
         elif args.command == "stop":
             result = stop_proposal(args)
         elif args.command == "trace":

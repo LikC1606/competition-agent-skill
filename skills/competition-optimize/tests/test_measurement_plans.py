@@ -12,6 +12,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import candidate_archive as archive
 import campaign_search as search
+import measurement_plans
 
 
 class MeasurementPlanTests(unittest.TestCase):
@@ -89,7 +90,7 @@ class MeasurementPlanTests(unittest.TestCase):
         records = archive.read_records(self.path)
         plan = next(entry for entry in records if entry["event"] == "measurement_plan"
                     and entry["plan_id"] == plan_id)
-        return archive.measurement_plans.status(plan, records, archive)
+        return measurement_plans.status(plan, records)
 
     def stop(self, *, plan_id: str = "frozen-1",
              reason: str = "The frozen recipe repeatedly fails; the planned comparison remains unresolved.",
@@ -129,6 +130,43 @@ class MeasurementPlanTests(unittest.TestCase):
         self.assertEqual(error.exception.kind, kind)
         self.assertEqual(self.path.read_bytes(), prior)
 
+    def test_plan_validation_and_status_use_archived_values_without_files(self) -> None:
+        before = archive.read_records(self.path)
+        plan = self.plan()
+        records = archive.read_records(self.path)
+        expected = self.status()
+        for path in self.sources.values():
+            path.unlink()
+        for entry in records:
+            if entry["event"] == "candidate":
+                Path(entry["result"]["result_path"]).unlink()
+
+        script = """
+import json
+import pathlib
+import sys
+sys.path.insert(0, sys.argv[1])
+import measurement_plans
+records = [json.loads(line) for line in pathlib.Path(sys.argv[2]).read_text().splitlines()]
+plan = next(entry for entry in records if entry["event"] == "measurement_plan")
+measurement_plans.validate_plan(plan, records[:records.index(plan)])
+view = measurement_plans.status(plan, records)
+assert measurement_plans.first_pending(records) == view
+print(json.dumps({"status": view,
+                  "pairs_sha256": measurement_plans.evidence_sha256(view),
+                  "stop_sha256": measurement_plans.stop_evidence_sha256(view),
+                  "loaded_archive": "candidate_archive" in sys.modules}))
+"""
+        result = subprocess.run(["/usr/bin/python3", "-c", script, str(SCRIPTS), str(self.path)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {
+            "status": expected, "pairs_sha256": measurement_plans.evidence_sha256(expected),
+            "stop_sha256": measurement_plans.stop_evidence_sha256(expected), "loaded_archive": False})
+        measurement_plans.validate_plan(plan, before)
+        with self.assertRaises(OSError):
+            measurement_plans.verify_stop_evidence(expected, records)
+
     def test_plan_precedes_matching_pairs_and_only_complete_pairs_close_it(self) -> None:
         self.rejects(lambda: self.record("premature", "leader", 52, plan_id="frozen-1"),
                      "unplanned_measurement")
@@ -147,12 +185,12 @@ class MeasurementPlanTests(unittest.TestCase):
         self.assertFalse(self.status()["complete"])
         self.record("challenger-pair-b", "challenger", 62, plan_id="frozen-1", run_id="pair-b", seeds=[12])
         self.assertTrue(self.status()["complete"])
-        self.assertEqual(archive.measurement_plans.first_pending(archive.read_records(self.path), archive)["plan_id"],
+        self.assertEqual(measurement_plans.first_pending(archive.read_records(self.path))["plan_id"],
                          "frozen-1")
         self.assertEqual(self.status()["runs"][1]["challenger"]["value"], 62)
         decision = self.decide()
         self.assertEqual(self.status()["decision"]["evidence_sha256"], decision["evidence_sha256"])
-        self.assertIsNone(archive.measurement_plans.first_pending(archive.read_records(self.path), archive))
+        self.assertIsNone(measurement_plans.first_pending(archive.read_records(self.path)))
         self.rejects(self.decide, "duplicate_measurement_decision")
         self.rejects(lambda: self.record("late-invalid", "leader", 56, plan_id="frozen-1", valid=False),
                      "closed_measurement_plan")
@@ -183,7 +221,7 @@ class MeasurementPlanTests(unittest.TestCase):
         self.assertIsNone(view["decision"])
         self.assertIsNone(view["runs"][0]["leader"])
         self.assertEqual(view["runs"][0]["challenger"]["candidate_id"], measured["candidate_id"])
-        self.assertIsNone(archive.measurement_plans.first_pending(records, archive))
+        self.assertIsNone(measurement_plans.first_pending(records))
         self.assertEqual(search.objective_progress(records), progress)
         self.assertEqual(progress["best_candidate"], "leader-first")
         self.assertEqual(search.execution_health(records), health)

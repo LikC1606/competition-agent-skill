@@ -101,6 +101,7 @@ class ArchiveReplayTests(unittest.TestCase):
         records = self.chain()
         before = self.path.read_bytes()
         self.assertEqual(archive.read_records(self.path), records)
+        self.assertEqual(archive.parse_records(before, str(self.path)), records)
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual([entry["event"] for entry in records],
                          ["candidate", "proposal", "candidate", "proposal", "candidate",
@@ -143,7 +144,7 @@ class ArchiveReplayTests(unittest.TestCase):
         for index, (bad, kind, message) in enumerate(cases):
             self.write(bad)
             with self.subTest(case=index):
-                self.failure(lambda: archive.read_records(self.path), kind, message)
+                self.failure(lambda: archive.parse_records(self.path.read_bytes(), str(self.path)), kind, message)
 
     def test_result_reuse_checks_unrelated_history_and_legacy_digest_equality(self) -> None:
         self.record("unrelated-confirmation", 999, role="confirmation")
@@ -156,7 +157,7 @@ class ArchiveReplayTests(unittest.TestCase):
             changed[-1]["result"]["result_sha256"] = copy.deepcopy(digest)
             self.write(changed)
             with self.subTest(digest=digest):
-                self.failure(lambda: archive.read_records(self.path), "reused_execution_evidence",
+                self.failure(lambda: archive.parse_records(self.path.read_bytes(), str(self.path)), "reused_execution_evidence",
                              "An old result cannot complete a new implementation proposal")
                 self.failure(lambda: archive.validate_successor(changed[-1], changed[-2], changed[:-1]),
                              "reused_execution_evidence",
@@ -182,10 +183,26 @@ class ArchiveReplayTests(unittest.TestCase):
         self.failure(lambda: archive.read_records(self.path), "invalid_proposal",
                      "parent_ids must name distinct archived candidates")
 
-    def test_replay_does_not_rebuild_candidate_index_for_each_link(self) -> None:
+    def test_byte_replay_needs_no_archive_or_artifact_files(self) -> None:
         expected = self.chain()
-        with mock.patch.object(archive, "candidate_index", side_effect=AssertionError("History was rescanned")):
-            self.assertEqual(archive.read_records(self.path), expected)
+        raw = self.path.read_bytes()
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                path.unlink()
+        self.assertEqual(archive.parse_records(raw, "sealed-prefix"), expected)
+
+    def test_byte_replay_keeps_physical_lines_and_rejects_incomplete_tail(self) -> None:
+        raw = self.path.read_bytes()
+        self.failure(lambda: archive.parse_records(raw + b"\n{}\n", "sealed-prefix"),
+                     "invalid_archive", "sealed-prefix:3: expected schema_version 1 object")
+        self.failure(lambda: archive.parse_records(raw[:-1], "sealed-prefix"),
+                     "incomplete_event", "Archive ends without a newline; reconcile the interrupted write first")
+        self.assertEqual(archive.parse_records(b"", "empty-prefix"), [])
+
+    def test_file_reader_keeps_missing_and_nonfile_behavior(self) -> None:
+        self.assertEqual(archive.read_records(self.root / "missing.jsonl"), [])
+        self.failure(lambda: archive.read_records(self.root), "invalid_archive",
+                     f"Archive is not a file: {self.root}")
 
     def test_standalone_validators_keep_their_original_no_keyword_path(self) -> None:
         self.propose("independent", "independent")

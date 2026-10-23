@@ -2,6 +2,24 @@
 
 本轮验证的是持续执行、检查点交接、故障恢复、共同基准恢复、同口径收益信号、旧分支检索与跨上下文证据。实现入口为 [autonomous_campaign.py](../skills/competition-optimize/scripts/autonomous_campaign.py)，进程原语在 [campaign_runtime.py](../skills/competition-optimize/scripts/campaign_runtime.py)，搜索信号与交接包在 [campaign_search.py](../skills/competition-optimize/scripts/campaign_search.py)，已完成试验召回在 [campaign_trials.py](../skills/competition-optimize/scripts/campaign_trials.py)。启动及恢复命令见[使用说明](../skills/competition-optimize/references/unattended-campaign.md)。
 
+## 候选规则与文件核验直接依赖（2026-10-23）
+
+按四步顺序提取 `candidate_evidence` 的纯身份、观测与比较规则，分离 `evidence_files` 的当前文件核验，再移除 `measurement_plans` 和 `scoped_learning` 的整模块参数。两个消费者直接导入具体规则，文件读取视图使用 `EvidenceReads | None`；档案、交接和试验检索的调用一并迁移。原档案导出直接引用同一实现，CLI、JSONL schema 1、campaign schema 2 和旧 sealed turn 不需要迁移。[候选证据说明](candidate-evidence.md)记录了依赖方向和 interface。
+
+迁出的 19 个类和函数与原定义逐一比对一致；测量和经验模块全部 26 个定义在去除整模块调用、明确读取类型后保持原逻辑。已有文件读取和观测测试改为使用新入口，新增两个独立解释器消费场景：真实测量计划在源码/result 已删除后仍能查询归档状态，显式核验当前文件则失败；经验修订链可独立校验、检索和确认交付。两个场景均不加载 `candidate_archive`。
+
+最终完整回归 `/usr/bin/python3 -m unittest discover -s skills/competition-optimize/tests -p 'test_*.py' -q`：**520/520 通过，180.442 秒**。19 个变更 Python 文件编译、Skill 的 `quick_validate` 和 `git diff --check` 通过。首次完整回归发现文件读取测试的模块别名与局部集合重名；修复后该文件 9 项通过，再重跑得到上述完整结果。验证范围为本地 Interface、档案和长期驱动流程，本轮未新增官方提分或端到端提速证据。
+
+## 档案读取、核验与接收收口（2026-10-23）
+
+按 `codebase-design` 的四步设计顺序，先从 `read_records` 抽取纯字节入口 `parse_records(raw, source)`，共用已有索引和顺序验证，删除前缀回放的临时文件。随后新增 [CampaignArchive](campaign-archive.md)，用 `verified`、`confirmed` 和 `receive` 集中全量核验、交接前后检查及轮末接收。Driver 接入后删除原四个档案 helper，直接使用接收结果中的新增事件、计数变化与 evidence；锁、CLI 输出身份、receipt、campaign events 和最终 state 保存仍在 Driver。
+
+核验范围保持明确：历史回放不读源码/result，启动与无在途轮次恢复核验全量文件，轮末接收只核验新增 candidate，handoff 按需复核引用。坏尾部整段保全、写 journal 后才截断；已确认前缀损坏直接报错。合法追加与 CLI 成功独立，旧 JSONL、schema-v2 及 sealed turn 恢复不需要迁移。
+
+新增 20 项公开档案 Interface 测试，使用真实临时目录覆盖全量与新增核验范围、合法和零追加、重复接收、前缀篡改/截短/消失、含合法事件的整个坏尾部隔离、result/source/metadata 损坏、隔离副本不完整、journal 写入前后及已截断恢复、token/hash/JSON journal 损坏拒绝。将 Driver 中对应的隔离副本恢复用例迁至该 Interface，保留跨 start/resume、receipt 和进程的流程保证。字节回放另覆盖无文件依赖、物理行号和残缺尾部；原混合历史、错误优先级及旧 digest 语义继续验证。
+
+固定脚本与测试后完整回归 `/usr/bin/python3 -m unittest discover -s skills/competition-optimize/tests -p 'test_*.py' -q`：**518/518 通过，182.871 秒**。变更脚本和测试的 `py_compile`、Skill 的 `quick_validate` 与 `git diff --check` 通过。验证覆盖本地档案与长期驱动流程；本次未量测整体提速或新增比赛提分。
+
 ## 每轮决策、交付确认与证据视图收口（2026-10-23）
 
 按设计顺序集中四项职责：新增纯 `CampaignPolicy.prepare/accept`，统一工作选择、上下文刷新、成功后的 review/曝光确认与空转处理；`prepare_handoff` 同时返回有界交接包和实际交付意图；`CampaignEvidence` 为同一档案前缀共享比较投影、计数、信号和交接核验读取。Driver 保留归档核验、进程、请求封存与原持久化顺序。完整 Interface 及恢复约定见[维护说明](campaign-policy.md)。

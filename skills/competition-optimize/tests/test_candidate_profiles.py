@@ -12,7 +12,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 archive = importlib.import_module("candidate_archive")
 search = importlib.import_module("campaign_search")
-driver = importlib.import_module("autonomous_campaign")
+campaign_archive = importlib.import_module("campaign_archive")
 fixtures = importlib.import_module("test_optimization_brief")
 
 
@@ -39,7 +39,7 @@ class CandidateProfileTests(unittest.TestCase):
 
     def packet(self) -> dict:
         return search.handoff_packet(self.path, archive.read_records(self.path),
-                                     driver.archive_snapshot(self.path), "t" * 64)
+                                     {"size": self.path.stat().st_size, "sha256": archive.sha256(self.path.read_bytes())}, "t" * 64)
 
     def test_old_lower_score_specialist_survives_bounded_context_and_can_supply_a_real_parent(self) -> None:
         specialist = self.profile_record("old-specialist", 80, {"001": 12, "1": 8, "c": 10, "d": 10},
@@ -187,7 +187,7 @@ class CandidateProfileTests(unittest.TestCase):
             self.complement()
         self.assertEqual(caught.exception.kind, "result_changed")
         with self.assertRaises(archive.ArchiveFailure) as caught:
-            driver.verified_records(self.path)
+            campaign_archive.CampaignArchive(self.path).verified().evidence.records
         self.assertEqual(caught.exception.kind, "result_changed")
         path.write_bytes(raw)
         for number, cases in enumerate([{}, {"a": True}, {"a": "12"}, {" ": 1}]):
@@ -195,7 +195,7 @@ class CandidateProfileTests(unittest.TestCase):
                 self.profile_record(f"invalid-profile-{number}", 90, cases)
             self.assertEqual(caught.exception.kind, "invalid_case_profile")
 
-    def test_driver_verifies_legacy_metadata_without_upgrading_or_rewriting_recorded_bytes(self) -> None:
+    def test_campaign_archive_verifies_legacy_metadata_without_upgrading_or_rewriting_recorded_bytes(self) -> None:
         entry = self.profile_record("legacy", 100, dict.fromkeys("abcd", 10))
         result_path = Path(entry["result"]["result_path"])
         raw_result = result_path.read_bytes()
@@ -205,7 +205,7 @@ class CandidateProfileTests(unittest.TestCase):
         self.assertNotIn("case_profile", legacy["result"])
         self.path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
         raw_archive = self.path.read_bytes()
-        verified = driver.verified_records(self.path)
+        verified = campaign_archive.CampaignArchive(self.path).verified().evidence.records
         self.assertEqual(verified, [legacy])
         self.assertEqual(self.path.read_bytes(), raw_archive)
         self.assertEqual(result_path.read_bytes(), raw_result)

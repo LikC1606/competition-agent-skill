@@ -64,7 +64,7 @@ class CampaignEvidence:
 
     @cached_property
     def _measurement_plan(self) -> dict[str, Any] | None:
-        return archive_tools.measurement_plans.first_pending(self.records, archive_tools)
+        return archive_tools.measurement_plans.first_pending(self.records)
 
     @cached_property
     def _repeat_conflict(self) -> dict[str, Any] | None:
@@ -594,7 +594,7 @@ def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: Campaig
         "pending_proposal_exposure": {"comparison_key": key, "proposals": exposed["proposals"]},
         "trial_exposure": {"comparison_key": key, "proposals": delivered_trials(packet)},
         "learning_exposure": {"comparison_key": key,
-                              "candidates": archive_tools.scoped_learning.delivered(packet, archive_tools)},
+                              "candidates": archive_tools.scoped_learning.delivered(packet)},
         "review_checkpoints": reviews,
     })
 
@@ -683,9 +683,9 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
                                              "measure-status --archive PATH --plan-id ID; complete its unmatched slots."}
                                    if measurement_plan else None),
               "measurement_decision": archive_tools.measurement_plans.latest_decision(
-                  records, archive_tools, progress["comparison"], reads=reads),
+                  records, progress["comparison"], reads=reads),
               "measurement_stop": archive_tools.measurement_plans.latest_stop(
-                  records, archive_tools, progress["comparison"], reads=reads),
+                  records, progress["comparison"], reads=reads),
               "trial_history": trial_history(archive, records, progress["comparison"], related, seen=trial_seen, reads=reads),
               "development_brief": brief,
               "scope": "Matched development evidence only. Best scores are observations, not certified promotion. "

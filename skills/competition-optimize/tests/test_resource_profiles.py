@@ -12,7 +12,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 archive = importlib.import_module("candidate_archive")
 search = importlib.import_module("campaign_search")
-driver = importlib.import_module("autonomous_campaign")
+campaign_archive = importlib.import_module("campaign_archive")
 resources = importlib.import_module("resource_profiles")
 fixtures = importlib.import_module("test_optimization_brief")
 
@@ -52,7 +52,7 @@ class ResourceProfileTests(unittest.TestCase):
         self.assertNotIn("old-fast", value["recent_current"])
         self.assertEqual(value["candidates"]["old-fast"]["artifact_paths"], fast["artifact_paths"])
         packet = search.handoff_packet(self.path, archive.read_records(self.path),
-                                       driver.archive_snapshot(self.path), "t" * 64)
+                                       {"size": self.path.stat().st_size, "sha256": archive.sha256(self.path.read_bytes())}, "t" * 64)
         self.assertLessEqual(len(archive.canonical(packet)) + 1, search.HANDOFF_BYTES)
         self.assertEqual(packet["development_brief"]["resource_tradeoffs"]["selection"], tradeoff["selection"])
         self.assertEqual(packet["development_brief"]["candidates"]["best"]["result"]["result_sha256"],
@@ -172,11 +172,11 @@ class ResourceProfileTests(unittest.TestCase):
                 resources.describe(value)
         self.assertEqual(resources.describe({**profile, "value": 0})["value"], 0)
         candidate = self.profile_record("best", 100, 10)
-        self.assertEqual(driver.verified_records(self.path)[0]["result"], candidate["result"])
+        self.assertEqual(campaign_archive.CampaignArchive(self.path).verified().evidence.records[0]["result"], candidate["result"])
         old = copy.deepcopy(candidate)
         old["result"].pop("resource_profile")
         self.path.write_bytes(archive.canonical(old) + b"\n")
-        self.assertEqual(driver.verified_records(self.path)[0]["result"], old["result"])
+        self.assertEqual(campaign_archive.CampaignArchive(self.path).verified().evidence.records[0]["result"], old["result"])
         self.assertEqual(self.view()["resource_tradeoffs"]["selection"], [])
         result_path = Path(candidate["result"]["result_path"])
         result = json.loads(result_path.read_text())

@@ -38,7 +38,7 @@ class LearningRotationTests(unittest.TestCase):
     def retrieve(self, *, seen=None, related=None, limit=2):
         return learning.retrieve(
             archive.candidate_index(archive.read_records(self.path)),
-            self.control["comparison"], set() if related is None else related, archive,
+            self.control["comparison"], set() if related is None else related,
             seen=seen, archive_path=self.path, limit=limit)
 
     def test_related_head_stays_visible_while_four_old_heads_rotate(self):
@@ -58,8 +58,8 @@ class LearningRotationTests(unittest.TestCase):
             self.assertEqual(rows[1]["last_exposed_turn"], 1 if turn == 5 else None)
             history = packet["development_brief"]["scoped_learning"]
             self.assertEqual((history["available"], history["omitted"]), (5, 3))
-            self.assertEqual(learning.delivered(packet, archive), expected)
-            seen.update({candidate_id: turn for candidate_id in learning.delivered(packet, archive)})
+            self.assertEqual(learning.delivered(packet), expected)
+            seen.update({candidate_id: turn for candidate_id in learning.delivered(packet)})
         self.assertEqual(set(seen), {"related", "old-0", "old-1", "old-2", "old-3"})
         self.assertEqual(self.path.read_bytes(), prefix)
 
@@ -76,7 +76,7 @@ class LearningRotationTests(unittest.TestCase):
             self.assertEqual(packet["trial_history"]["available"], 0)
             self.assertEqual(set(packet["development_brief"]["candidates"]),
                              {f"current-{number}" for number in range(4, 8)})
-            ids = learning.delivered(packet, archive)
+            ids = learning.delivered(packet)
             observed.update(ids)
             seen.update({candidate_id: turn for candidate_id in ids})
         self.assertEqual(observed, {"old-useful", "newer", "latest"})
@@ -126,7 +126,7 @@ class LearningRotationTests(unittest.TestCase):
         self.record("anchor-current", 110)
         seen = {"current": 10, "foreign": 1, "confirmation": 0}
         packet = self.packet(seen)
-        self.assertEqual(learning.delivered(packet, archive), ["current"])
+        self.assertEqual(learning.delivered(packet), ["current"])
         for entry in (foreign, confirmation):
             Path(entry["artifact_paths"]["source"]).write_bytes(b"changed excluded bytes\n")
         current = self.retrieve(seen=seen)
@@ -148,7 +148,7 @@ class LearningRotationTests(unittest.TestCase):
     def test_delivery_rejects_changed_reports_targets_evidence_and_missing_seal(self):
         self.learned()
         packet = self.packet()
-        self.assertEqual(learning.delivered(packet, archive), ["first"])
+        self.assertEqual(learning.delivered(packet), ["first"])
         mutations = {
             "lesson": lambda row: row["learning"].update(lesson="shortened report"),
             "conditions": lambda row: row["learning"].update(conditions="partial"),
@@ -164,33 +164,33 @@ class LearningRotationTests(unittest.TestCase):
             changed = copy.deepcopy(packet)
             mutation(self.rows(changed)[0])
             with self.subTest(name=name):
-                self.assertEqual(learning.delivered(changed, archive), [])
+                self.assertEqual(learning.delivered(changed), [])
         for key, value in (("archive_path", str(self.root / "different.jsonl")),):
             changed = copy.deepcopy(packet)
             changed[key] = value
-            self.assertEqual(learning.delivered(changed, archive), [])
+            self.assertEqual(learning.delivered(changed), [])
         changed = copy.deepcopy(packet)
         changed["development_brief"]["scoped_learning"]["comparison_key"] = "0" * 64
-        self.assertEqual(learning.delivered(changed, archive), [])
+        self.assertEqual(learning.delivered(changed), [])
         changed = copy.deepcopy(packet)
         self.rows(changed)[0].update(retrieval_reason="shortened", last_exposed_turn=None)
-        self.assertEqual(learning.delivered(changed, archive), ["first"])
+        self.assertEqual(learning.delivered(changed), ["first"])
 
     def test_bounded_report_is_not_consumed_but_unchanged_report_survives_bounding(self):
         self.learned()
         packet = self.packet()
-        self.assertEqual(learning.delivered(search._bounded(packet, 240, 2, {}), archive), ["first"])
+        self.assertEqual(learning.delivered(search._bounded(packet, 240, 2, {})), ["first"])
         self.learned("long", lesson=self.lesson(key="long", text="Detailed conditional observation " * 100))
         packet = {"archive_path": str(self.path),
                   "development_brief": {"comparison": self.control["comparison"],
                                         "scoped_learning": self.retrieve(seen={})}}
-        self.assertEqual(set(learning.delivered(packet, archive)), {"first", "long"})
+        self.assertEqual(set(learning.delivered(packet)), {"first", "long"})
         bounded = search._bounded(packet, 240, 2, {})
-        self.assertEqual(learning.delivered(bounded, archive), ["first"])
+        self.assertEqual(learning.delivered(bounded), ["first"])
 
     def test_new_retrieval_rechecks_source_and_result_bytes(self):
         self.learned()
-        self.assertEqual(learning.delivered(self.packet(), archive), ["first"])
+        self.assertEqual(learning.delivered(self.packet()), ["first"])
         first = self.entries["first"]
         for location in (first["artifact_paths"]["source"], first["result"]["result_path"]):
             path = Path(location)
@@ -201,7 +201,7 @@ class LearningRotationTests(unittest.TestCase):
                     self.packet({"first": 1})
             finally:
                 path.write_bytes(original)
-            self.assertEqual(learning.delivered(self.packet({"first": 1}), archive), ["first"])
+            self.assertEqual(learning.delivered(self.packet({"first": 1})), ["first"])
 
 
 if __name__ == "__main__":

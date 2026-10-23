@@ -13,6 +13,7 @@ from typing import Any, Callable
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 archive = importlib.import_module("candidate_archive")
+evidence = importlib.import_module("candidate_evidence")
 
 
 class ArchiveDiagnosticTests(unittest.TestCase):
@@ -92,12 +93,12 @@ class ArchiveDiagnosticTests(unittest.TestCase):
         args = archive.parser().parse_args(["decide", "--archive", str(self.path)])
         before = archive.route_decision(args)
         diagnostic = self.record("ablation", 10000, role="diagnostic", parents=["control"])
-        identity = archive.implementation_identity(diagnostic)
-        self.assertTrue(archive._executed_snapshot(diagnostic, identity))
+        identity = evidence.implementation_identity(diagnostic)
+        self.assertTrue(evidence.executed_snapshot(diagnostic, identity))
         self.assertFalse(archive.measurable(diagnostic))
         self.assertTrue(archive.measurable(diagnostic, include_diagnostics=True))
-        self.assertFalse(archive._observed_snapshot(diagnostic, identity))
-        self.assertTrue(archive._observed_snapshot(diagnostic, identity, include_diagnostics=True))
+        self.assertFalse(evidence.observed_snapshot(diagnostic, identity))
+        self.assertTrue(evidence.observed_snapshot(diagnostic, identity, include_diagnostics=True))
         self.assertEqual(archive.route_decision(args), before)
         brief = self.brief()
         self.assertEqual(brief["best_development"], "control")
@@ -235,7 +236,7 @@ class ArchiveDiagnosticTests(unittest.TestCase):
         self.assertEqual(card["reused_implementation_from"], ["control"])
         self.assertEqual(card["reused_from"], ["control"])
         self.assertIsNone(card["objective_gain_vs_best"])
-        self.assertTrue(archive._observed_snapshot(same_contract, archive.implementation_identity(same_contract),
+        self.assertTrue(evidence.observed_snapshot(same_contract, evidence.implementation_identity(same_contract),
                                                  include_diagnostics=True))
 
     def test_displayed_control_and_diagnostic_snapshot_or_result_damage_still_fails(self) -> None:
