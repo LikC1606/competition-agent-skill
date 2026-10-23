@@ -22,11 +22,10 @@ import uuid
 from typing import Any, BinaryIO
 
 import candidate_archive as archive_tools
+from campaign_policy import CampaignPolicy, TurnOutcome
 from campaign_search import (
     DEFAULT_COMPARISON_REVIEW_WINDOW, DEFAULT_FAILURE_REVIEW_WINDOW, DEFAULT_SESSION_CHECKPOINTS,
-    DEFAULT_STAGNATION_WINDOW, comparison_continuity, comparison_review_due, delivered_comparison_review,
-    delivered_exposures, executed_implementation as candidate_execution, execution_health, execution_review_due,
-    handoff_packet, objective_progress, review_due,
+    DEFAULT_STAGNATION_WINDOW, CampaignEvidence, prepare_handoff,
 )
 from campaign_runtime import (
     CampaignError, HEARTBEAT_SECONDS, POLL_SECONDS, WORKER_TOKEN, acquire_resources,
@@ -82,8 +81,11 @@ def read_state(campaign: pathlib.Path) -> dict[str, Any]:
     state.setdefault("comparison_review_window", DEFAULT_COMPARISON_REVIEW_WINDOW)
     state.setdefault("comparison_review_checkpoint", None)
     state.setdefault("comparison_continuity", None)
+    state.setdefault("repeat_review_checkpoints", {})
     state.setdefault("frontier_exposures", {})
     state.setdefault("pending_proposal_exposures", {})
+    state.setdefault("trial_exposures", {})
+    state.setdefault("learning_exposures", {})
     state.setdefault("context_refresh_reason", "")
     return state
 
@@ -123,28 +125,13 @@ def verified_records(path: pathlib.Path, skip: int = 0) -> list[dict[str, Any]]:
             archive_tools.verify_artifacts(entry)
             result = entry["result"]
             if result.get("result_path") and archive_tools.result_metadata(
-                    pathlib.Path(result["result_path"])) != result:
+                    pathlib.Path(result["result_path"]), include_case_profile="case_profile" in result,
+                    include_resource_profile="resource_profile" in result) != result:
                 raise CampaignError(f"Archived result metadata differs from its file: {entry['candidate_id']}")
     return records
 
 
-def archive_counts(records: list[dict[str, Any]]) -> dict[str, int]:
-    candidates = [entry for entry in records if entry["event"] == "candidate"]
-    identities = [candidate_execution(entry) for entry in candidates]
-    proposals = {entry["proposal_id"] for entry in records if entry["event"] == "proposal"}
-    closed = {entry["proposal_id"] for entry in records
-              if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
-    return {
-        "events": len(records), "candidates": len(candidates),
-        "executed_implementations": len({identity for identity in identities if identity}),
-        "evaluated_candidates": sum(bool(entry["result"].get("result_path") and
-                                         entry["result"].get("execution_status")) for entry in candidates),
-        "measurable_candidates": sum(archive_tools.measurable(entry) for entry in candidates),
-        "proposals": len(proposals), "pending_proposals": len(proposals - closed),
-    }
-
-
-def reconcile_archive(campaign: pathlib.Path, state: dict[str, Any]) -> tuple[dict[str, int], bool, list[dict[str, Any]]]:
+def reconcile_archive(campaign: pathlib.Path, state: dict[str, Any]) -> tuple[dict[str, int], bool, CampaignEvidence]:
     """Accept verified additions, or preserve and quarantine an unconfirmed bad append."""
     turn = state["inflight"]
     path = pathlib.Path(state["archive"])
@@ -188,14 +175,12 @@ def reconcile_archive(campaign: pathlib.Path, state: dict[str, Any]) -> tuple[di
         records = old_records
         quarantined = True
     current = archive_snapshot(path)
-    previous_counts, current_counts = archive_counts(old_records), archive_counts(records)
+    evidence = CampaignEvidence(records)
+    previous_counts, current_counts = CampaignEvidence(old_records).counts, evidence.counts
     delta = {key: current_counts[key] - previous_counts[key] for key in current_counts}
     state["archive_snapshot"] = current
     state["progress"] = current_counts
-    state["objective_progress"] = objective_progress(records)
-    state["execution_health"] = execution_health(records)
-    state["comparison_continuity"] = comparison_continuity(records, state["comparison_review_checkpoint"])
-    return delta, quarantined, records
+    return delta, quarantined, evidence
 
 
 def verified_records_prefix(path: pathlib.Path, size: int) -> list[dict[str, Any]]:
@@ -379,6 +364,40 @@ def prompt_for_turn(state: dict[str, Any], campaign: pathlib.Path, number: int,
             "implementation when appropriate, revalidating references from another contract. "
             "On a fresh review, compare unsuccessful repairs and change the diagnosis or construction "
             "instead of repeating an unsupported patch. Archive the actual outcome this turn. "
+            "If execution_recovery belongs to a frozen measurement_plan and repairing it requires "
+            "changing its source/recipe, stop that plan unresolved with candidate_archive.py measure-stop "
+            "--archive PATH --plan-id ID --reason TEXT --next-action TEXT before recording the repaired "
+            "implementation as ordinary development evidence. The repair cannot fill an old source's slot. "
+        )
+    elif mode == "measure" and context.get("measurement_plan"):
+        instructions += (
+            "A paired repeatability plan is already frozen in the archive. Read its complete runs, "
+            "seeds, repetitions, decision rule and matched outcomes with candidate_archive.py measure-status. "
+            "If pairs_complete is true, interpret the prespecified rule using all paired raw scores "
+            "and archive a reasoned conclusion and next action with candidate_archive.py measure-decide. "
+            "Otherwise execute the next outstanding leader/challenger slot under the exact planned comparison. "
+            "Each adapter result must declare evaluation.measurement_plan_id, measurement_run_id, seeds "
+            "and repetitions matching that slot before record accepts it. Failed/invalid measurements "
+            "do not fill a slot. If the frozen protocol cannot be completed, inspect the failed attempts "
+            "and stop it unresolved with candidate_archive.py measure-stop --archive PATH --plan-id ID "
+            "--reason TEXT --next-action TEXT. Retain the incomplete evidence and continue with the "
+            "specified repair or alternative; changing code cannot fill a frozen source's slot. "
+            "Otherwise repair and retry with new real result evidence. Do not choose extra seeds, "
+            "pool old opportunistic scores or auto-promote an implementation. "
+        )
+    elif mode == "measure" and state["context_refresh_reason"] == "repeat_disagreement":
+        instructions += (
+            "This is a fresh-context repeatability review. repeat_conflict identifies a leader, "
+            "challenger and actual repeated result that reverses their first-observation ordering. "
+            "Inspect their verified source/result records and task-specific sources of randomness. "
+            "Before looking at more results, write a JSON plan containing plan_id, conflict_signature, "
+            "the exact comparison, leader_candidate, challenger_candidate, witness_candidate, paired runs "
+            "(run_id, seeds, repetitions) and the task-specific decision_rule. Archive it with "
+            "candidate_archive.py measure-plan --archive PATH --plan FILE, then execute its next planned "
+            "measurement. Mark each adapter result's evaluation with measurement_plan_id, "
+            "measurement_run_id, seeds and repetitions; record the real result. "
+            "Do not choose the luckiest repeat, silently average unmatched runs, change the evaluator, "
+            "or treat this conflict as automatic promotion or proof of significance. "
         )
     elif mode == "measure":
         instructions += (
@@ -421,12 +440,74 @@ def prompt_for_turn(state: dict[str, Any], campaign: pathlib.Path, number: int,
         "review_frontier retrieves open follow-up branches independently of the score leaders. "
         "Inspect their prior successors before reusing a parent, then choose by the missing capability "
         "and evidence. Retrieval order or exposure counts do not prove a branch is valuable or mandate its use. "
+        "complementary_evidence retrieves ordinary development implementations with actual case wins against "
+        "the best implementation's first profile observation. Read both source snapshots and the cited winning "
+        "and losing cases to identify mechanisms or observable conditions that could combine. The reference "
+        "profile may be a later observation than the best scalar record; keep those identities distinct. "
+        "Use a multi-parent proposal for a combination and execute the resulting recipe under the fixed adapter. "
+        "Case profiles guide construction, not candidate ranking or promotion; selecting each case's known "
+        "best outcome is not a measured solution. A predictor cannot use hidden labels to choose a parent "
+        "at inference. Check actual combined performance, validity and cost. "
+        "resource_tradeoffs retrieves measured objective/resource endpoints under one explicit adapter "
+        "protocol. Inspect the fastest and highest-quality source snapshots for useful mechanisms or "
+        "combinations; a profile-subset frontier does not change scalar best or prove feasibility under "
+        "a new limit. Its score and resource come from the same first profiled observation, which can "
+        "differ from the best scalar record. Never infer inference latency from total evaluation time. "
         "Reconcile pending_details before proposing duplicate work: recover its cited artifacts, "
         "execute a still-useful proposal, or record a concrete stop reason. Exposure is not completion. "
-        "A proposal belongs to its first parent's comparison. pending_references supplies only "
-        "cross-contract identities and pointers; revalidate those references under the intended evaluator. "
+        "A proposal belongs to its first parent's comparison. "
+        "For a genuinely independent construction, declare construction_mode=independent and code_targets=[] "
+        "in the prospective proposal. Its parent_ids retain the comparison controls, not source inheritance; "
+        "feedback_from retains relevant development evidence. Derive the new structure from task facts and "
+        "the interface, then implement in an isolated directory without automatically copying unrelated parent "
+        "code. If useful parent components are retained or combined, use ordinary refinement with actual code "
+        "targets. Independence is an agent declaration, not proof of novelty or an information boundary. "
+        "The successor still needs a new executed code/recipe snapshot and result, with matched comparison "
+        "before claiming gain. A comparison reference is not a repaired or refined branch. "
+        "pending_references supplies only cross-contract identities and pointers; revalidate those references "
+        "under the intended evaluator. "
         f"For complete proposal fields use {skill / 'scripts' / 'candidate_archive.py'} trace "
         f"--archive {state['archive']} --proposal-id ID. "
+        "trial_history reconnects tested changes and expected observations with their actual outcomes. "
+        "Inspect the cited implementations and results before repeating a mechanism or adapting it to a new "
+        "condition. Use the observed capability gap to change the next construction. Its related and rotating "
+        "history slots are retrieval aids; reported predictions and explanations remain agent interpretations. "
+        "A failed execution leaves mechanism quality unresolved, and cross-contract references need revalidation. "
+        "measurement_decision prefers the active comparison's latest completed paired repeatability review, "
+        "otherwise the latest historical review, with its comparison identity and rechecked source/result evidence. "
+        "Use its conclusion only in that scope; retrieve exact paired runs with measure-status before relying on it. "
+        "measurement_stop carries an explicitly stopped unresolved plan, its reason and next action, "
+        "preferring the active comparison and otherwise the latest historical stop. Inspect all attempts "
+        "with measure-status. Stopping a plan does not complete the campaign, resolve its ordering conflict "
+        "or repair a failed execution; continue a feasible repair or alternative without reopening that conflict. "
+        "scoped_learning carries current conditional conclusions derived from measured trials, including "
+        "one recent related head and rotating older current heads after successful complete delivery; "
+        "conditions, limitations, next_action and verified evidence pointers. Inspect these before choosing "
+        "the next construction. When one changes your decision, put its candidate ID in the prospective "
+        "proposal's learning_from and explain the application or counterexample in basis. A useful new "
+        "measured outcome can record --learning JSON with key, lesson, conditions, next_action, limitations, "
+        "evidence_from and optional revises pointing to the current head candidate for that key. Preserve "
+        "contradictory observations in the revision instead of treating a conditional report as a universal "
+        "rule or method blacklist. Learning is optional; it changes no score, promotion or stop condition "
+        "and needs no extra summarization model. Retrieve exact trace when context shortened the report. "
+        "When the proposal's realization is uncertain, inspect the executed successor code against its "
+        "original change and attach an optional --implementation-review JSON when recording the outcome. "
+        "Report fidelity (yes/partial/no/unknown), actual_mechanism, missing_components and code_evidence "
+        "(path/detail in the successor code or executable recipe). Judge fidelity independently of score "
+        "and prediction_status. The matched trial evidence carries this source-bound agent report forward; "
+        "inspect its cited code before using missing components to repair or complete the next construction. "
+        "A weak score does not refute an unimplemented component; partial/no does not invalidate a measured "
+        "candidate or require retrying it. Missing reviews remain unknown, and the report certifies no semantics. "
+        "Use role=diagnostic for an intentional development ablation or counterfactual whose purpose is to "
+        "inform a design decision. Bind its first parent to the ordinary development control implementation, "
+        "retain executed source/results and explain the expected observation. diagnostic_evidence and "
+        "diagnostic trial outcomes inform the next construction; their scores do not rank contenders or "
+        "count as nonimproving candidate implementations. Read their control and actual comparison before "
+        "interpreting the result. A failed diagnostic still needs execution repair. Keep genuine candidate "
+        "improvements and regressions as ordinary development records; labeling a weak candidate diagnostic "
+        "does not establish an ablation. A diagnostic promoted to a contender needs the task's full validity "
+        "and comparison evidence, recorded explicitly as a development candidate with a reuse reason when "
+        "reusing a tested snapshot. Confirmation evidence cannot supply diagnostics. "
         "Feedback is an observation with limited applicability, not a proven causal rule. "
         "If old conversation summaries conflict with this snapshot, inspect the cited evidence. "
         "objective_progress tracks first valid scored executions under one complete comparison "
@@ -467,60 +548,12 @@ def prepare_turn(campaign: pathlib.Path, state: dict[str, Any]) -> None:
     if archive_snapshot(archive) != snapshot:
         raise CampaignError("Candidate archive changed outside a campaign turn; inspect before resume")
     records = verified_records_prefix(archive, snapshot["size"])
-    progress = objective_progress(records)
-    state["objective_progress"] = progress
-    health = execution_health(records)
-    state["execution_health"] = health
-    continuity = comparison_continuity(records, state["comparison_review_checkpoint"])
-    state["comparison_continuity"] = continuity
-    previous = state["strategy_review_checkpoints"].get(progress["comparison_key"])
-    requested_review = state["next_mode"] == "rethink"
-    reason = ""
-    reviews = {}
-    if health["needs_attention"]:
-        state["next_mode"] = "repair"
-    if execution_review_due(health, state["execution_review_checkpoint"], state["failure_review_window"]):
-        reason = "execution_stagnation"
-        reviews["execution"] = {
-            key: health[key] for key in ("execution_attempts", "last_scored_candidate")}
-    elif not health["needs_attention"] and comparison_review_due(continuity, state["comparison_review_window"]):
-        state["next_mode"] = "measure"
-        reason = "comparison_isolation"
-        state["next_action"] = (
-            "Inspect the isolated contracts and remeasure a trusted reference and candidate under an existing "
-            "legal common development contract; judge gains only after complete comparison identities match")
-    elif review_due(progress, previous, state["stagnation_window"]):
-        state["next_mode"] = "rethink"
-        reason = "objective_stagnation"
-        state["next_action"] = (
-            "Compare the historical best with recent nonimproving implementations and other archived branches; "
-            "reassess the remaining capability gap and execute an informative successor")
-    elif requested_review:
-        reason = "strategy_review"
-    elif (state["session_id"] and state["session_checkpoints"] and
-          state["session_turns"] >= state["session_checkpoints"]):
-        reason = "scheduled_rotation"
-    elif not state["session_id"]:
-        reason = "session_recovery" if state["turn_number"] else "initial"
-    fresh = bool(reason)
-    if fresh:
-        state["session_id"] = None
-        state["session_turns"] = 0
-        state["context_refresh_reason"] = reason
-        if state["turn_number"]:
-            state["context_refreshes"] += 1
-    if state["next_mode"] == "rethink" and progress["best_candidate"]:
-        reviews["strategy"] = {
-            key: progress[key] for key in ("comparison_key", "best_candidate", "comparable_implementations")}
-    context = handoff_packet(archive, records, snapshot, state["protected_files"][str(campaign / "task.md")],
-                             progress=progress, health=health, continuity=continuity,
-                             frontier_seen=state["frontier_exposures"].get(progress["comparison_key"], {}),
-                             pending_seen=state["pending_proposal_exposures"].get(progress["comparison_key"], {}))
-    # Only complete, verified cards that survive packet bounding count as
-    # delivered. Commit exposure after a successful checkpoint, not at prepare.
-    exposed = delivered_exposures(context)
-    if reason == "comparison_isolation" and delivered_comparison_review(context):
-        reviews["comparison"] = {"distinct_observations": continuity["distinct_observations"]}
+    evidence = CampaignEvidence(records)
+    prepared = CampaignPolicy().prepare(state, evidence)
+    state.update(prepared.updates)
+    fresh, reason = prepared.fresh_context, prepared.context_refresh_reason
+    handoff = prepare_handoff(state, prepared, evidence, state["protected_files"][str(campaign / "task.md")])
+    context = handoff.packet
     if archive_snapshot(archive) != snapshot:
         raise CampaignError("Candidate archive changed while preparing context")
     timeout = state["turn_timeout_seconds"]
@@ -533,9 +566,7 @@ def prepare_turn(campaign: pathlib.Path, state: dict[str, Any]) -> None:
             "timeout_seconds": timeout, "context": context,
             "context_sha256": archive_tools.sha256(archive_tools.canonical(context) + b"\n"),
             "fresh_context": fresh, "context_refresh_reason": reason,
-            "frontier_exposure": {"comparison_key": progress["comparison_key"], "implementations": exposed["implementations"]},
-            "pending_proposal_exposure": {"comparison_key": progress["comparison_key"], "proposals": exposed["proposals"]},
-            "review_checkpoints": reviews,
+            **handoff.delivery,
             "prompt": prompt_for_turn(state, campaign, number, context)}
     state["turn_number"] = number
     state["inflight"] = turn
@@ -545,10 +576,11 @@ def prepare_turn(campaign: pathlib.Path, state: dict[str, Any]) -> None:
     append_event(campaign, {"event": "turn_prepared", "turn": number, "token": turn["token"],
                             "mode": turn["mode"], "session_id": state["session_id"],
                             "fresh_context": fresh, "context_refresh_reason": reason,
-                            "objective_progress": progress, "execution_health": health,
-                            "comparison_continuity": continuity,
+                            **{key: state[key] for key in ("objective_progress", "execution_health", "comparison_continuity")},
                             "frontier_exposure": turn["frontier_exposure"],
                             "pending_proposal_exposure": turn["pending_proposal_exposure"],
+                            "trial_exposure": turn["trial_exposure"],
+                            "learning_exposure": turn["learning_exposure"],
                             "review_checkpoints": turn["review_checkpoints"],
                             "context_sha256": turn["context_sha256"]})
 
@@ -669,9 +701,6 @@ def retry_later(state: dict[str, Any], error: str) -> None:
     state["last_error"] = error
     state["recovery_needed"] = True
     state["next_action"] = "Reconcile prior artifacts, then execute the best remaining improvement"
-    if state["failures"] >= 2:
-        state["session_id"] = None
-        state["next_mode"] = "rethink"
 
 
 def consume_turn(campaign: pathlib.Path, state: dict[str, Any], resources: list[BinaryIO]) -> None:
@@ -683,7 +712,7 @@ def consume_turn(campaign: pathlib.Path, state: dict[str, Any], resources: list[
     if result.get("outputs") != output_hashes(directory):
         raise CampaignError("Agent output changed after its durable exit record")
     check_control_files(state)
-    delta, quarantined, records = reconcile_archive(campaign, state)
+    delta, quarantined, evidence = reconcile_archive(campaign, state)
     events = parse_events(directory / "events.jsonl")
     for key, value in events["usage"].items():
         state["usage"][key] = state["usage"].get(key, 0) + value
@@ -692,8 +721,6 @@ def consume_turn(campaign: pathlib.Path, state: dict[str, Any], resources: list[
     state["agent_seconds"] += result["elapsed_seconds"]
     if events["session_id"]:
         state["session_id"] = events["session_id"]
-    state["turns_without_implementation"] = (
-        0 if delta["executed_implementations"] > 0 else state["turns_without_implementation"] + 1)
     state["inflight"] = None
     error = result.get("error", "")
     receipt = None
@@ -709,6 +736,10 @@ def consume_turn(campaign: pathlib.Path, state: dict[str, Any], resources: list[
         receipt = parse_receipt(directory / "message.json")
     except CampaignError as exc:
         error = str(exc)
+    # New archive evidence is accepted even if invocation delivery failed.
+    new_records = evidence.records[len(evidence.records) - delta["events"]:]
+    outcome = TurnOutcome(evidence, new_records, delta, receipt, time.time())
+    state.update(CampaignPolicy().accept(state, turn, outcome))
     if receipt is None:
         retry_later(state, error)
         state["last_summary"] = f"Turn {turn['number']} interrupted: {error}"
@@ -732,59 +763,9 @@ def consume_turn(campaign: pathlib.Path, state: dict[str, Any], resources: list[
                 "Observed CLI authentication/configuration or host dependency failure; inspect this turn's logs")
         event = {"event": "turn_interrupted", "error": error}
     else:
-        state["session_turns"] += 1
-        exposure = turn.get("frontier_exposure")
-        if exposure and exposure["implementations"]:
-            seen = state["frontier_exposures"].setdefault(exposure["comparison_key"], {})
-            seen.update({fingerprint: turn["number"] for fingerprint in exposure["implementations"]})
-        pending = turn.get("pending_proposal_exposure")
-        if pending and pending["proposals"]:
-            seen = state["pending_proposal_exposures"].setdefault(pending["comparison_key"], {})
-            seen.update({proposal_id: turn["number"] for proposal_id in pending["proposals"]})
-        reviews = turn.get("review_checkpoints", {})
-        if "execution" in reviews:
-            state["execution_review_checkpoint"] = reviews["execution"]
-        if "strategy" in reviews:
-            review = reviews["strategy"]
-            state["strategy_review_checkpoints"][review["comparison_key"]] = review
-        if "comparison" in reviews:
-            state["comparison_review_checkpoint"] = reviews["comparison"]
-            state["comparison_continuity"] = comparison_continuity(records, reviews["comparison"])
-        state["failures"] = 0
-        state["retry_at"] = None
-        state["last_error"] = ""
-        state["recovery_needed"] = False
-        state["last_summary"] = receipt["summary"]
-        state["next_action"] = receipt["next_action"]
-        state["last_agent_status"] = receipt["status"]
-        state["next_mode"] = "work"
-        if receipt["status"] != "continue" or not receipt["next_action"].strip():
-            state["next_mode"] = "rethink"
-            state["next_action"] = (
-                "Re-derive the remaining capability gap and execute a distinct feasible strategy")
-        measurement_progress = (turn["mode"] == "measure" and
-                                state["comparison_continuity"]["distinct_observations"] >
-                                (turn.get("context", {}).get("comparison_continuity") or {}).get("distinct_observations", 0))
-        if state["turns_without_implementation"] >= 2 and not measurement_progress:
-            reviewed = turn["mode"] == "rethink" or (turn["mode"] == "repair" and turn.get("fresh_context"))
-            state["next_mode"] = "execute" if reviewed else "rethink"
-            idle_delay = min(state["retry_max_seconds"], state["retry_base_seconds"] *
-                             max(1, state["turns_without_implementation"] - 1))
-            state["retry_at"] = time.time() + idle_delay
-        progress = state["objective_progress"]
-        if review_due(progress, state["strategy_review_checkpoints"].get(progress["comparison_key"]),
-                      state["stagnation_window"]):
-            state["next_mode"] = "rethink"
-        if comparison_review_due(state["comparison_continuity"], state["comparison_review_window"]):
-            state["next_mode"] = "measure"
-        if state["execution_health"]["needs_attention"] and state["next_mode"] == "work":
-            state["next_mode"] = "repair"
-        if state["execution_health"]["needs_attention"] and state["next_mode"] == "measure":
-            state["next_mode"] = "repair"
         event = {"event": "turn_completed", "receipt": receipt}
-        if state["next_mode"] == "rethink":
-            state["session_id"] = None
-        if delta["evaluated_candidates"] > 0 or receipt["status"] == "complete":
+        if (delta["evaluated_candidates"] > delta["diagnostic_evaluations"]
+                or receipt["status"] == "complete"):
             completion_check(campaign, state, turn, resources)
     append_event(campaign, {**event, "turn": turn["number"], "token": turn["token"],
                             "event_id": turn["token"] + ":outcome", "archive_delta": delta,
@@ -891,6 +872,8 @@ def new_campaign(args: argparse.Namespace) -> pathlib.Path:
         raise CampaignError("Campaign directory already exists; use resume")
     archive = args.archive.expanduser().resolve()
     records = verified_records(archive)
+    evidence = CampaignEvidence(records)
+    signals = evidence.signals()
     snapshot = archive_snapshot(archive)
     protected = {}
     checker = None
@@ -916,19 +899,22 @@ def new_campaign(args: argparse.Namespace) -> pathlib.Path:
         "turns_without_implementation": 0, "failures": 0, "session_id": None, "inflight": None,
         "stagnation_window": args.stagnation_window, "session_checkpoints": args.session_checkpoints,
         "session_turns": 0, "context_refreshes": 0, "context_refresh_reason": "",
-        "strategy_review_checkpoints": {}, "objective_progress": objective_progress(records),
-        "execution_health": execution_health(records), "execution_review_checkpoint": None,
+        "strategy_review_checkpoints": {}, "objective_progress": signals["objective_progress"],
+        "execution_health": signals["execution_health"], "execution_review_checkpoint": None,
         "failure_review_window": args.failure_review_window,
-        "comparison_continuity": comparison_continuity(records), "comparison_review_checkpoint": None,
+        "comparison_continuity": signals["comparison_continuity"], "comparison_review_checkpoint": None,
         "comparison_review_window": args.comparison_review_window,
+        "repeat_review_checkpoints": {},
         "frontier_exposures": {},
         "pending_proposal_exposures": {},
+        "trial_exposures": {},
+        "learning_exposures": {},
         "next_mode": "work", "recovery_needed": False, "last_summary": "",
         "next_action": "Establish or resume the credible baseline",
         "last_agent_status": None, "last_error": "", "retry_at": None,
         "retry_base_seconds": args.retry_base_seconds, "retry_max_seconds": args.retry_max_seconds,
         "stop_reason": "", "created_at": utc_now(), "created_unix": time.time(),
-        "usage": {}, "agent_seconds": 0.0, "progress": archive_counts(records),
+        "usage": {}, "agent_seconds": 0.0, "progress": evidence.counts,
         "unreported_usage_turns": 0, "manager_generation": None,
         "completion_check": checker, "completion_timeout_seconds": args.completion_timeout_seconds,
         "protected_files": protected,
@@ -1043,6 +1029,8 @@ def public_status(campaign: pathlib.Path, state: dict[str, Any]) -> dict[str, An
     comparison_key = (state["objective_progress"] or {}).get("comparison_key")
     value["frontier_exposed_implementations"] = len(state["frontier_exposures"].get(comparison_key, {}))
     value["pending_exposed_proposals"] = len(state["pending_proposal_exposures"].get(comparison_key, {}))
+    value["trial_exposed_proposals"] = len(state["trial_exposures"].get(comparison_key, {}))
+    value["learning_exposed_heads"] = len(state["learning_exposures"].get(comparison_key, {}))
     value["campaign"] = str(campaign)
     value["completion_mode"] = "verifier" if state["completion_check"] else "open_ended"
     for role in ("manager", "supervisor"):

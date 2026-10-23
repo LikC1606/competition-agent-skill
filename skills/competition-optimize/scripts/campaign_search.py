@@ -9,9 +9,15 @@ from __future__ import annotations
 
 import argparse
 import pathlib
-from typing import Any
+from dataclasses import dataclass
+from functools import cached_property
+from typing import TYPE_CHECKING, Any, Mapping
 
 import candidate_archive as archive_tools
+from campaign_trials import delivered_trials, trial_history
+
+if TYPE_CHECKING:
+    from campaign_policy import TurnPlan
 
 
 HANDOFF_BYTES = 48 * 1024
@@ -21,8 +27,92 @@ DEFAULT_FAILURE_REVIEW_WINDOW = 3
 DEFAULT_COMPARISON_REVIEW_WINDOW = 4
 
 
+class CampaignEvidence:
+    """One borrowed, accepted archive prefix and its request-local projections.
+
+    Callers must not mutate records while this view is used. Policy signals do
+    no file I/O; handoff verification reuses EvidenceReads only in this view.
+    Create a new view after accepting another prefix or preparing another turn.
+    """
+
+    def __init__(self, records: list[dict[str, Any]], *,
+                 comparisons: archive_tools.ComparisonEvidence | None = None) -> None:
+        self.records = records
+        self._provided_comparisons = comparisons
+        self._continuities: dict[int, dict[str, Any]] = {}
+
+    @cached_property
+    def _comparisons(self) -> archive_tools.ComparisonEvidence:
+        return (self._provided_comparisons if self._provided_comparisons is not None else
+                archive_tools.ComparisonEvidence(self.records, eligible=observed_implementation))
+
+    @cached_property
+    def _index(self) -> dict[str, dict[str, Any]]:
+        return archive_tools.candidate_index(self.records)
+
+    @cached_property
+    def _reads(self) -> archive_tools.EvidenceReads:
+        return archive_tools.EvidenceReads()
+
+    @cached_property
+    def _progress(self) -> dict[str, Any]:
+        return objective_progress(self.records, evidence=self._comparisons)
+
+    @cached_property
+    def _health(self) -> dict[str, Any]:
+        return execution_health(self.records)
+
+    @cached_property
+    def _measurement_plan(self) -> dict[str, Any] | None:
+        return archive_tools.measurement_plans.first_pending(self.records, archive_tools)
+
+    @cached_property
+    def _repeat_conflict(self) -> dict[str, Any] | None:
+        anchor = self._progress["anchor_candidate"]
+        return self._comparisons.for_candidate(anchor).ranking_conflict() if anchor else None
+
+    @cached_property
+    def _measurement_comparisons(self) -> dict[str, dict[str, Any]]:
+        return {entry["plan_id"]: entry["comparison"] for entry in self.records if entry["event"] == "measurement_plan"}
+
+    @cached_property
+    def _measurement_signatures(self) -> set[str]:
+        return {entry["conflict_signature"] for entry in self.records if entry["event"] == "measurement_plan"}
+
+    @cached_property
+    def counts(self) -> dict[str, int]:
+        candidates = [entry for entry in self.records if entry["event"] == "candidate"]
+        identities = [executed_implementation(entry) for entry in candidates]
+        proposals = {entry["proposal_id"] for entry in self.records if entry["event"] == "proposal"}
+        closed = {entry["proposal_id"] for entry in self.records
+                  if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
+        return {
+            "events": len(self.records), "candidates": len(candidates),
+            "executed_implementations": len({identity for identity in identities if identity}),
+            "evaluated_candidates": sum(bool(entry["result"].get("result_path") and
+                                             entry["result"].get("execution_status")) for entry in candidates),
+            "diagnostic_evaluations": sum(bool(entry["role"] == "diagnostic" and
+                                                entry["result"].get("result_path") and
+                                                entry["result"].get("execution_status")) for entry in candidates),
+            "measurable_candidates": sum(archive_tools.measurable(entry) for entry in candidates),
+            "proposals": len(proposals), "pending_proposals": len(proposals - closed),
+        }
+
+    def signals(self, checkpoint: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        position = checkpoint["distinct_observations"] if checkpoint else 0
+        if position not in self._continuities:
+            self._continuities[position] = comparison_continuity(self.records, checkpoint, evidence=self._comparisons)
+        return {
+            "objective_progress": self._progress, "execution_health": self._health,
+            "comparison_continuity": self._continuities[position],
+            "measurement_plan": self._measurement_plan, "repeat_conflict": self._repeat_conflict,
+            "measurement_comparisons": self._measurement_comparisons,
+            "measurement_signatures": self._measurement_signatures,
+        }
+
+
 def executed_implementation(entry: dict[str, Any]) -> str | None:
-    if entry["event"] != "candidate" or entry["role"] != "development":
+    if entry["event"] != "candidate" or entry["role"] not in archive_tools.DEVELOPMENT_ROLES:
         return None
     result = entry["result"]
     if not result.get("result_path") or not result.get("execution_status"):
@@ -47,18 +137,18 @@ def observed_implementation(entry: dict[str, Any]) -> bool:
                                           ("objective_kind", "kind"), ("objective_name", "name"))))
 
 
-def objective_progress(records: list[dict[str, Any]]) -> dict[str, Any]:
-    development = [entry for entry in records
-                   if entry["event"] == "candidate" and entry["role"] == "development"]
-    if not development:
+def objective_progress(records: list[dict[str, Any]], *,
+                       evidence: archive_tools.ComparisonEvidence | None = None) -> dict[str, Any]:
+    anchor = next((entry for entry in reversed(records)
+                   if entry["event"] == "candidate" and entry["role"] == "development"), None)
+    if anchor is None:
         return {"comparison_key": None, "comparison": None, "anchor_candidate": None,
                 "best_candidate": None, "best_value": None, "comparable_implementations": 0,
                 "implementations_since_best": 0, "latest_eligible": False,
                 "nonimproving_candidates": [], "improvement_candidates": []}
-    anchor = development[-1]
     context = anchor["comparison"]
-    scoped = [entry for entry in development if entry["comparison"] == context]
-    measured = archive_tools.distinct_implementations([entry for entry in scoped if observed_implementation(entry)])
+    evidence = evidence or archive_tools.ComparisonEvidence(records, eligible=observed_implementation)
+    measured = evidence.for_candidate(anchor["candidate_id"]).representatives
     best = None
     best_position = 0
     improvements = []
@@ -94,7 +184,8 @@ def review_due(progress: dict[str, Any], previous: dict[str, Any] | None, window
 
 
 def comparison_continuity(records: list[dict[str, Any]],
-                          previous: dict[str, Any] | None = None) -> dict[str, Any]:
+                          previous: dict[str, Any] | None = None, *,
+                          evidence: archive_tools.ComparisonEvidence | None = None) -> dict[str, Any]:
     """Find development contracts still lacking a second measured implementation.
 
     Count first valid (complete comparison, implementation) observations, not
@@ -106,13 +197,10 @@ def comparison_continuity(records: list[dict[str, Any]],
     paired = set()
     unpaired = {}
     checkpoint = previous["distinct_observations"] if previous else 0
-    for entry in records:
-        if not observed_implementation(entry):
-            continue
-        comparison = archive_tools.sha256(archive_tools.canonical(entry["comparison"]))
-        pair = (comparison, executed_implementation(entry))
-        if pair in seen:
-            continue
+    evidence = evidence or archive_tools.ComparisonEvidence(records, eligible=observed_implementation)
+    for comparison_bytes, identity, entry in evidence.first_observations():
+        comparison = archive_tools.sha256(comparison_bytes)
+        pair = (comparison, identity)
         seen.add(pair)
         if comparison in unpaired:
             del unpaired[comparison]
@@ -136,7 +224,9 @@ def comparison_review_due(continuity: dict[str, Any], window: int) -> bool:
     return continuity["new_unpaired_contracts"] >= window
 
 
-def comparison_recovery(records: list[dict[str, Any]], continuity: dict[str, Any]) -> dict[str, Any] | None:
+def comparison_recovery(records: list[dict[str, Any]], continuity: dict[str, Any], *,
+                        reads: archive_tools.EvidenceReads | None = None) -> dict[str, Any] | None:
+    reads = archive_tools.EvidenceReads() if reads is None else reads
     if not continuity["latest_unpaired_candidate"]:
         return None
     index = archive_tools.candidate_index(records)
@@ -153,7 +243,7 @@ def comparison_recovery(records: list[dict[str, Any]], continuity: dict[str, Any
             continue
         visited.add(candidate_id)
         entry = index[candidate_id]
-        if entry["role"] != "development":
+        if entry["role"] not in archive_tools.DEVELOPMENT_ROLES:
             continue
         if observed_implementation(entry) and executed_implementation(entry) != identity:
             reference = entry
@@ -170,8 +260,8 @@ def comparison_recovery(records: list[dict[str, Any]], continuity: dict[str, Any
                 reference = entry
 
     def card(entry: dict[str, Any], *, compact: bool = False) -> dict[str, Any]:
-        archive_tools.verify_result(entry)
-        archive_tools.verify_artifacts(entry)
+        archive_tools.verify_result(entry, reads=reads)
+        archive_tools.verify_artifacts(entry, reads=reads)
         implementation = archive_tools.implementation_identity(entry)
         result = {"candidate_id": entry["candidate_id"],
                   "implementation_fingerprint": implementation["fingerprint"],
@@ -220,7 +310,8 @@ def execution_health(records: list[dict[str, Any]]) -> dict[str, Any]:
     last_scored = None
     tail = []
     for entry in reversed(attempts):
-        if observed_implementation(entry):
+        if archive_tools._observed_snapshot(entry, archive_tools.implementation_identity(entry),
+                                            include_diagnostics=True):
             last_scored = entry["candidate_id"]
             break
         tail.append(entry["candidate_id"])
@@ -234,7 +325,7 @@ def execution_health(records: list[dict[str, Any]]) -> dict[str, Any]:
             "execution_attempts": len(attempts), "attempts_without_observation": len(tail),
             "last_scored_candidate": last_scored, "needs_attention": bool(tail), "issue": issue,
             "recent_unmeasured_candidates": list(reversed(tail[:8])),
-            "scope": "Chronological development execution health only; contracts may differ. "
+            "scope": "Chronological development and diagnostic execution health only; contracts may differ. "
                      "No objective ranking or causal judgement; duplicate result references are ignored."}
 
 
@@ -246,7 +337,9 @@ def execution_review_due(health: dict[str, Any], previous: dict[str, Any] | None
     return True
 
 
-def recovery_evidence(records: list[dict[str, Any]], health: dict[str, Any]) -> dict[str, Any] | None:
+def recovery_evidence(records: list[dict[str, Any]], health: dict[str, Any], *,
+                      reads: archive_tools.EvidenceReads | None = None) -> dict[str, Any] | None:
+    reads = archive_tools.EvidenceReads() if reads is None else reads
     if not health["needs_attention"]:
         return None
     index = archive_tools.candidate_index(records)
@@ -264,21 +357,21 @@ def recovery_evidence(records: list[dict[str, Any]], health: dict[str, Any]) -> 
             continue
         visited.add(candidate_id)
         entry = index[candidate_id]
-        if entry["role"] != "development":
+        if entry["role"] not in archive_tools.DEVELOPMENT_ROLES:
             continue
         if observed_implementation(entry):
             reference = entry
             break
         parents.extend(entry["parent_ids"])
     relationship = "scored_ancestor" if reference else "earlier_development_observation"
-    if reference is None and health["last_scored_candidate"]:
-        reference = index[health["last_scored_candidate"]]
+    if reference is None:
+        reference = next((entry for entry in reversed(records) if observed_implementation(entry)), None)
 
     def card(entry: dict[str, Any]) -> dict[str, Any]:
-        archive_tools.verify_result(entry)
-        archive_tools.verify_artifacts(entry)
+        archive_tools.verify_result(entry, reads=reads)
+        archive_tools.verify_artifacts(entry, reads=reads)
         result = entry["result"]
-        raw = pathlib.Path(result["result_path"]).read_bytes()
+        raw = reads.read_bytes(pathlib.Path(result["result_path"]))
         if archive_tools.sha256(raw) != result["result_sha256"]:
             raise archive_tools.ArchiveFailure("result_changed", "Recovery result changed while reading")
         value = archive_tools.load_json(raw, result["result_path"])
@@ -289,7 +382,7 @@ def recovery_evidence(records: list[dict[str, Any]], health: dict[str, Any]) -> 
                       "partial": bool(result.get("partial")),
                       "artifacts": [item for item in value.get("artifacts", []) if isinstance(item, str)]
                                    if isinstance(value.get("artifacts"), list) else []}
-        return {"candidate_id": entry["candidate_id"], "parent_ids": entry["parent_ids"],
+        return {"candidate_id": entry["candidate_id"], "role": entry["role"], "parent_ids": entry["parent_ids"],
                 "implementation": archive_tools.implementation_identity(entry),
                 "artifact_paths": entry["artifact_paths"], "comparison": entry["comparison"],
                 "result_path": result["result_path"], "result_sha256": result["result_sha256"],
@@ -325,7 +418,7 @@ def _bounded(value: Any, string_limit: int, item_limit: int,
                 for i, item in enumerate(value[:item_limit])]
     if isinstance(value, dict):
         result = {}
-        limit = max(24, item_limit * 4)  # Preserve the normal fixed card/schema fields.
+        limit = max(27, item_limit * 4)  # Preserve fixed trial fields and optional construction/learning.
         for i, (key, item) in enumerate(value.items()):
             if i >= limit:
                 _omit(omissions, location, len(value) - i)
@@ -380,12 +473,17 @@ def delivered_exposures(packet: dict[str, Any]) -> dict[str, list[str]]:
     proposals = []
     for position, item in enumerate(brief.get("pending_details", [])):
         prefix = f"/development_brief/pending_details/{position}"
-        if (item.get("identity_checks") != {"code_targets": "checked"}
-                or not item.get("proposal_id") or not item.get("code_targets")
-                or not all(complete_field(f"{prefix}/{key}")
-                           for key in ("proposal_id", "input_sha256", "parent_ids", "feedback_from", "code_targets"))):
+        try:
+            archive_tools.validate_construction_targets(item)
+            checks = archive_tools.proposal_identity_checks(item)
+        except archive_tools.ArchiveFailure:
             continue
-        required = set(item["parent_ids"] + item["feedback_from"])
+        if (item.get("identity_checks") != checks
+                or not item.get("proposal_id")
+                or not all(complete_field(f"{prefix}/{key}")
+                           for key in ("proposal_id", "input_sha256", "parent_ids", "feedback_from", "code_targets", "construction_mode", "learning_from"))):
+            continue
+        required = set(item["parent_ids"] + item["feedback_from"] + item.get("learning_from", []))
         if all(complete_card(candidate_id, unmeasured=True) for candidate_id in required):
             proposals.append(item["proposal_id"])
     return {"implementations": implementations, "proposals": proposals}
@@ -425,30 +523,136 @@ def delivered_comparison_review(packet: dict[str, Any]) -> bool:
         archive_tools.canonical(_comparison_review_identity(packet)))
 
 
+def _repeat_conflict_identity(packet: dict[str, Any]) -> dict[str, Any]:
+    conflict = packet["repeat_conflict"]
+    result = {"archive_path": packet["archive_path"], "signature": conflict["signature"],
+              "comparison_key": conflict["comparison_key"], "reason": conflict["reason"]}
+    for name in ("leader", "challenger", "witness"):
+        result[name] = {key: conflict["cards"][name].get(key) for key in
+                        ("candidate_id", "implementation_fingerprint", "comparison_sha256",
+                         "result_path", "result_sha256", "identity_checks")}
+    return result
+
+
+def delivered_repeat_conflict(packet: dict[str, Any]) -> bool:
+    """Only a complete, verified conflict card can consume its review."""
+    conflict = packet.get("repeat_conflict")
+    if not isinstance(conflict, dict) or not isinstance(conflict.get("cards"), dict):
+        return False
+    if any(not isinstance(conflict.get(key), str) or not conflict[key] for key in
+           ("signature", "comparison_key", "reason")):
+        return False
+    try:
+        for name in ("leader", "challenger", "witness"):
+            card = conflict["cards"][name]
+            if not isinstance(card, dict):
+                return False
+            if any(not isinstance(card.get(key), str) or not card[key] for key in
+                   ("candidate_id", "implementation_fingerprint", "comparison_sha256",
+                    "result_path", "result_sha256")):
+                return False
+            if card.get("identity_checks") != {"result_bytes": "checked", "snapshot_bytes": "checked"}:
+                return False
+        return conflict.get("retrieval_sha256") == archive_tools.sha256(
+            archive_tools.canonical(_repeat_conflict_identity(packet)))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+@dataclass(frozen=True)
+class Handoff:
+    packet: dict[str, Any]
+    delivery: dict[str, Any]
+
+
+def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: CampaignEvidence,
+                    task_sha256: str) -> Handoff:
+    """Prepare bounded evidence and its schema-v2 delivery intent together.
+
+    Only complete cards remaining in the final packet are offered for later
+    acknowledgment. Persisting or rendering a packet does not acknowledge it.
+    """
+    facts = view.signals(memory["comparison_review_checkpoint"])
+    key = facts["objective_progress"]["comparison_key"]
+    packet = handoff_packet(
+        pathlib.Path(memory["archive"]), view.records, memory["archive_snapshot"], task_sha256,
+        progress=facts["objective_progress"], health=facts["execution_health"],
+        continuity=facts["comparison_continuity"], _view=view,
+        measurement_plan=facts["measurement_plan"],
+        frontier_seen=memory["frontier_exposures"].get(key, {}),
+        pending_seen=memory["pending_proposal_exposures"].get(key, {}),
+        trial_seen=memory["trial_exposures"].get(key, {}),
+        learning_seen=memory["learning_exposures"].get(key, {}))
+    exposed = delivered_exposures(packet)
+    reviews = dict(prepared.review_requests)
+    if "comparison" in reviews and not delivered_comparison_review(packet):
+        reviews.pop("comparison")
+    if "repeat" in reviews and not delivered_repeat_conflict(packet):
+        reviews.pop("repeat")
+    return Handoff(packet, {
+        "frontier_exposure": {"comparison_key": key, "implementations": exposed["implementations"]},
+        "pending_proposal_exposure": {"comparison_key": key, "proposals": exposed["proposals"]},
+        "trial_exposure": {"comparison_key": key, "proposals": delivered_trials(packet)},
+        "learning_exposure": {"comparison_key": key,
+                              "candidates": archive_tools.scoped_learning.delivered(packet, archive_tools)},
+        "review_checkpoints": reviews,
+    })
+
+
 def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
                    snapshot: dict[str, Any], task_sha256: str, *,
                    progress: dict[str, Any] | None = None,
                    health: dict[str, Any] | None = None,
                    continuity: dict[str, Any] | None = None,
                    frontier_seen: dict[str, int] | None = None,
-                   pending_seen: dict[str, int] | None = None) -> dict[str, Any]:
+                   pending_seen: dict[str, int] | None = None,
+                   trial_seen: dict[str, int] | None = None,
+                   learning_seen: dict[str, int] | None = None,
+                   evidence: archive_tools.ComparisonEvidence | None = None,
+                   measurement_plan: dict[str, Any] | None = None,
+                   _view: CampaignEvidence | None = None) -> dict[str, Any]:
+    view = _view if _view is not None else CampaignEvidence(records, comparisons=evidence)
+    reads, evidence = view._reads, view._comparisons
     if progress is None:
-        progress = objective_progress(records)
+        progress = view._progress
     if health is None:
-        health = execution_health(records)
+        health = view._health
     if continuity is None:
-        continuity = comparison_continuity(records)
+        continuity = view.signals()["comparison_continuity"]
+    if measurement_plan is None:
+        measurement_plan = view._measurement_plan
+    index = view._index
+    repeat_conflict = None
+    if progress["anchor_candidate"]:
+        repeat_conflict = (view._repeat_conflict if progress["anchor_candidate"] == view._progress["anchor_candidate"] else
+                           evidence.for_candidate(progress["anchor_candidate"]).ranking_conflict())
+        if repeat_conflict:
+            repeat_conflict = dict(repeat_conflict)
+            cards = {}
+            for name in ("leader", "challenger", "witness"):
+                entry = index[repeat_conflict[name + "_candidate"]]
+                archive_tools.verify_result(entry, reads=reads)
+                archive_tools.verify_artifacts(entry, reads=reads)
+                cards[name] = {"candidate_id": entry["candidate_id"],
+                               "implementation_fingerprint": archive_tools.implementation_identity(entry)["fingerprint"],
+                               "comparison_sha256": archive_tools.sha256(archive_tools.canonical(entry["comparison"])),
+                               "result_path": entry["result"]["result_path"],
+                               "result_sha256": entry["result"]["result_sha256"],
+                               "identity_checks": {"result_bytes": "checked", "snapshot_bytes": "checked"}}
+            repeat_conflict["cards"] = cards
+    related = {identity for candidate_id in (progress["anchor_candidate"], progress["best_candidate"])
+               if candidate_id and (identity := executed_implementation(index[candidate_id]))}
     brief = None
     if progress["anchor_candidate"]:
         brief = archive_tools.optimization_brief(
             argparse.Namespace(archive=archive, anchor=progress["anchor_candidate"], recent=4, routes=4, frontier=2),
             records, rankable=observed_implementation, frontier_seen=frontier_seen,
-            pending_seen=pending_seen)
+            pending_seen=pending_seen, learning_seen={} if learning_seen is None else learning_seen,
+            reads=reads, evidence=evidence)
         brief["scope"] += " Best representatives in this packet additionally require a scored adapter result and code/recipe snapshot."
         # Other comparison contracts remain in the archive for reconciliation;
         # they must not become the new session's active proposal list.
         brief["pending_proposals"] = brief.pop("matched_pending_proposals")
-        index = archive_tools.candidate_index(records)
         # Preserve parent-relative observations without turning explanations into
         # universal rules. Cross-contract parents cannot supply a signed gain.
         for candidate_id, card in brief["candidates"].items():
@@ -463,9 +667,26 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
             card["feedback_scope"] = "Agent observations for this implementation and comparison; causal claims unverified"
     packet = {"schema_version": 1, "archive_path": str(archive), "archive_snapshot": snapshot,
               "task_sha256": task_sha256, "objective_progress": progress,
-              "execution_health": health, "execution_recovery": recovery_evidence(records, health),
+              "execution_health": health, "execution_recovery": recovery_evidence(records, health, reads=reads),
               "comparison_continuity": continuity,
-              "comparison_recovery": comparison_recovery(records, continuity),
+              "comparison_recovery": comparison_recovery(records, continuity, reads=reads),
+              "repeat_conflict": repeat_conflict,
+              "measurement_plan": ({"plan_id": measurement_plan["plan_id"],
+                                    "conflict_signature": measurement_plan["conflict_signature"],
+                                    "comparison_key": archive_tools.sha256(archive_tools.canonical(measurement_plan["comparison"])),
+                                    "remaining_slots": sum(item[name] is None for item in measurement_plan["runs"]
+                                                           for name in ("leader", "challenger")),
+                                    "pairs_complete": measurement_plan["complete"],
+                                    "next_run_id": next((item["run_id"] for item in measurement_plan["runs"]
+                                                         if item["leader"] is None or item["challenger"] is None), None),
+                                    "scope": "Read the full frozen protocol and paired outcomes with candidate_archive.py "
+                                             "measure-status --archive PATH --plan-id ID; complete its unmatched slots."}
+                                   if measurement_plan else None),
+              "measurement_decision": archive_tools.measurement_plans.latest_decision(
+                  records, archive_tools, progress["comparison"], reads=reads),
+              "measurement_stop": archive_tools.measurement_plans.latest_stop(
+                  records, archive_tools, progress["comparison"], reads=reads),
+              "trial_history": trial_history(archive, records, progress["comparison"], related, seen=trial_seen, reads=reads),
               "development_brief": brief,
               "scope": "Matched development evidence only. Best scores are observations, not certified promotion. "
                        "Read the cited code/results for the next decision. Truncated fields are retrieval hints, "
@@ -473,6 +694,9 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
     if packet["comparison_recovery"]:
         packet["comparison_recovery"]["retrieval_sha256"] = archive_tools.sha256(
             archive_tools.canonical(_comparison_review_identity(packet)))
+    if repeat_conflict:
+        repeat_conflict["retrieval_sha256"] = archive_tools.sha256(
+            archive_tools.canonical(_repeat_conflict_identity(packet)))
     # Retrieval bounds limit context size, not the number of experiments. Keep
     # original evidence on disk and explicitly identify each omitted field.
     for strings, items in ((1200, 8), (600, 4), (240, 2)):
@@ -483,8 +707,14 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
             return result
     # An archive can contain a candidate with arbitrarily many parents/artifacts.
     # Avoid allowing it to turn every fresh session into an unbounded prompt.
+    packet["trial_history"] = None
+    omissions = {"/trial_history": 1}
+    result = _bounded(packet, 240, 2, omissions)
+    result["truncated_fields"] = omissions
+    if len(archive_tools.canonical(result)) + 1 <= HANDOFF_BYTES:
+        return result
     packet["development_brief"] = None
-    omissions = {"/development_brief": 1}
+    omissions = {"/trial_history": 1, "/development_brief": 1}
     result = _bounded(packet, 240, 2, omissions)
     result["truncated_fields"] = omissions
     if len(archive_tools.canonical(result)) + 1 > HANDOFF_BYTES:
@@ -512,7 +742,7 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
             for name in ("target", "reference"):
                 card = recovery[name]
                 compact[name] = ({key: card[key] for key in
-                                  ("candidate_id", "result_path", "result_sha256", "execution_status", "diagnostic")}
+                                  ("candidate_id", "role", "result_path", "result_sha256", "execution_status", "diagnostic")}
                                  if card else None)
                 if card:
                     compact[name]["implementation_fingerprint"] = card["implementation"]["fingerprint"]

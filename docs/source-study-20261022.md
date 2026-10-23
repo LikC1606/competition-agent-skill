@@ -55,6 +55,30 @@
 
 自动检索同时去掉了未展示候选的复测历史复制。独立对照的三档完整 JSON 相同；8,000 条同实现记录时，函数调用中位数 0.362→0.160 秒，增量分配峰值 245.24→0.54 MiB。该局部测量不包含档案读取和已有输入历史，不代表完整 campaign 提速，范围见[验证记录](unattended-campaign-validation.md#长期检索中的复测历史复制)。
 
+## 诊断试验指导构造而不参与候选排名
+
+MLE-STAR 提供了一个具体区别：消融执行结果先被总结，再用于选择待改代码块和下一计划；下一版本的保留则依据实际 improvement 执行结果。其 outer update 分别保存候选和消融历史。[固定 commit 与实际调用链](../skills/competition-optimize/references/source-patterns.md#use-diagnostic-interventions-to-choose-the-next-construction)支持这种职责分开，不能据此声称来源采用了本仓的 role schema 或证明自动提分。
+
+本仓此前只有 development/confirmation 两种角色。五次真实基线/特征消融执行得到 1.0、四次 0.875，虽然反馈明确说明消融用途，四项仍被计为未提分的新候选并触发策略重审。重审本身不会停止或拒绝工作；复现的是缺少诊断语义对收益信号的干扰。本轮也检查了旧结果别名、空工作和合法复测：原驱动已有无实现时的重审，不能把“没有新源码”一律拒绝，否则会误伤有理由的真实重测。LoongFlow 的内层修复和 LLaMEA 的 parent/operator 解耦作为比较材料保留，没有额外引入另一套选择器。
+
+新增显式 `role=diagnostic`，首个 parent 必须是普通开发控制版本，保留执行源码/result、成本和反馈。`diagnostic_evidence` 单独检索最近两项及其控制卡；同合同可读实测目标，跨合同仅提供核验身份和重验指针。完成的前瞻诊断也进入 `trial_history`，带 outcome/evidence role，诊断双方不产生候选 gain。下一提案可引用这些诊断的代码和反馈，归属仍取首 parent 自身完整 comparison。
+
+诊断不进入最好候选、路线排名、候选停滞、comparison 单例或普通 frontier 关闭判断；执行健康仍包含诊断，低分有效消融是观测，失败或缺分数仍进入 repair。实际提分尝试及退步保持普通 development，不能按分数自动重标。诊断转为可交付候选时需完整任务有效性和同口径证据，再显式记 development；已有有效测量可说明复用理由，避免无用重跑。仅新增诊断时不自动调用 completion verifier，显式 complete receipt 保留原规则。
+
+既有 schema/默认角色不改，旧档案不重写；没有新增总轮次、时间、候选或成本上限、数据库或模型依赖。诊断窗口只是检索大小，不是实验额度，也不强制每轮消融。实际使用结果与边界见[验证记录](unattended-campaign-validation.md)。
+
+## 已完成试验影响下一次构造
+
+继续沿 RefineEvo、OpenEvolve 和 HeurAgenix 的实际生成调用链阅读，发现本仓已有“提案 → 执行 → 反馈”档案，却在完成后断开自动召回。公开 API 的真实小程序反例中，提案离开 pending 后，下一轮只见 outcome 的 `proposal_id`、`contradicted` 等反馈，不见原来的 `change` 和 `expected_observation`；继续执行后，旧试验连同反馈离开近期窗口，最好父代仍在。精确 `trace --proposal-id` 可以恢复完整链，因此这是自动交接缺口，不能称作档案丢失，也没有据此证明真实模型必然重复失败。
+
+RefineEvo 在评估后保存父子实现、目标和差值，在下一次选定父代后按 operator goal 检索经验，最后把 success/fail experience 送进实际生成 prompt。OpenEvolve 将 evaluator artifacts 随子代保存，随后把选中父代的真实 artifacts 和 evolution history 注入生成；其该处 previous programs 来自高分列表，不能将它描述为旧失败召回。HeurAgenix 则从具体正负轨迹找瓶颈，再重建对应状态修改规则。共同可借鉴之处是把“尝试的机制及其实测结果”送回下一次构造。[固定版本、源码入口和迁移边界](../skills/competition-optimize/references/source-patterns.md#recall-the-tested-hypothesis-with-its-outcome)保留了证据；未执行第三方 Agent 或复现作者成绩。
+
+新增 [campaign_trials.py](../skills/competition-optimize/scripts/campaign_trials.py)，直接从原 JSONL 的完成提案及实际后继派生 `trial_history`。每项保留原 basis、change、expected observation、验证与停止条件，以及 outcome 的预测状态、适用反馈和必要源码/result 身份。一个槽优先取与当前/最好实现相关的最新试验，其余槽按未曝光、最早成功曝光轮转，总计最多两项。检索规模不决定试验数量，也不强制选择父代。这样 agent 能检查原代码，辨认未实现的能力、实际失败和测量故障，再改变下一次表示或构造。
+
+归属继续沿用首个父代的完整 comparison；跨合同后继及引用只带核验身份、路径和需重验标记，结构化分数、原 outcome 反馈和预测状态不进入当前证据。只有当前合同内的真实有效父子观测才给方向正确的 gain。预测与解释仍是 agent 自报，执行失败不否定算法，有新前提或实现时允许重新尝试同一机制。Pending、stopped、确认集、手工分数和仅输出文件不会制造已测试机制，也不会补造旧档案没有的预期。
+
+曝光仍在成功 terminal、退出码零且 receipt 接受后才提交。prepare、封存包重建、429 和坏收据不消耗历史；裁剪后必要身份与指针须通过原检索摘要核对。极大试验卡可明确省略，完整记录可按 ID 回取，交接包继续限制 48 KiB。旧 schema-v2 state 和 in-flight 保持兼容，无新数据库、总结模型、黑名单或默认资源上限。实际前向结果和模型质量边界见[验证记录](unattended-campaign-validation.md)。
+
 ## 未完成提案接回真实执行
 
 这轮沿“提案 → 具体代码 → 真实执行 → 反馈”的路径查恢复。RD-Agent 的 data-science loop 将同一个实验对象和 pending tasks 传给 coding，再将 coded 实验传给 running；workflow 保存阶段输出和下一步索引，恢复时取回原阶段。这支持的是保留可执行工作及其所处阶段，不能从 snapshot 存在推断程序正确或有可用分数。[固定源码与迁移边界](../skills/competition-optimize/references/source-patterns.md#resume-the-proposed-work-at-the-recorded-step)列出具体入口，本轮未运行第三方 Agent。
@@ -100,3 +124,76 @@ AIDE 启发的是按执行状态选择 debug/improve，并把真实输出交给�
 `comparison_recovery` 交接真正的孤立 target、不同实现的开发祖先或更早参考、顶层合同差异和最近四项身份指针。跨口径卡只提供核验后的身份和路径，不提供分数与原反馈。Agent 检查哪些变化符合任务，选现有合法共同开发合同补测，再在完整相同的合同内判断收益。窗口只请求补证，合法 fidelity 探索仍可继续；该信号也不证明当前合同已稳定、噪声已解决或所有历史缺口均已补齐。
 
 重审延续成功交接后才提交的协议，保存 prepare 时封存的观测数；本轮运行新产生的口径留待下一次判断。失败或 429 不消费诊断，执行 repair 优先。对必要指针额外计算 `retrieval_sha256` 并在裁剪后重算：独立审查复现了巨量环境元数据耗尽 64 项省略索引后，长 ID/路径虽被截断却误记交接的问题，摘要校验覆盖了这条路径。完整指针的 compact 卡仍可交接，包继续限制为 48 KiB。
+
+## 逐 case 胜例进入下一次构造
+
+总分较低的实现仍可能在部分 case 胜过当前最好版本。继续核对 EoH-S 与 Telco，确认前者的逐实例向量确实进入存活和父代选择，再由 e1 生成新代码；但 L1 距离只是差异代理，原 prompt 也没有具体胜例。后者把前沿外其他家族的忠实实现代码带回下一轮，采样仍依赖标量成绩。这次借鉴专长证据和次优代码的召回通道，没有复制 L1 或把逐 case 最大值包络当收益。[固定源码与迁移边界](../skills/competition-optimize/references/source-patterns.md#retrieve-measured-case-strengths-for-the-next-implementation)列出了实际入口。
+
+ReEvo 的真实双亲反思、crossover、评测链使用总体 scalar obj 区分 better/worse，没有按交叉胜例选亲。KAPSO 会将多个提案合成为方案并交给实施者，但这些提案尚未分别实测，实施仍从单一父分支开始。因此，多亲生成和 synthesis 接口本身不能证明候选互补或后继提分。本轮只读正文、locator、文件 hash 和 E/I 边界见 [complementarity.json](/home/lzh/competition-agent-validation/complementarity-study-20261023/source-study/complementarity.json) 与 [combination.json](/home/lzh/competition-agent-validation/complementarity-study-20261023/source-study/combination.json)。
+
+本仓新增 [candidate_profiles.py](../skills/competition-optimize/scripts/candidate_profiles.py)，从可选 `case_profile` 派生 `brief.complementary_evidence`。只检索同一完整 comparison 下、实际执行且有有效分数和源码/recipe 快照的普通 development；profile 的 metric、direction、case IDs 必须匹配，每个实现保留首次有效 profile。最多两个检索槽按相对当前最好实现的新增胜例、总胜例、实测标量分和档案顺序选择，附 wins/losses 实例及核验后的源码/result 指针。重复测量不凭幸运 profile 扩大专长，窗口大小也不限制实际试验次数。
+
+这些证据用于检查局部优势来自哪个机制，再构造并真实评测后继；原 scalar 排名和实际 best 不变，也不计算虚构组合分数。不能根据隐藏标签、验证集 ID 或已知 case 胜者表冒充运行时选择器。是否提高真实比赛总分仍需实际比较，本轮来源链不提供收益保证。
+
+## 区分方案未实现与机制实测失败
+
+继续沿 Telco 的真实执行链核对，重点从“保留哪些候选”转向“到底试过哪个机制”。其评测工具运行 draft，保留成功且更好的 solution，结束时保存实际评测结果；结果处理再将 solution.py 与 assigned idea 对照，总结 yes/partial/no，随 Candidate 写回 leaderboard。下一代生成同时收到原 idea、这个 verdict、实测指标和代码，明确把核心机制缺失或被替换的原方案视为尚未试验，并按代码实际家族判断多样性。新构造不带无关参考代码，以减少实现时重新退回旧补丁的倾向。[固定入口与迁移边界](../skills/competition-optimize/references/source-patterns.md#review-the-mechanism-that-reached-the-executed-code)保留了调用链。
+
+本地文档此前已要求按执行代码分类，但实际后继记录只有 changed snapshot、执行结果、feedback 和 prediction_status；预期观察被支持或否定，不能回答原机制是否真正进入代码。本次将这个区别接入既有提案与结果链：可选 `record --implementation-review <JSON>`，与 `--proposal-id` 一起用于已执行的 development/diagnostic 后继。输入包含 fidelity（yes/partial/no/unknown）、actual_mechanism、missing_components 和 code_evidence；源码证据指向本候选 source 或 recipe 内的文件，在 detail 中描述具体代码观察，可引用函数或行号，partial/no 必须指出缺少什么。预测文件本身不能作为实现源码。
+
+归档核对文件是否属于候选源码/recipe 根并补上文件 hash，将其绑定到原 proposal、implementation fingerprint 与 input hash，标为 `assessment_kind=agent_report`。工具不核验 detail 中的语义或非结构化行号。同完整 comparison 的 brief 与 trial_history 会将复核带给下一次构造，跨合同 trial 继续只给身份和重验指针，不带原 verdict/解释；精确 trace 可恢复原 review。没有旧字段仍代表 unknown，保留旧档案字节，不强制每轮填写，也不增加 provider 或默认额度。
+
+Agent 据此检查耦合组件是否齐全，再选择补齐、修复、换构造或沿实际新机制继续。偏离原计划的实现仍可凭真实成绩成为最好候选；其分数不能否定缺失的原机制。yes 和文件身份核对也不是语义审计证明，不改变 valid、score、best、route、frontier 或停止条件。MLEvolve 的分支停滞→轨迹分析→Tier 2/3→审查→执行作为比较材料保留，但其 reviewer 只有 task/code 输入；本地已有轨迹召回与 rethink，本轮不再叠加类似 prompt 或照搬固定阈值。
+
+两份来源均为只读固定 commit 源码：Telco `be94f40f4bdd255b3e4dfa8bf32798821813311b`，MLEvolve `f4a37b96c948bfed6564e62f3229e0b38e908d33`。[37 份最小摘录、文件 hash 和 E/I 边界](/home/lzh/competition-agent-validation/next-mechanism-20261023/source-study/generation.json)可复核；未执行第三方 Agent，源码链本身不证明比赛提分。
+
+## 比较控制不等于源码继承
+
+继续核对 LLM4AD Next 与 Comind，找到与本地“独立构造”原则直接对应的实际入口。LLM4AD Next 固定 `c23a45c64a4b1fed322bfefbfe8436eeea32c954` 的 I1 路径向 planner 传空 parents，随后用空 base_context 实现并批量评测；Comind 固定 `f93dff779b5d40dd3bf28b7b6ba5e39881e02e38` 允许 codebase=None，只在实际选定旧 codebase 时注入完整代码并复制工作区。Telco 的 fresh-start 省略 reference_workspaces 提供第三条相符链。它们共同支持可选地不继承旧源码，而不是只改变量名或沿最好代码局部打补丁。[固定代码入口](../skills/competition-optimize/references/source-patterns.md#separate-comparison-controls-from-inherited-code)和[18 处最小摘录、8 个文件 hash](/home/lzh/competition-agent-validation/fresh-construction-20261023/source-study/source-study.json)保留来源。
+
+本地此前已允许从零推导、独立原型，但 API 强制非空父代码目标。它并未检查代码相似性，因此不能说框架禁止新算法；真实缺口是独立重写需要把不继承的父文件伪填为“修改目标”。这次增加可选 construction_mode=independent，要求 code_targets=[]，保留验证过的 parent_ids 作为比较控制和 feedback_from 作为证据。缺省仍是原 refinement，继承或组合父组件仍填写真实文件目标。
+
+模式从 proposal 复制到真实 successor，并保留在 pending/brief/trace/trial_history；有界交接要求模式与 not_applicable 标志一致。真实源码/完整 recipe 快照与新执行结果仍不可缺，只有预测输出或声称源码 hash 的后继会被拒绝。独立结果不误关闭比较控制的 refinement 机会，但自己仍可成为新机会。实际分数与完整 comparison 决定比较，不靠模式声明晋升。
+
+该字段是 Agent 对源码复用意图的声明；driver 仍展示开发历史，来源系统也保留任务、接口或 coordinator 上下文，因此不是信息隔离、创新性证明或提分保证。未增加默认 fresh-start 频率、额外 provider 或轮次上限，未执行第三方 Agent。
+
+## 长期档案单次回放复用索引
+
+这次从 FunSearch 和 OpenEvolve 借鉴实际“注册时维护索引、后续查询复用”的路径。FunSearch 对评估后的程序增量更新 signature→Cluster，下一次 sampler 从已有簇取 prompt；OpenEvolve 注册实测 child 后按 ID 查父版，load 时一次建 program map。它们没有实现本地的严格 JSONL 校验或结果摘要去重，不能把这些语义或提速归给来源。[固定 commit、5 个文件 hash 与 18 段摘录](/home/lzh/competition-agent-validation/archive-replay-20261023/source-study/source-study.json)保留真实调用链与迁移边界。
+
+本地 read_records 已顺序维护 candidates，却在每条 proposal 和 successor 验证里重新扫描前缀建相同映射；后继又遍历全部历史结果找重复摘要。现在复用这次读取中已接受的 candidate 映射，并增量维护此前字符串 result digest 集合。只有通过原验证的事件才进入索引；每次读取重新从磁盘解析，没有跨读取缓存、额外数据库或旧档案改写。独立 validator 调用及非字符串旧 digest 保留原路径；角色、比较、源码、结果、错误顺序和确认隔离规则没有变化。
+
+在 2,048 组提案/后继的剖析中，candidate_index 重建次数从 4,096 降到 0。固定宽度元数据规模样本从 512 到 8,192 组，读取时间观察到约 2.1× 至 17.2× 改善；8,192 组的三次中位数为 12.993→0.756 秒。它们是从真实 API 事件复制并重新赋予身份的规模 fixture，不能充当新增算法执行或比赛成绩。真实旧档案的 records、brief、trace 和 handoff 另作逐字段等价核对。[性能和行为验证](unattended-campaign-validation.md#档案回放提速2026-10-23)给出完整范围：record 写入、brief 其他检索与评分计算仍可能扫描历史，没有整体线性或端到端 17 倍的承诺。
+
+
+## 条件经验的修订与实际消费
+
+ReEvo 的固定代码将已执行 better/worse 源码的短期比较与旧长期反思合并，写出新反思，再把它注入下一次 mutation 并评测生成代码。ShinkaEvolve 在评测 outcome 后更新 recommendations，下一次取出并传到非 crossover 的生成 prompt，再将接受的程序交给评测。这里借鉴的是“更新后真正影响下一构造”的链，不是再添一段反思指令。[源码入口与迁移范围](../skills/competition-optimize/references/source-patterns.md#revise-conditional-learning-and-feed-it-into-construction)及[固定版本、23 处摘录、8 个文件 hash](/home/lzh/competition-agent-validation/scoped-learning-20261023/source-study/source-study.json)可逐步核对。ReEvo 的失败运行被该选择链排除；写文件也不能证明恢复读取。Shinka 的 save/load 方法不构成已验证的 runner 恢复链，本地没有复制其三阶段模型总结或默认次数。
+
+本地已有 trial_history 每轮最多召回两个原始尝试，缺少结论跨窗口的显式修订与使用关系。新增可选 [scoped_learning.py](../skills/competition-optimize/scripts/scoped_learning.py)：在真实 proposal-linked、有效有分数的 development/diagnostic 后继上 record --learning，保存 lesson、conditions、next_action、limitations、evidence_from。完整 comparison 内相同 key 的更新必须显式 revises 当前 head，并保留旧 head 作为证据；当前后继自动加入，新事件追加，旧字节不改。确认、失败、手工分、缺完整 recipe 的输出记录不能成为这条学习证据。
+
+brief.scoped_learning 返回当前结论与核对过的源码/result 指针，优先相关实现，再按最近修订，最多两项并显示省略量。新提案通过 learning_from 表明哪条结论改变了构造或反例设计，basis 解释如何使用；引用不必同时当作父版。pending、实际 successor、trace、trial handoff 都保留连接，精确 trace 返回原报告。归档身份与字节检查不认证自然语言语义或因果关系，仍须检查实际代码和结果。没有新 provider、数据库、强制复盘轮次、路线黑名单或停机规则。
+
+隔离前向使用已闭环：修订报告离开原始 trial_history 窗口后仍可由 fresh brief 取回；独立 Agent 检查原始代码和反例后，用 learning_from 连接兼容前缀动态规划，固定 adapter 总收益从原最好 896 到 938，结果再修订旧报告。它只证明这次经验→构造→执行链真实发生，不是记忆机制的因果消融、长时运行或官方分数证明。[前向使用证据](unattended-campaign-validation.md#条件经验跨窗口影响实际构造2026-10-23)保留实际命令、程序与完整性边界。
+
+## 单次交接中的证据读取复用（2026-10-23）
+
+本轮深读 Aira Dojo 与 LLM Speedrunner 的固定源码，借鉴“构造时读取一次、由真实消费者显式复用”。Aira 的任务文本经 task_info 传到 MCTS，再进入 draft/improve；Speedrunner 的 Workspace 解析结果索引被 Ideator 和 top-k 选择实际消费，写入后刷新对应项。[固定 commit、14 份源码指纹和31段调用证据](/home/lzh/competition-agent-validation/evidence-read-reuse-20261023/source-study.md)保留原始范围。
+
+本地实现只在一次 brief、trace 或 handoff 中共享 EvidenceReads，减少源码、共享 recipe 和 result 的重复哈希；不保留原始 bytes，不跨请求保留摘要，目录仍重新枚举。每次使用核对完整 stat 身份；针对实测同尺寸连续写入可共享 mtime/ctime 的问题，mtime 或 ctime 距操作开始不足一秒的文件始终重读，无生产等待。内容解析仍从当前读取的 bytes 产生。新操作重新读文件是本地证据合同，两仓没有直接提供这个完整保证。
+
+没有迁移 Speedrunner summary 原地删除共享 metrics.private 的行为，也没有迁移 Aira 无内容 key 的 UI 缓存和 solver preview 寿命。实例范围不等于单操作范围，不能证明外部改字节后新鲜，也不能证明跨文件原子快照。来源仅作静态研究，未执行第三方代码。[使用说明](../skills/competition-optimize/references/iteration-trace.md#retrieve-evidence-for-the-next-implementation)和[本地实测](/home/lzh/competition-agent-validation/evidence-read-reuse-20261023/REPORT.md)分别说明实现合同与效果边界。
+
+## 质量与实测资源的取舍进入下一次构造（2026-10-23）
+
+AI Telco Engineer 的 pilotless evaluator 预热后实际计时 receiver 调用，并分别保留质量与延迟；leaderboard 把非支配源码版本送给后续 idea generator，LLM prompt 实际渲染指标和代码。LLaMEA 的通用多目标 population 也被后续父代选择消费，但 Fitness 来自任意 callback，不能据此声称运行成本已测。CodeEvolve 的单 fitness 与 MAP-Elites 特征格不构成质量/实测成本前沿。[三仓固定 commit、调用链、14 个文件 hash 和迁移边界](/home/lzh/competition-agent-validation/quality-cost-frontier-20261023/source-study.md)记录了这一区别。
+
+本仓因此新增由 adapter 显式声明的 result.resource_profile，包含被测资源、单位、候选范围、测量协议 hash 和有限非负值；绝不把评测总 elapsed_seconds 或任意 --cost 解读为候选延迟。只从同完整 comparison、同 profile 协议的实际有效开发实现取质量/资源非支配子集，并把最快与最高质量源码端点送进下一轮交接；scalar best、晋级与停止逻辑不改。quality/resource 来自同一条真实观测；首个有效 profile 只是确定性代表，不是重复测量聚合或稳定性保证。接口、协议和两端检索均是本地推导，非上游原样算法。真实结果和测试见[本轮验证](/home/lzh/competition-agent-validation/quality-cost-frontier-20261023/REPORT.md)。
+
+## 当前经验与历史结论分别保留（2026-10-23）
+
+LoongFlow 实际由 math planner 消费 memory.sample 返回的 parent，Boltzmann 同时保留非elite候选入口；RD-Agent 的 CoSTEER V2 分别查当前失败轨迹、组件成功经验和错误修复，再由 factor coder 的模板真实消费。两仓说明“当前工作之外要保留实际入口”，不证明简单增加数据库或记忆字段有用。[固定源码研究](/home/lzh/competition-agent-validation/learning-rotation-20261023/source-study.md)保存两份commit、14文件hash与真实调用链；未执行第三方代码。
+
+本地反例是 scoped_learning 固定相关/最新两条，让三个以上有效结论中的旧head连续交接都不出现；已有trial轮转也无法覆盖所有合法跨comparison后继。现保留最多一个related当前头，其余槽按从未/最久未成功交付轮转。按完整comparison隔离，按head candidate_id记曝光；修订自然重新未见，旧修订不回流。只有成功检查点、完整报告及源结果身份通过交接seal才提交曝光；准备、429、无效receipt和裁剪不消费，恢复可续用。
+
+两槽分配与确定性成功交接协议属于本地推导，来源没有这个实现或覆盖保证。没有引入上游的随机概率、向量服务、跨任务cache或新停止条件。standalone brief保留原相关/新近顺序，轮转展示不代替检查条件和实际构造。[本轮报告](/home/lzh/competition-agent-validation/learning-rotation-20261023/REPORT.md)区分检索覆盖、真实使用与任务得分。

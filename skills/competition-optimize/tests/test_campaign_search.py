@@ -203,6 +203,46 @@ class CampaignSearchTests(unittest.TestCase):
         self.assertEqual(progress["implementations_since_best"], 1)
         self.assertEqual(progress["nonimproving_candidates"], ["weak"])
 
+    def test_comparison_evidence_surfaces_first_measurement_conflict_without_reranking(self) -> None:
+        self.record("a-first", 100)
+        self.record("b-first", 60)
+        self.record("a-repeat-one", 10, reuse="a-first")
+        self.record("a-repeat-two", 10, reuse="a-first")
+        self.record("b-repeat", 60, reuse="b-first")
+        evidence = archive.ComparisonEvidence(self.records(), eligible=search.observed_implementation)
+        view = evidence.for_candidate("b-repeat")
+        self.assertEqual([entry["candidate_id"] for entry in view.representatives], ["a-first", "b-first"])
+        self.assertEqual(len(evidence.first_observations()), 2)
+        self.assertEqual(self.progress()["best_candidate"], "a-first")
+        conflict = view.ranking_conflict()
+        self.assertEqual((conflict["leader_candidate"], conflict["challenger_candidate"],
+                          conflict["witness_candidate"], conflict["reason"]),
+                         ("a-first", "b-first", "a-repeat-one", "leader_repeat_below_challenger_first"))
+        packet = self.packet()
+        self.assertEqual(packet["repeat_conflict"]["signature"], conflict["signature"])
+        self.assertTrue(search.delivered_repeat_conflict(packet))
+        self.assertEqual(packet["development_brief"]["best_development"], "a-first")
+        altered = json.loads(json.dumps(packet))
+        altered["repeat_conflict"]["cards"]["witness"]["result_path"] = "[truncated]"
+        self.assertFalse(search.delivered_repeat_conflict(altered))
+
+    def test_conflict_requires_real_repeated_result_under_the_same_comparison(self) -> None:
+        self.record("leader", 100)
+        self.record("challenger", 60)
+        self.record("other-contract", 10, reuse="leader", comparison={"config_hash": "other"})
+        view = archive.ComparisonEvidence(self.records(), eligible=search.observed_implementation).for_candidate("leader")
+        self.assertIsNone(view.ranking_conflict())
+        self.record("repeat", 10, reuse="leader")
+        self.assertIsNotNone(self.packet()["repeat_conflict"])
+
+    def test_repeat_conflict_respects_minimize_direction(self) -> None:
+        self.record("leader", 1, direction="minimize")
+        self.record("challenger", 5, direction="minimize")
+        self.record("leader-repeat", 10, direction="minimize", reuse="leader")
+        conflict = self.packet()["repeat_conflict"]
+        self.assertEqual((conflict["leader_candidate"], conflict["witness_candidate"]),
+                         ("leader", "leader-repeat"))
+
     def test_new_output_bytes_from_same_recipe_are_not_new_implementations(self) -> None:
         self.record("baseline", 10, scope="prediction_csv", recipe="fit_declared_pipeline()")
         self.record("lucky-output", 100, scope="prediction_csv", recipe="fit_declared_pipeline()")
@@ -861,6 +901,18 @@ class CampaignSearchTests(unittest.TestCase):
         self.assertIn("must be revalidated", recovery["scope"])
         self.assertEqual(recovery["reference"]["identity_checks"],
                          {"result_bytes": "checked", "snapshot_bytes": "checked"})
+
+    def test_recovery_follows_diagnostic_to_ordinary_control_instead_of_using_intervention_as_reference(self) -> None:
+        self.record("control", 10)
+        self.record("intervention", 10000, role="diagnostic", status="unresolved", parent="control")
+        self.record("failed-child", None, parent="intervention", valid=False, status="rejected",
+                    result_score=False, objective_flags=False)
+        self.assertEqual(self.health()["last_scored_candidate"], "intervention")
+        recovery = self.recovery()
+        self.assertEqual(recovery["target"]["role"], "development")
+        self.assertEqual(recovery["reference"]["candidate_id"], "control")
+        self.assertEqual(recovery["reference"]["role"], "development")
+        self.assertEqual(recovery["reference_relationship"], "scored_ancestor")
 
     def test_recovery_confirmation_ancestor_is_a_barrier_and_cannot_supply_feedback(self) -> None:
         self.record("behind-confirmation", 9)

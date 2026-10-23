@@ -134,6 +134,62 @@ class PredictionWorkflowTests(unittest.TestCase):
         self.assertEqual(comparator.compare(candidate, baseline, 0)["metric_preference"], "baseline")
         self.assertEqual(comparator.compare(baseline, candidate, 1)["metric_preference"], "tie")
 
+    def test_case_profile_regression_preserves_ids_and_is_opt_in(self) -> None:
+        self.truth.write_text("id,target\n001,10\n1,20\ncase z,30\n", encoding="utf-8")
+        self.predictions.write_text("id,prediction\ncase z,28\n001,11\n1,22\n", encoding="utf-8")
+        for metric, loss_metric, losses in [
+            ("rmse", "squared_error", {"001": 1, "1": 4, "case z": 4}),
+            ("mae", "absolute_error", {"001": 1, "1": 2, "case z": 2}),
+        ]:
+            with self.subTest(metric=metric):
+                ordinary = self.evaluate("--metric", metric)
+                profiled = self.evaluate("--metric", metric, "--case-profile")
+                self.assertNotIn("case_profile", ordinary)
+                self.assertEqual(profiled["case_profile"], {
+                    "metric": loss_metric, "direction": "minimize", "cases": losses,
+                })
+                self.assertEqual(profiled["score"], ordinary["score"])
+                self.assertEqual(profiled["score_model_hash"], ordinary["score_model_hash"])
+                self.assertEqual(profiled["evaluation"]["config_hash"], ordinary["evaluation"]["config_hash"])
+
+        self.truth.write_text("id,target\na,1e308\n", encoding="utf-8")
+        self.predictions.write_text("id,prediction\na,0\n", encoding="utf-8")
+        self.assertEqual(self.evaluate()["score"]["value"], 1e308)
+        with self.assertRaisesRegex(evaluator.PredictionFailure, "Case loss exceeds finite"):
+            self.evaluate("--case-profile")
+
+    def test_case_profile_log_loss_uses_configured_clipping(self) -> None:
+        self.truth.write_text("id,target\n001,0\n1,1\nc,1\n", encoding="utf-8")
+        self.predictions.write_text("id,prediction\n1,0\nc,0.6\n001,1\n", encoding="utf-8")
+        result = self.evaluate("--metric", "binary_log_loss", "--log-loss-epsilon", "0.1", "--case-profile")
+        profile = result["case_profile"]
+        self.assertEqual(profile["metric"], "binary_log_loss")
+        self.assertEqual(profile["direction"], "minimize")
+        self.assertEqual(set(profile["cases"]), {"001", "1", "c"})
+        for key, expected in {"001": -math.log(0.1), "1": -math.log(0.1), "c": -math.log(0.6)}.items():
+            self.assertAlmostEqual(profile["cases"][key], expected)
+        self.assertEqual(result["score"]["parameters"], {"epsilon": 0.1})
+        self.assertAlmostEqual(result["score"]["value"], math.fsum(profile["cases"].values()) / 3)
+
+    def test_case_profile_cli_rejects_auc_while_ordinary_auc_still_succeeds(self) -> None:
+        self.truth.write_text("id,target\na,0\nb,1\nc,1\n", encoding="utf-8")
+        self.predictions.write_text("id,prediction\nc,0.8\na,0.1\nb,0.9\n", encoding="utf-8")
+        ordinary = self.evaluate("--metric", "roc_auc")
+        self.assertEqual(ordinary["score"]["value"], 1)
+        self.assertNotIn("case_profile", ordinary)
+        output = self.root / "auc-profile"
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "evaluate_predictions.py"),
+             *self.arguments(output, "--metric", "roc_auc", "--case-profile")],
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(completed.returncode, 2)
+        failed = json.loads((output / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(failed["error"]["type"], "invalid_input")
+        self.assertIn("does not decompose", failed["error"]["message"])
+        self.assertIsNone(failed["score"]["value"])
+        self.assertNotIn("case_profile", failed)
+
     def test_rejects_incomplete_or_extra_prediction_ids(self) -> None:
         for text in ["id,prediction\na,10\nb,20\n", "id,prediction\na,10\nb,20\nc,30\nx,0\n"]:
             self.predictions.write_text(text, encoding="utf-8")

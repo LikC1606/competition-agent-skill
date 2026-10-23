@@ -18,6 +18,7 @@ RUNNER = SCRIPTS / "autonomous_campaign.py"
 PYTHON = "/usr/bin/python3"
 sys.path.insert(0, str(SCRIPTS))
 import campaign_runtime as runtime
+import campaign_search as search
 import autonomous_campaign as driver
 
 
@@ -62,10 +63,13 @@ if scenario == "auth":
 if scenario == "bad_session" and number == 2:
     print(json.dumps({"type": "error", "message": "session not found"}), flush=True)
     sys.exit(1)
-if scenario == "review_once_429" and number == 1:
+if scenario in {"review_once_429", "trial_failures"} and number == 1:
     print(json.dumps({"type": "error", "message": "429 Too Many Requests"}), flush=True)
     sys.exit(1)
 if scenario == "comparison_retry_429" and number == 5:
+    print(json.dumps({"type": "error", "message": "429 Too Many Requests"}), flush=True)
+    sys.exit(1)
+if scenario == "repeat_plan_rotation_429" and number == 3:
     print(json.dumps({"type": "error", "message": "429 Too Many Requests"}), flush=True)
     sys.exit(1)
 if scenario == "clean_child_hold" and number == 1:
@@ -78,19 +82,115 @@ if (scenario in {"hold", "hang", "clean_child_hold"} and number == 1 or
     while not (campaign / "fake-release").exists():
         time.sleep(0.03)
 
-if scenario != "no_progress" and not (scenario == "comparison_retry_receipt" and number == 5):
+if scenario in {"repeat_plan", "repeat_plan_interrupt", "repeat_plan_decision_interrupt", "repeat_plan_rotation_429", "repeat_plan_stop", "repeat_plan_stop_foreign",
+                "repeat_plan_stop_interrupt"}:
+    context_path = pathlib.Path(sys.argv[sys.argv.index("-o") + 1]).with_name("context.json")
+    context = json.loads(context_path.read_text())
+    if context.get("measurement_plan") is None and not any(
+            entry["event"] == "measurement_plan" for entry in tools.read_records(archive)):
+        conflict = context["repeat_conflict"]
+        parent = tools.candidate_index(tools.read_records(archive))[conflict["leader_candidate"]]
+        plan_path = workspace / "repeat-plan.json"
+        plan_path.write_text(json.dumps({
+            "plan_id": "paired-repeat", "conflict_signature": conflict["signature"],
+            "comparison": parent["comparison"], "leader_candidate": conflict["leader_candidate"],
+            "challenger_candidate": conflict["challenger_candidate"],
+            "witness_candidate": conflict["witness_candidate"],
+            "runs": [{"run_id": "paired-one", "seeds": [13] if scenario.startswith("repeat_plan_stop") else [41],
+                      "repetitions": 1}],
+            "decision_rule": "Compare the prespecified pair and report both raw scores before judging the ordering."
+        }))
+        tools.record_measurement_plan(tools.parser().parse_args([
+            "measure-plan", "--archive", str(archive), "--plan", str(plan_path)]))
+    else:
+        records = tools.read_records(archive)
+        plan = next(entry for entry in records if entry["event"] == "measurement_plan")
+        status = tools.measurement_plans.status(plan, records, tools)
+        slot = next(((item, name) for item in status["runs"]
+                     for name in ("leader", "challenger") if item[name] is None), None)
+        if status["stop"] is not None:
+            pass
+        elif scenario.startswith("repeat_plan_stop") and status["attempts"]:
+            stopped = subprocess.run([sys.executable, str(pathlib.Path(os.environ["FAKE_SCRIPTS"]) / "candidate_archive.py"),
+                "measure-stop", "--archive", str(archive), "--plan-id", plan["plan_id"],
+                "--reason", "Frozen leader raises RuntimeError on seed 13; changing the source cannot fill its slot.",
+                "--next-action", "Implement a seed-safe successor and evaluate it as ordinary development."],
+                capture_output=True, text=True, check=True)
+            assert json.loads(stopped.stdout)["status"] == "stopped_unresolved"
+            if scenario == "repeat_plan_stop_interrupt":
+                print(json.dumps({"type": "error", "message": "simulated interruption after stop append"}), flush=True)
+                sys.exit(1)
+        elif slot is None:
+            decision_path = workspace / "repeat-decision.json"
+            decision_path.write_text(json.dumps({
+                "plan_id": plan["plan_id"], "conclusion": "The paired result reverses the initial ordering",
+                "reason": "Both prespecified runs are valid and the challenger scored higher in the pair.",
+                "next_action": "Inspect the task's promotion and confirmation policy before choosing a successor."}))
+            tools.record_measurement_decision(tools.parser().parse_args([
+                "measure-decide", "--archive", str(archive), "--decision", str(decision_path)]))
+            if scenario == "repeat_plan_decision_interrupt":
+                print(json.dumps({"type": "error", "message": "simulated interruption after decision append"}), flush=True)
+                sys.exit(1)
+        else:
+            item, name = slot
+            source = workspace / "seed-repeat-runs" / ("leader.py" if name == "leader" else "challenger.py")
+            score = 55 if name == "leader" else 65
+            measured = subprocess.run([sys.executable, str(source)], capture_output=True,
+                                      text=True, env={**os.environ, "REPEAT_SCORE": str(score),
+                                                      "REPEAT_SEED": str(item["seeds"][0])})
+            result_path = workspace / "seed-repeat-runs" / ("planned-" + str(number) + ".json")
+            result_path.write_text(json.dumps({
+                "status": "success" if measured.returncode == 0 else "failed",
+                "valid": measured.returncode == 0, "candidate_hash": tools.hash_path(source),
+                "evaluator_hash": "synthetic-evaluator-v1", "workload_hash": "synthetic-workload-v1",
+                "score_model_hash": "synthetic-score-model-v1", "stage": "development",
+                "evaluation": {"measurement_plan_id": plan["plan_id"],
+                               "measurement_run_id": item["run_id"],
+                               "seeds": item["seeds"], "repetitions": item["repetitions"]},
+                "score": {"kind": "proxy", "metric": "synthetic-output", "direction": "maximize",
+                          "value": int(measured.stdout) if measured.returncode == 0 else None},
+                "error": measured.stderr,
+            }))
+            tools.record_candidate(tools.parser().parse_args([
+                "record", "--archive", str(archive), "--candidate-id", "planned-" + str(number),
+                "--source", str(source), "--result", str(result_path), "--route", "repeatability",
+                "--mechanism", "prespecified paired measurement", "--status", "promising",
+                "--reuse-reason", "Complete the frozen paired measurement protocol"]))
+    if scenario == "repeat_plan_interrupt" and number == 1:
+        print(json.dumps({"type": "error", "message": "simulated interruption after plan append"}), flush=True)
+        sys.exit(1)
+
+if scenario not in {"no_progress", "repeat_plan", "repeat_plan_interrupt", "repeat_plan_decision_interrupt", "repeat_plan_rotation_429"} and not (
+                                      scenario.startswith("repeat_plan_stop") and number <= (2 if scenario == "repeat_plan_stop_foreign" else 3) or
+                                      scenario == "comparison_retry_receipt" and number == 5 or
+                                      scenario == "trial_failures" and number == 2):
     runs = workspace / "runs"
     runs.mkdir(exist_ok=True)
     source = runs / ("candidate-" + str(number) + ".py")
-    value = 1 if scenario == "repeat" else 100 - number if scenario == "regress" else number
+    value = (1 if scenario == "repeat" else
+             100 - number if scenario == "regress" else
+             100 if scenario == "diagnostic_failure" and number == 1 else
+             100 - number if scenario == "diagnostic_failure" else number)
     if scenario == "comparison_pairing" and number == 5:
         # Re-evaluate an existing implementation on candidate-4's contract.
         # A legitimate measurement repair does not require changing its code.
         source = runs / "candidate-3.py"
     else:
         source.write_text("print(" + str(value) + ")\n")
+    if (scenario == "diagnostic_ablations" and number <= 5 or
+            scenario in {"diagnostic_only", "diagnostic_claim_complete"}):
+        # Each program removes a real feature group from an otherwise valid
+        # binary predictor. These weak probes identify feature contributions.
+        omitted = None if scenario == "diagnostic_ablations" and number == 1 else (
+            number - 2 if scenario == "diagnostic_ablations" else (number - 1) % 4)
+        enabled = [index for index in range(4) if index != omitted]
+        source.write_text("rows=[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]\n"
+                          "labels=[1,1,1,1,0,0,0,0]\nenabled=" + repr(enabled) + "\n"
+                          "predictions=[int(any(row[i] for i in enabled)) for row in rows]\n"
+                          "print(sum(prediction==label for prediction,label in zip(predictions,labels)))\n")
     failed = (scenario == "invalid_forever" and number > 1 or
-              scenario == "recover_execution" and 2 <= number <= 4)
+              scenario == "recover_execution" and 2 <= number <= 4 or
+              scenario == "diagnostic_failure" and number == 2)
     if failed:
         source.write_text("raise RuntimeError('candidate failed " + str(number) + "')\n")
     measured = subprocess.run([sys.executable, str(source)], capture_output=True, text=True)
@@ -105,6 +205,8 @@ if scenario != "no_progress" and not (scenario == "comparison_retry_receipt" and
     if scenario.startswith("comparison_"):
         outcome["evaluation"] = {"config_hash": "config-" + str(
             4 if scenario == "comparison_pairing" and number == 5 else number)}
+    if scenario == "repeat_plan_stop_foreign":
+        outcome["evaluation"] = {"config_hash": "other-evaluation"}
     if failed:
         outcome["error"] = {"type": "runtime_failure", "phase": "candidate_execution", "message": measured.stderr}
     elif scenario != "unscored_forever":
@@ -115,6 +217,14 @@ if scenario != "no_progress" and not (scenario == "comparison_retry_receipt" and
             "--source", str(source), "--result", str(result_path),
             "--route", "synthetic-" + str(number % 2) if scenario == "regress" else "synthetic",
             "--mechanism", "executed synthetic implementation", "--status", "promising"]
+    diagnostic = (scenario == "diagnostic_ablations" and 2 <= number <= 5 or
+                  scenario == "diagnostic_failure" and number == 2 or
+                  scenario in {"diagnostic_only", "diagnostic_claim_complete"})
+    if diagnostic:
+        args += ["--role", "diagnostic", "--parent", "seed-best" if scenario in {
+            "diagnostic_only", "diagnostic_claim_complete"} else "candidate-1",
+                 "--feedback", "Diagnostic feature contribution or execution probe " + str(number) +
+                 ": intentionally isolate a component; this is not a selectable candidate improvement."]
     if scenario == "repeat" and number > 1:
         args += ["--reuse-reason", "controlled repeated measurement"]
     if scenario == "comparison_pairing" and number == 5:
@@ -122,6 +232,23 @@ if scenario != "no_progress" and not (scenario == "comparison_retry_receipt" and
     if number > 1 and scenario in {"invalid_forever", "recover_execution", "unscored_forever"}:
         args += ["--parent", "candidate-" + str(number - 1)]
     tools.record_candidate(tools.parser().parse_args(args))
+
+    if scenario == "diagnostic_on_stagnation" and number == 1:
+        probe = runs / "stagnation-diagnostic.py"
+        probe.write_text("raise RuntimeError('diagnostic failed after ordinary regressions')\n")
+        failed_probe = subprocess.run([sys.executable, str(probe)], capture_output=True, text=True)
+        assert failed_probe.returncode != 0
+        probe_result = runs / "stagnation-diagnostic.json"
+        probe_result.write_text(json.dumps({
+            "status": "failed", "valid": False, "candidate_hash": tools.hash_path(probe),
+            "evaluator_hash": "synthetic-evaluator-v1", "workload_hash": "synthetic-workload-v1",
+            "score_model_hash": "synthetic-score-model-v1", "stage": "development",
+            "error": {"type": "runtime_failure", "phase": "candidate_execution", "message": failed_probe.stderr}}))
+        tools.record_candidate(tools.parser().parse_args([
+            "record", "--archive", str(archive), "--candidate-id", "stagnation-diagnostic",
+            "--source", str(probe), "--result", str(probe_result), "--role", "diagnostic",
+            "--parent", "candidate-1", "--route", "diagnostic", "--mechanism", "failed diagnostic execution",
+            "--status", "rejected"]))
 
 if scenario == "fail_four" and number <= 4:
     print(json.dumps({"type": "error", "message": "429 Too Many Requests; transient backend failure"}), flush=True)
@@ -137,14 +264,15 @@ if scenario == "context_tamper":
     output = pathlib.Path(sys.argv[sys.argv.index("-o") + 1])
     output.with_name("context.json").write_text('{"changed": true}\n')
 
-status = ("complete" if scenario == "claim_complete" else
+status = ("complete" if scenario in {"claim_complete", "diagnostic_claim_complete"} else
           "blocked" if scenario == "claim_blocked" else "continue")
 receipt = {"status": status, "summary": "evaluated candidate " + str(number),
            "next_action": "execute the next mechanism" if status == "continue" else "",
            "stop_reason": "no credible follow-up" if status != "continue" else "",
            "evidence": [str(archive)] if scenario != "no_progress" else []}
 if (scenario == "invalid_receipt" and number == 1 or
-        scenario == "comparison_retry_receipt" and number == 5):
+        scenario == "comparison_retry_receipt" and number == 5 or
+        scenario == "trial_failures" and number == 2):
     receipt.pop("evidence")
 pathlib.Path(sys.argv[sys.argv.index("-o") + 1]).write_text(json.dumps(receipt))
 if scenario == "left_child":
@@ -287,8 +415,55 @@ class AutonomousCampaignTests(unittest.TestCase):
             entries.append(driver.archive_tools.record_candidate(driver.archive_tools.parser().parse_args(arguments)))
         return entries
 
+    def seed_repeat_conflict(self, *, seed_failure: bool = False) -> None:
+        runs = self.workspace / "seed-repeat-runs"
+        runs.mkdir()
+        sources = {name: runs / (name + ".py") for name in ("leader", "challenger")}
+        sources["leader"].write_text("import os\n" + (
+            "if os.environ.get('REPEAT_SEED') == '13':\n    raise RuntimeError('seed 13 is unsupported')\n"
+            if seed_failure else "") + "print(int(os.environ['REPEAT_SCORE']))\n")
+        sources["challenger"].write_text("import os\nprint(int(os.environ['REPEAT_SCORE']))\n# other recipe\n")
+        for name, source_name, score in (("leader-first", "leader", 100),
+                                         ("challenger-first", "challenger", 60),
+                                         ("leader-repeat", "leader", 10),
+                                         ("challenger-repeat", "challenger", 60)):
+            source = sources[source_name]
+            measured = subprocess.run([PYTHON, str(source)], capture_output=True, text=True,
+                                      check=True, env={**os.environ, "REPEAT_SCORE": str(score)})
+            result_path = runs / (name + ".json")
+            result_path.write_text(json.dumps({
+                "status": "success", "valid": True, "candidate_hash": runtime.file_hash(source),
+                "evaluator_hash": "synthetic-evaluator-v1", "workload_hash": "synthetic-workload-v1",
+                "score_model_hash": "synthetic-score-model-v1", "stage": "development",
+                "score": {"kind": "proxy", "metric": "synthetic-output", "direction": "maximize",
+                          "value": int(measured.stdout)},
+            }))
+            arguments = ["record", "--archive", str(self.archive), "--candidate-id", name,
+                         "--source", str(source), "--result", str(result_path),
+                         "--route", "repeatability", "--mechanism", "seeded measurement fixture",
+                         "--status", "runner_up"]
+            if name.endswith("repeat"):
+                arguments += ["--reuse-reason", "independent score measurement"]
+            driver.archive_tools.record_candidate(driver.archive_tools.parser().parse_args(arguments))
+
     def turn_context(self, number: int) -> dict:
         return json.loads((runtime.turn_directory(self.campaign, number) / "context.json").read_text())
+
+    def freeze_repeat_plan(self, runs: int = 3) -> dict:
+        records = driver.archive_tools.read_records(self.archive)
+        leader = driver.archive_tools.candidate_index(records)["leader-first"]
+        conflict = driver.archive_tools.ComparisonEvidence(
+            records, eligible=search.observed_implementation).for_candidate("leader-first").ranking_conflict()
+        plan = {"plan_id": "paired-repeat", "conflict_signature": conflict["signature"],
+                "comparison": leader["comparison"], "leader_candidate": "leader-first",
+                "challenger_candidate": "challenger-first", "witness_candidate": conflict["witness_candidate"],
+                "runs": [{"run_id": "paired-" + str(number), "seeds": [41 + number], "repetitions": 1}
+                         for number in range(runs)],
+                "decision_rule": "Compare all prespecified pairs and preserve the raw scores."}
+        path = self.workspace / "frozen-repeat-plan.json"
+        path.write_text(json.dumps(plan))
+        return driver.archive_tools.record_measurement_plan(driver.archive_tools.parser().parse_args([
+            "measure-plan", "--archive", str(self.archive), "--plan", str(path)]))
 
     def seed_pending_proposals(self, count: int = 7) -> list[dict]:
         parent = self.seed_open_branches(0)[0]
@@ -308,7 +483,58 @@ class AutonomousCampaignTests(unittest.TestCase):
                 "propose", "--archive", str(self.archive), "--proposal", str(path)])))
         return proposals
 
-    def seed_review_attempt(self, number: int, *, failed: bool) -> dict:
+    def seed_completed_trials(self) -> dict[str, dict]:
+        """Complete real proposals with one best-related branch and four old branches."""
+        best = self.seed_open_branches(0)[0]
+        runs = self.workspace / "completed-trials"
+        runs.mkdir()
+
+        def record(name: str, value: int, *, parent: str | None = None,
+                   proposal_id: str | None = None) -> dict:
+            source = runs / (name + ".py")
+            source.write_text("print(" + str(value) + ")\n")
+            measured = subprocess.run([PYTHON, str(source)], capture_output=True, text=True, check=True)
+            result = runs / (name + ".json")
+            result.write_text(json.dumps({
+                "status": "success", "valid": True, "candidate_hash": runtime.file_hash(source),
+                "evaluator_hash": "synthetic-evaluator-v1", "workload_hash": "synthetic-workload-v1",
+                "score_model_hash": "synthetic-score-model-v1", "stage": "development",
+                "elapsed_seconds": 0.01,
+                "score": {"kind": "proxy", "metric": "synthetic-output", "direction": "maximize",
+                          "value": int(measured.stdout)}}))
+            arguments = ["record", "--archive", str(self.archive), "--candidate-id", name,
+                         "--source", str(source), "--result", str(result), "--route", "trial-history",
+                         "--mechanism", "executed completed proposal fixture", "--status", "runner_up",
+                         "--feedback", "Self-reported historical feedback for " + name]
+            if parent:
+                arguments += ["--parent", parent]
+            if proposal_id:
+                arguments += ["--proposal-id", proposal_id, "--prediction-status", "contradicted"]
+            return driver.archive_tools.record_candidate(driver.archive_tools.parser().parse_args(arguments))
+
+        completed = {}
+        for number in range(5):
+            related = number == 4
+            proposal_id = "trial-related" if related else "trial-global-" + str(number)
+            parent = best if related else record("trial-parent-" + str(number), 100 + number)
+            value = {"proposal_id": proposal_id, "parent_ids": [parent["candidate_id"]],
+                     "feedback_from": [parent["candidate_id"]], "route": "trial-history",
+                     "code_targets": [parent["artifact_paths"]["source"]],
+                     "basis": "A previous implementation and its actual matching result",
+                     "change": "Historical structural change for " + proposal_id,
+                     "expected_observation": "Expected distinct observation for " + proposal_id,
+                     "validation": "Execute unchanged development adapter contract",
+                     "stop_condition": "Review observed behavior before repeating this exact proposal"}
+            path = runs / (proposal_id + "-input.json")
+            path.write_text(json.dumps(value))
+            proposal = driver.archive_tools.propose_candidate(driver.archive_tools.parser().parse_args([
+                "propose", "--archive", str(self.archive), "--proposal", str(path)]))
+            outcome = record("trial-outcome-" + str(number), 900 if related else 200 + number,
+                             parent=parent["candidate_id"], proposal_id=proposal_id)
+            completed[proposal_id] = {"proposal": proposal, "outcome": outcome}
+        return completed
+
+    def seed_review_attempt(self, number: int, *, failed: bool, role: str = "development") -> dict:
         runs = self.workspace / "seed-runs"
         name = "seed-review-" + str(number)
         source = runs / (name + ".py")
@@ -330,7 +556,7 @@ class AutonomousCampaignTests(unittest.TestCase):
         return driver.archive_tools.record_candidate(driver.archive_tools.parser().parse_args([
             "record", "--archive", str(self.archive), "--candidate-id", name,
             "--source", str(source), "--result", str(path), "--parent", "seed-best",
-            "--route", "review", "--mechanism", "executed review checkpoint fixture",
+            "--route", "review", "--role", role, "--mechanism", "executed review checkpoint fixture",
             "--status", "rejected" if failed else "runner_up"]))
 
     def seed_isolated_comparisons_with_failed_tail(self) -> None:
@@ -623,6 +849,278 @@ class AutonomousCampaignTests(unittest.TestCase):
     def test_pending_invalid_receipt_does_not_consume_delivery(self) -> None:
         self.assert_unaccepted_pending_delivery_retries("invalid_receipt")
 
+    def test_completed_trials_keep_related_context_and_rotate_old_experiments_across_resume(self) -> None:
+        completed = self.seed_completed_trials()
+        prefix = self.archive.read_bytes()
+        result = self.start("--max-turns", "2", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "4")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        contexts = [self.turn_context(number) for number in range(1, 5)]
+        selections = [context["trial_history"]["selection"] for context in contexts]
+        self.assertEqual([[item["proposal_id"] for item in selection] for selection in selections], [
+            ["trial-related", "trial-global-" + str(number)] for number in range(4)])
+        for turn, (context, selection) in enumerate(zip(contexts, selections), 1):
+            history = context["trial_history"]
+            self.assertEqual((history["available"], history["omitted"]), (5, 3))
+            context_path = runtime.turn_directory(self.campaign, turn) / "context.json"
+            self.assertIn(context_path.read_text().strip(), self.calls()[turn - 1]["prompt"])
+            request = json.loads(context_path.with_name("request.json").read_text())
+            self.assertEqual(runtime.file_hash(context_path), request["context_sha256"])
+            self.assertLessEqual(context_path.stat().st_size, 48 * 1024)
+            self.assertEqual(context["development_brief"]["pending_proposals"], [])
+            for item in selection:
+                original = completed[item["proposal_id"]]
+                self.assertEqual(item["input_sha256"], original["proposal"]["input_sha256"])
+                self.assertEqual(item["change"], original["proposal"]["change"])
+                self.assertEqual(item["expected_observation"], original["proposal"]["expected_observation"])
+                self.assertEqual(item["candidate_id"], original["outcome"]["candidate_id"])
+                self.assertIn(original["outcome"]["feedback"], json.dumps(item, ensure_ascii=False))
+                self.assertRegex(item["retrieval_sha256"], r"^[0-9a-f]{64}$")
+                self.assertIn(item["retrieval_sha256"], self.calls()[turn - 1]["prompt"])
+                self.assertIn(item["change"], self.calls()[turn - 1]["prompt"])
+                self.assertIn(item["expected_observation"], self.calls()[turn - 1]["prompt"])
+                for card in item["evidence"].values():
+                    self.assertEqual(runtime.file_hash(Path(card["result"]["result_path"])),
+                                     card["result"]["result_sha256"])
+                    self.assertEqual(driver.archive_tools.hash_path(Path(card["artifact_paths"]["source"])),
+                                     card["implementation"]["artifacts"]["source"])
+                    self.assertEqual(card["identity_checks"], {
+                        "result_bytes": "checked", "snapshot_bytes": "checked"})
+            self.assertEqual(selection[0]["retrieval_reason"], "recent_related")
+            self.assertEqual(selection[1]["retrieval_reason"], "least_recently_exposed")
+            self.assertEqual(selection[0]["last_exposed_turn"], turn - 1 if turn > 1 else None)
+            self.assertIsNone(selection[1]["last_exposed_turn"])
+        comparison = contexts[0]["trial_history"]["comparison_key"]
+        self.assertEqual(self.state()["trial_exposures"], {comparison: {
+            "trial-related": 4, **{"trial-global-" + str(number): number + 1 for number in range(4)}}})
+        self.assertTrue(self.archive.read_bytes().startswith(prefix))
+        trace = driver.archive_tools.trace_report(driver.archive_tools.parser().parse_args([
+            "trace", "--archive", str(self.archive), "--all"]))
+        self.assertEqual(trace["pending_proposals"], [])
+        self.assertEqual([row["state"] for row in trace["iterations"]], ["evaluated_valid"] * 5)
+
+    def test_completed_trial_exposure_waits_for_success_after_429_and_invalid_receipt(self) -> None:
+        self.seed_completed_trials()
+        self.environment["FAKE_SCENARIO"] = "trial_failures"
+        for number in range(1, 4):
+            result = self.start("--max-turns", "1", "--session-checkpoints", "0") if number == 1 else self.call(
+                "resume", "--campaign", str(self.campaign), "--max-turns", str(number))
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            if number < 3:
+                self.assertEqual(self.state()["trial_exposures"], {})
+                self.assertEqual(self.state()["session_turns"], 0)
+        selections = [self.turn_context(number)["trial_history"]["selection"] for number in (1, 2, 3)]
+        self.assertEqual(selections[1], selections[0])
+        self.assertEqual(selections[2], selections[0])
+        comparison = self.turn_context(3)["trial_history"]["comparison_key"]
+        self.assertEqual(self.state()["trial_exposures"], {comparison: {"trial-related": 3, "trial-global-0": 3}})
+        self.assertEqual(len([event for event in self.events() if event["event"] == "turn_interrupted"]), 2)
+        self.assertEqual(len([event for event in self.events() if event["event"] == "turn_completed"]), 1)
+
+    def test_completed_trial_delivery_defaults_old_state_and_accepts_old_inflight_request(self) -> None:
+        self.seed_completed_trials()
+        args = driver.parser().parse_args(self.start_args("--max-turns", "1", "--session-checkpoints", "0"))
+        driver.new_campaign(args)
+        legacy = self.state()
+        legacy.pop("trial_exposures")
+        runtime.atomic_json(self.campaign / "state.json", legacy)
+        state = driver.read_state(self.campaign)
+        self.assertEqual(state["trial_exposures"], {})
+        driver.prepare_turn(self.campaign, state)
+        turn = state["inflight"]
+        comparison = turn["context"]["trial_history"]["comparison_key"]
+        self.assertEqual(turn["trial_exposure"], {
+            "comparison_key": comparison, "proposals": ["trial-related", "trial-global-0"]})
+        self.assertEqual(self.state()["trial_exposures"], {})
+        # An old durable request has no exposure intent, so accepting its
+        # successful receipt cannot manufacture a past delivery checkpoint.
+        turn.pop("trial_exposure")
+        driver.save_state(self.campaign, state)
+        directory = driver.materialize_request(self.campaign, turn)
+        original = (directory / "context.json").read_bytes()
+        (directory / "context.json").unlink()
+        driver.materialize_request(self.campaign, driver.read_state(self.campaign)["inflight"])
+        self.assertEqual((directory / "context.json").read_bytes(), original)
+        self.assertEqual(self.state()["trial_exposures"], {})
+        result = self.call("resume", "--campaign", str(self.campaign))
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(self.state()["trial_exposures"], {})
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(self.turn_context(1)["trial_history"]["selection"],
+                         self.turn_context(2)["trial_history"]["selection"])
+        self.assertEqual(self.state()["trial_exposures"], {
+            comparison: {"trial-related": 2, "trial-global-0": 2}})
+
+    def test_four_low_score_diagnostic_ablations_do_not_consume_candidate_stagnation(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "diagnostic_ablations"
+        result = self.start("--max-turns", "6", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prepared = [event for event in self.events() if event["event"] == "turn_prepared"]
+        self.assertEqual([event["mode"] for event in prepared], ["work"] * 6)
+        self.assertNotIn("objective_stagnation", [event["context_refresh_reason"] for event in prepared])
+        context = self.turn_context(6)
+        self.assertEqual(context["objective_progress"]["anchor_candidate"], "candidate-1")
+        self.assertEqual(context["objective_progress"]["best_value"], 8)
+        self.assertEqual(context["objective_progress"]["comparable_implementations"], 1)
+        self.assertEqual(context["objective_progress"]["implementations_since_best"], 0)
+        self.assertFalse(context["execution_health"]["needs_attention"])
+        self.assertEqual(context["execution_health"]["execution_attempts"], 5)
+        self.assertEqual(context["comparison_continuity"]["distinct_observations"], 1)
+        brief = context["development_brief"]
+        diagnostics = brief["diagnostic_evidence"]
+        self.assertEqual((diagnostics["available"], diagnostics["omitted"]), (4, 2))
+        self.assertEqual(len(diagnostics["selection"]), 2)
+        self.assertTrue(set(diagnostics["selection"]) <= {"candidate-" + str(number) for number in range(2, 6)})
+        for candidate_id in diagnostics["selection"]:
+            card = brief["candidates"][candidate_id]
+            self.assertEqual(card["role"], "diagnostic")
+            self.assertEqual(card["objective"]["value"], 7)
+            self.assertIsNone(card.get("objective_gain_vs_best"))
+            self.assertIn("Diagnostic feature contribution", card["feedback"])
+            self.assertEqual(runtime.file_hash(Path(card["result"]["result_path"])), card["result"]["result_sha256"])
+            source = Path(card["artifact_paths"]["source"])
+            self.assertEqual(driver.archive_tools.hash_path(source), card["implementation"]["artifacts"]["source"])
+            self.assertIn("predictions=[int(any(row[i] for i in enabled))", source.read_text())
+            self.assertIn(card["feedback"], self.calls()[5]["prompt"])
+            self.assertIn(str(source), self.calls()[5]["prompt"])
+        sealed = runtime.turn_directory(self.campaign, 6) / "context.json"
+        self.assertIn(sealed.read_text().strip(), self.calls()[5]["prompt"])
+        self.assertLessEqual(sealed.stat().st_size, 48 * 1024)
+        state = self.state()
+        self.assertEqual(state["progress"]["diagnostic_evaluations"], 4)
+        self.assertEqual(state["progress"]["executed_implementations"], 6)
+        self.assertEqual(state["objective_progress"]["comparable_implementations"], 2)
+        self.assertEqual(state["objective_progress"]["implementations_since_best"], 1)
+
+    def test_failed_diagnostic_takes_priority_over_existing_candidate_stagnation(self) -> None:
+        self.seed_open_branches(0)
+        for number in range(4):
+            self.seed_review_attempt(number, failed=False)
+        failed = self.seed_review_attempt(99, failed=True, role="diagnostic")
+        self.environment["FAKE_SCENARIO"] = "no_progress"
+        result = self.start("--max-turns", "1", "--session-checkpoints", "1")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        first = json.loads((runtime.turn_directory(self.campaign, 1) / "request.json").read_text())
+        self.assertEqual((first["mode"], first["context_refresh_reason"]), ("repair", "initial"))
+        self.assertTrue(first["context"]["execution_health"]["needs_attention"])
+        self.assertEqual(first["context"]["execution_recovery"]["target"]["candidate_id"], failed["candidate_id"])
+        self.assertEqual(first["context"]["objective_progress"]["implementations_since_best"], 4)
+        self.assertEqual(first["review_checkpoints"], {})
+        self.assertEqual(self.state()["next_mode"], "repair")
+        self.assertEqual(self.state()["strategy_review_checkpoints"], {})
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        second = json.loads((runtime.turn_directory(self.campaign, 2) / "request.json").read_text())
+        self.assertEqual((second["mode"], second["fresh_context"], second["context_refresh_reason"]),
+                         ("repair", True, "scheduled_rotation"))
+        self.assertEqual(second["review_checkpoints"], {})
+        self.assertEqual(self.state()["next_mode"], "repair")
+        self.assertEqual(self.state()["strategy_review_checkpoints"], {})
+        self.assertIn("candidate_execution", self.calls()[1]["prompt"])
+        self.assertNotIn("fresh-context strategy review", self.calls()[1]["prompt"])
+
+    def test_idle_repair_keeps_fresh_reviews_with_periodic_rotation_disabled(self) -> None:
+        self.seed_open_branches(0)
+        self.seed_review_attempt(99, failed=True, role="diagnostic")
+        self.environment["FAKE_SCENARIO"] = "no_progress"
+        result = self.start("--max-turns", "5", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prepared = [event for event in self.events() if event["event"] == "turn_prepared"]
+        self.assertEqual([event["mode"] for event in prepared], ["repair"] * 5)
+        self.assertEqual([event["turn"] for event in prepared if event["fresh_context"]], [1, 3, 5])
+        self.assertEqual([call["number"] for call in self.calls() if "resume" not in call["argv"]], [1, 3, 5])
+        self.assertEqual(self.state()["turns_without_implementation"], 5)
+        self.assertEqual(self.state()["next_mode"], "repair")
+        self.assertTrue(self.state()["execution_health"]["needs_attention"])
+        self.assertEqual(self.state()["strategy_review_checkpoints"], {})
+        self.assertIsNone(self.state()["execution_review_checkpoint"])
+        self.assertNotIn("scheduled_rotation", [event["context_refresh_reason"] for event in prepared])
+
+    def test_new_failed_diagnostic_defers_strategy_review_until_repair_succeeds(self) -> None:
+        self.seed_open_branches(0)
+        for number in range(3):
+            self.seed_review_attempt(number, failed=False)
+        self.environment["FAKE_SCENARIO"] = "diagnostic_on_stagnation"
+        result = self.start("--max-turns", "1", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertTrue(self.state()["execution_health"]["needs_attention"])
+        self.assertEqual(self.state()["objective_progress"]["implementations_since_best"], 4)
+        self.assertEqual(self.state()["next_mode"], "repair")
+        self.assertEqual(self.state()["strategy_review_checkpoints"], {})
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        repair = json.loads((runtime.turn_directory(self.campaign, 2) / "request.json").read_text())
+        self.assertEqual(repair["mode"], "repair")
+        self.assertNotIn("strategy", repair["review_checkpoints"])
+        self.assertEqual(repair["context"]["execution_recovery"]["target"]["candidate_id"], "stagnation-diagnostic")
+        self.assertFalse(self.state()["execution_health"]["needs_attention"])
+        self.assertEqual(self.state()["strategy_review_checkpoints"], {})
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "3")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        third = json.loads((runtime.turn_directory(self.campaign, 3) / "request.json").read_text())
+        self.assertEqual((third["mode"], third["fresh_context"], third["context_refresh_reason"]),
+                         ("rethink", True, "objective_stagnation"))
+        self.assertIsNone(third["context"]["execution_recovery"])
+        self.assertEqual(third["review_checkpoints"]["strategy"]["comparable_implementations"], 6)
+        self.assertEqual(len(self.state()["strategy_review_checkpoints"]), 1)
+        self.assertEqual(self.state()["objective_progress"]["best_candidate"], "seed-best")
+
+    def test_failed_diagnostic_enters_repair_while_real_candidate_regressions_still_trigger_review(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "diagnostic_failure"
+        result = self.start("--max-turns", "7", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prepared = [event for event in self.events() if event["event"] == "turn_prepared"]
+        self.assertEqual([event["mode"] for event in prepared],
+                         ["work", "work", "repair", "work", "work", "work", "rethink"])
+        self.assertEqual([event["turn"] for event in prepared
+                          if event["context_refresh_reason"] == "objective_stagnation"], [7])
+        repair = self.turn_context(3)
+        self.assertTrue(repair["execution_health"]["needs_attention"])
+        self.assertEqual(repair["objective_progress"]["anchor_candidate"], "candidate-1")
+        self.assertEqual(repair["objective_progress"]["comparable_implementations"], 1)
+        target = repair["execution_recovery"]["target"]
+        self.assertEqual(target["candidate_id"], "candidate-2")
+        self.assertEqual(target["diagnostic"]["error"]["phase"], "candidate_execution")
+        self.assertIn("candidate failed 2", target["diagnostic"]["error"]["message"])
+        self.assertEqual(runtime.file_hash(Path(target["result_path"])), target["result_sha256"])
+        self.assertEqual(driver.archive_tools.hash_path(Path(target["artifact_paths"]["source"])),
+                         target["implementation"]["artifacts"]["source"])
+        self.assertIn("candidate failed 2", self.calls()[2]["prompt"])
+        review = self.turn_context(7)
+        self.assertEqual(review["objective_progress"]["comparable_implementations"], 5)
+        self.assertEqual(review["objective_progress"]["implementations_since_best"], 4)
+        self.assertFalse(review["execution_health"]["needs_attention"])
+        self.assertEqual(self.state()["progress"]["diagnostic_evaluations"], 1)
+
+    def test_diagnostics_skip_automatic_completion_but_candidates_and_explicit_requests_still_check(self) -> None:
+        self.seed_open_branches(0)
+        checker = self.workspace / "diagnostic-completion-check.py"
+        checker.write_text(
+            "import argparse,json,pathlib\n"
+            "p=argparse.ArgumentParser(); p.add_argument('--workspace'); p.add_argument('--archive'); a=p.parse_args()\n"
+            "path=pathlib.Path(a.workspace)/'completion-invocations.jsonl'\n"
+            "with path.open('a') as f: f.write(json.dumps({'archive':a.archive})+'\\n')\n"
+            "print(json.dumps({'complete':False,'reason':'fixture requests more work','evidence':[a.archive]}))\n")
+        invocations = self.workspace / "completion-invocations.jsonl"
+        self.environment["FAKE_SCENARIO"] = "diagnostic_only"
+        result = self.start("--max-turns", "2", "--session-checkpoints", "0", "--completion-check", str(checker))
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertFalse(invocations.exists())
+        self.assertEqual(self.state()["progress"]["diagnostic_evaluations"], 2)
+        self.environment["FAKE_SCENARIO"] = ""
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "3")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(len(invocations.read_text().splitlines()), 1)
+        self.environment["FAKE_SCENARIO"] = "diagnostic_claim_complete"
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "4")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(len(invocations.read_text().splitlines()), 2)
+        self.assertEqual(self.state()["last_agent_status"], "complete")
+        self.assertEqual(self.state()["progress"]["diagnostic_evaluations"], 3)
+        self.assertEqual(self.state()["status"], "limit_reached")
+
     def test_failed_cli_cannot_consume_an_execution_review_before_successful_receipt(self) -> None:
         self.seed_open_branches(0)
         for number in range(3):
@@ -700,6 +1198,343 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertEqual(self.state()["comparison_review_checkpoint"], {"distinct_observations": 4})
         self.assertEqual(self.state()["progress"]["executed_implementations"], 6)
         self.assertEqual(self.state()["turns_without_implementation"], 0)
+
+    def test_repeat_conflict_review_remains_due_without_an_archived_plan(self) -> None:
+        self.seed_repeat_conflict()
+        self.environment["FAKE_SCENARIO"] = "no_progress"
+        result = self.start("--max-turns", "1", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        request = json.loads((runtime.turn_directory(self.campaign, 1) / "request.json").read_text())
+        self.assertEqual((request["mode"], request["context_refresh_reason"]),
+                         ("measure", "repeat_disagreement"))
+        context = self.turn_context(1)
+        self.assertTrue(search.delivered_repeat_conflict(context))
+        self.assertEqual(context["objective_progress"]["best_candidate"], "leader-first")
+        self.assertEqual(context["repeat_conflict"]["witness_candidate"], "leader-repeat")
+        self.assertEqual(request["review_checkpoints"]["repeat"]["signature"],
+                         context["repeat_conflict"]["signature"])
+        self.assertIn("repeatability review", self.calls()[0]["prompt"])
+        self.assertEqual(self.state()["repeat_review_checkpoints"], {})
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        second = json.loads((runtime.turn_directory(self.campaign, 2) / "request.json").read_text())
+        self.assertEqual(second["context_refresh_reason"], "repeat_disagreement")
+        self.assertIn("repeat", second["review_checkpoints"])
+
+    def test_interrupted_repeat_review_does_not_consume_its_checkpoint(self) -> None:
+        self.seed_repeat_conflict()
+        self.environment["FAKE_SCENARIO"] = "review_once_429"
+        result = self.start("--max-turns", "1", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(self.state()["repeat_review_checkpoints"], {})
+        self.environment["FAKE_SCENARIO"] = "repeat_plan"
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        second = json.loads((runtime.turn_directory(self.campaign, 2) / "request.json").read_text())
+        self.assertEqual((second["mode"], second["context_refresh_reason"]),
+                         ("measure", "repeat_disagreement"))
+        self.assertIn("repeat", second["review_checkpoints"])
+        self.assertEqual(self.state()["repeat_review_checkpoints"], {
+            second["review_checkpoints"]["repeat"]["comparison_key"]:
+                second["review_checkpoints"]["repeat"]["signature"]})
+        self.assertEqual(driver.archive_tools.read_records(self.archive)[-1]["event"], "measurement_plan")
+
+    def test_frozen_repeat_plan_survives_turns_and_closes_only_after_both_slots(self) -> None:
+        self.seed_repeat_conflict()
+        self.environment["FAKE_SCENARIO"] = "repeat_plan"
+        result = self.start("--max-turns", "1", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(records[-1]["event"], "measurement_plan")
+        plan = records[-1]
+        self.assertFalse(driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)["complete"])
+        self.assertEqual(self.state()["repeat_review_checkpoints"][
+            self.turn_context(1)["repeat_conflict"]["comparison_key"]], plan["conflict_signature"])
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        second = json.loads((runtime.turn_directory(self.campaign, 2) / "request.json").read_text())
+        self.assertEqual(second["mode"], "measure")
+        self.assertEqual(second["context"]["measurement_plan"]["plan_id"], "paired-repeat")
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertFalse(driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)["complete"])
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "3")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        records = driver.archive_tools.read_records(self.archive)
+        paired = driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)
+        self.assertTrue(paired["complete"])
+        self.assertEqual((paired["runs"][0]["leader"]["value"], paired["runs"][0]["challenger"]["value"]),
+                         (55, 65))
+        self.assertEqual(self.state()["objective_progress"]["best_candidate"], "leader-first")
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "4")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        fourth = json.loads((runtime.turn_directory(self.campaign, 4) / "request.json").read_text())
+        self.assertEqual(fourth["mode"], "measure")
+        self.assertTrue(fourth["context"]["measurement_plan"]["pairs_complete"])
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(records[-1]["event"], "measurement_decision")
+        self.assertIsNone(driver.archive_tools.measurement_plans.first_pending(records, driver.archive_tools))
+        self.assertEqual(self.state()["next_action"], records[-1]["next_action"])
+        self.environment["FAKE_SCENARIO"] = "no_progress"
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "5")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        fifth = json.loads((runtime.turn_directory(self.campaign, 5) / "request.json").read_text())
+        self.assertNotEqual(fifth["context_refresh_reason"], "repeat_disagreement")
+        self.assertNotEqual(fourth["context_refresh_reason"], "repeat_disagreement")
+        self.assertIsNone(fifth["context"]["measurement_plan"])
+        carried = fifth["context"]["measurement_decision"]
+        self.assertEqual(carried["plan_id"], "paired-repeat")
+        self.assertEqual(carried["evidence_sha256"], records[-1]["evidence_sha256"])
+        self.assertEqual(carried["conclusion"], records[-1]["conclusion"])
+        self.assertTrue(carried["comparison_matches_active"])
+        self.assertEqual(fifth["context"]["objective_progress"]["best_candidate"], "leader-first")
+        self.assertEqual(self.state()["next_action"], "execute the next mechanism")
+
+    def test_frozen_plan_rotates_contexts_across_resume_without_losing_slots(self) -> None:
+        self.seed_repeat_conflict()
+        plan = self.freeze_repeat_plan()
+        self.environment["FAKE_SCENARIO"] = "repeat_plan"
+        result = self.start("--max-turns", "3", "--session-checkpoints", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        records = driver.archive_tools.read_records(self.archive)
+        view = driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)
+        self.assertEqual(len(view["attempts"]), 3)
+        self.assertFalse(view["complete"])
+        self.assertEqual(self.state()["session_turns"], 1)
+        prefix = self.archive.read_bytes()
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "7")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prepared = [event for event in self.events() if event["event"] == "turn_prepared"]
+        self.assertEqual([event["mode"] for event in prepared], ["measure"] * 7)
+        self.assertEqual([event["turn"] for event in prepared if event["fresh_context"]], [1, 3, 5, 7])
+        self.assertEqual([event["context_refresh_reason"] for event in prepared if event["fresh_context"]],
+                         ["initial", "scheduled_rotation", "scheduled_rotation", "scheduled_rotation"])
+        self.assertEqual([call["number"] for call in self.calls() if "resume" not in call["argv"]], [1, 3, 5, 7])
+        self.assertTrue(self.archive.read_bytes().startswith(prefix))
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(sum(entry["event"] == "measurement_plan" for entry in records), 1)
+        view = driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)
+        self.assertTrue(view["complete"])
+        self.assertEqual(view["state"], "decided")
+        self.assertEqual(len(view["attempts"]), 6)
+        self.assertEqual(len({(entry["run_id"], entry["implementation"]) for entry in view["attempts"]}), 6)
+        self.assertTrue(self.turn_context(7)["measurement_plan"]["pairs_complete"])
+        self.assertEqual(self.state()["objective_progress"]["best_candidate"], "leader-first")
+
+    def test_frozen_plan_defers_candidate_review_without_repeated_session_recovery(self) -> None:
+        self.seed_repeat_conflict()
+        plan = self.freeze_repeat_plan()
+        self.seed_open_branches(0)
+        for number in range(4):
+            self.seed_review_attempt(number, failed=False)
+        self.environment["FAKE_SCENARIO"] = "repeat_plan"
+        result = self.start("--max-turns", "7", "--session-checkpoints", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prepared = [event for event in self.events() if event["event"] == "turn_prepared"]
+        self.assertEqual([event["mode"] for event in prepared], ["measure"] * 7)
+        self.assertEqual([event["turn"] for event in prepared if event["fresh_context"]], [1, 3, 5, 7])
+        self.assertEqual([event["context_refresh_reason"] for event in prepared if event["fresh_context"]],
+                         ["initial", "scheduled_rotation", "scheduled_rotation", "scheduled_rotation"])
+        self.assertEqual(self.state()["strategy_review_checkpoints"], {})
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)["state"],
+                         "decided")
+        self.environment["FAKE_SCENARIO"] = "no_progress"
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "8")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        eighth = json.loads((runtime.turn_directory(self.campaign, 8) / "request.json").read_text())
+        self.assertEqual((eighth["mode"], eighth["context_refresh_reason"]), ("rethink", "objective_stagnation"))
+        self.assertIsNone(eighth["context"]["measurement_plan"])
+        self.assertEqual(len(self.state()["strategy_review_checkpoints"]), 1)
+
+    def test_frozen_plan_can_disable_rotation_without_disabling_initial_context(self) -> None:
+        self.seed_repeat_conflict()
+        plan = self.freeze_repeat_plan()
+        self.environment["FAKE_SCENARIO"] = "repeat_plan"
+        result = self.start("--max-turns", "5", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prepared = [event for event in self.events() if event["event"] == "turn_prepared"]
+        self.assertEqual([event["mode"] for event in prepared], ["measure"] * 5)
+        self.assertEqual([event["context_refresh_reason"] for event in prepared if event["fresh_context"]], ["initial"])
+        self.assertEqual([call["number"] for call in self.calls() if "resume" not in call["argv"]], [1])
+        self.assertEqual(self.state()["session_turns"], 5)
+        view = driver.archive_tools.measurement_plans.status(
+            plan, driver.archive_tools.read_records(self.archive), driver.archive_tools)
+        self.assertEqual(len(view["attempts"]), 5)
+        self.assertFalse(view["complete"])
+
+    def test_frozen_plan_recovers_missing_session_without_replanning(self) -> None:
+        self.seed_repeat_conflict()
+        plan = self.freeze_repeat_plan()
+        self.environment["FAKE_SCENARIO"] = "repeat_plan"
+        result = self.start("--max-turns", "1", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = self.state()
+        state["session_id"] = None
+        runtime.atomic_json(self.campaign / "state.json", state)
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        request = json.loads((runtime.turn_directory(self.campaign, 2) / "request.json").read_text())
+        self.assertEqual((request["mode"], request["fresh_context"], request["context_refresh_reason"]),
+                         ("measure", True, "session_recovery"))
+        self.assertNotIn("resume", self.calls()[1]["argv"])
+        self.assertEqual(request["context"]["measurement_plan"]["plan_id"], plan["plan_id"])
+        self.assertEqual(request["context"]["measurement_plan"]["remaining_slots"], 5)
+        self.assertEqual(self.state()["session_turns"], 1)
+
+    def test_frozen_plan_rotation_counts_successful_checkpoints_after_cli_failure(self) -> None:
+        self.seed_repeat_conflict()
+        plan = self.freeze_repeat_plan()
+        self.environment["FAKE_SCENARIO"] = "repeat_plan_rotation_429"
+        result = self.start("--max-turns", "3", "--session-checkpoints", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(self.state()["session_turns"], 0)
+        self.assertTrue(self.state()["recovery_needed"])
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "6")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prepared = [event for event in self.events() if event["event"] == "turn_prepared"]
+        self.assertEqual([event["mode"] for event in prepared], ["measure"] * 6)
+        self.assertEqual([event["turn"] for event in prepared if event["fresh_context"]], [1, 3, 6])
+        self.assertEqual([call["number"] for call in self.calls() if "resume" not in call["argv"]], [1, 3, 6])
+        view = driver.archive_tools.measurement_plans.status(
+            plan, driver.archive_tools.read_records(self.archive), driver.archive_tools)
+        self.assertEqual(len(view["attempts"]), 5)
+        self.assertEqual(len({(entry["run_id"], entry["implementation"]) for entry in view["attempts"]}), 5)
+        self.assertFalse(self.state()["recovery_needed"])
+        self.assertEqual(self.state()["session_turns"], 1)
+
+    def test_failed_frozen_plan_stops_then_repairs_and_resumes_ordinary_work(self) -> None:
+        self.seed_repeat_conflict(seed_failure=True)
+        self.environment["FAKE_SCENARIO"] = "repeat_plan_stop"
+        result = self.start("--max-turns", "3", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        records = driver.archive_tools.read_records(self.archive)
+        plan = next(entry for entry in records if entry["event"] == "measurement_plan")
+        stopped = records[-1]
+        self.assertEqual(stopped["event"], "measurement_stop")
+        view = driver.archive_tools.measurement_plans.status(plan, records, driver.archive_tools)
+        self.assertEqual(view["state"], "stopped_unresolved")
+        self.assertFalse(view["complete"])
+        self.assertIsNone(view["decision"])
+        self.assertEqual(view["attempts"][0]["execution_status"], "failed")
+        self.assertEqual(self.state()["next_action"], stopped["next_action"])
+        self.assertTrue(self.state()["execution_health"]["needs_attention"])
+        self.assertEqual(self.state()["objective_progress"]["best_candidate"], "leader-first")
+        frozen_prefix = self.archive.read_bytes()
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "5")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        requests = [json.loads((runtime.turn_directory(self.campaign, number) / "request.json").read_text())
+                    for number in range(1, 6)]
+        self.assertEqual([item["mode"] for item in requests], ["measure", "measure", "repair", "repair", "work"])
+        carried = requests[3]["context"]["measurement_stop"]
+        self.assertEqual(carried["reason"], stopped["reason"])
+        self.assertEqual(carried["next_action"], stopped["next_action"])
+        self.assertEqual(carried["evidence_sha256"], stopped["evidence_sha256"])
+        self.assertEqual((carried["remaining_slots"], carried["attempts"], carried["failed_attempts"]), (2, 1, 1))
+        self.assertTrue(carried["comparison_matches_active"])
+        self.assertIsNone(requests[3]["context"]["measurement_plan"])
+        self.assertIn("measure-stop", self.calls()[2]["prompt"])
+        self.assertFalse(self.state()["execution_health"]["needs_attention"])
+        self.assertEqual(self.state()["objective_progress"]["best_candidate"], "leader-first")
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertIsNone(driver.archive_tools.measurement_plans.first_pending(records, driver.archive_tools))
+        self.assertEqual(sum(entry["event"] == "measurement_plan" for entry in records), 1)
+        self.assertEqual(sum(entry["event"] == "measurement_stop" for entry in records), 1)
+        self.assertNotIn("measurement_plan_id", driver.archive_tools.candidate_index(records)["candidate-4"]["result"])
+        self.assertTrue(self.archive.read_bytes().startswith(frozen_prefix))
+        self.environment["FAKE_SCENARIO"] = "no_progress"
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "6")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        sixth = json.loads((runtime.turn_directory(self.campaign, 6) / "request.json").read_text())
+        self.assertEqual(sixth["mode"], "work")
+        self.assertNotEqual(sixth["context_refresh_reason"], "repeat_disagreement")
+        self.assertEqual(sixth["context"]["measurement_stop"]["plan_id"], plan["plan_id"])
+        self.assertEqual(self.state()["next_action"], "execute the next mechanism")
+
+    def test_new_foreign_stop_does_not_override_current_receipt_action(self) -> None:
+        self.seed_repeat_conflict(seed_failure=True)
+        self.environment["FAKE_SCENARIO"] = "repeat_plan_stop_foreign"
+        result = self.start("--max-turns", "3", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        records = driver.archive_tools.read_records(self.archive)
+        stop = next(entry for entry in records if entry["event"] == "measurement_stop")
+        self.assertEqual(self.state()["objective_progress"]["anchor_candidate"], "candidate-3")
+        self.assertEqual(self.state()["next_action"], "execute the next mechanism")
+        self.assertNotEqual(self.state()["next_action"], stop["next_action"])
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "4")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        carried = self.turn_context(4)["measurement_stop"]
+        self.assertFalse(carried["comparison_matches_active"])
+        self.assertEqual(carried["evidence_sha256"], stop["evidence_sha256"])
+        self.assertIsNone(self.turn_context(4)["measurement_plan"])
+
+    def test_stop_appended_before_interruption_resumes_without_reopening_plan(self) -> None:
+        self.seed_repeat_conflict(seed_failure=True)
+        self.environment["FAKE_SCENARIO"] = "repeat_plan_stop_interrupt"
+        result = self.start("--max-turns", "3", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(records[-1]["event"], "measurement_stop")
+        self.assertTrue(self.state()["recovery_needed"])
+        self.assertTrue(self.state()["execution_health"]["needs_attention"])
+        self.environment["FAKE_SCENARIO"] = "repeat_plan_stop"
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "5")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        fourth = json.loads((runtime.turn_directory(self.campaign, 4) / "request.json").read_text())
+        self.assertEqual(fourth["mode"], "repair")
+        self.assertIsNone(fourth["context"]["measurement_plan"])
+        self.assertEqual(fourth["context"]["measurement_stop"]["state"], "stopped_unresolved")
+        self.assertEqual(self.turn_context(5)["execution_health"]["needs_attention"], False)
+        self.assertFalse(self.state()["recovery_needed"])
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(sum(entry["event"] == "measurement_plan" for entry in records), 1)
+        self.assertEqual(sum(entry["event"] == "measurement_stop" for entry in records), 1)
+
+    def test_decision_appended_before_interruption_exits_measure_without_acknowledging_delivery(self) -> None:
+        self.seed_repeat_conflict()
+        self.environment["FAKE_SCENARIO"] = "repeat_plan_decision_interrupt"
+        result = self.start("--max-turns", "3", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        before = self.state()
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "4")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = self.state()
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(records[-1]["event"], "measurement_decision")
+        self.assertIsNone(driver.archive_tools.measurement_plans.first_pending(records, driver.archive_tools))
+        self.assertTrue(state["recovery_needed"])
+        self.assertFalse(state["execution_health"]["needs_attention"])
+        self.assertEqual(state["next_mode"], "work")
+        self.assertEqual(state["session_turns"], before["session_turns"])
+        for key in ("frontier_exposures", "pending_proposal_exposures", "trial_exposures", "learning_exposures",
+                    "strategy_review_checkpoints", "repeat_review_checkpoints"):
+            self.assertEqual(state[key], before[key])
+        self.environment["FAKE_SCENARIO"] = "no_progress"
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "5")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        fifth = json.loads((runtime.turn_directory(self.campaign, 5) / "request.json").read_text())
+        self.assertEqual(fifth["mode"], "work")
+        self.assertIsNone(fifth["context"]["measurement_plan"])
+        self.assertEqual(fifth["context"]["measurement_decision"]["evidence_sha256"], records[-1]["evidence_sha256"])
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(sum(entry["event"] == "measurement_decision" for entry in records), 1)
+
+    def test_plan_appended_before_interruption_resumes_without_replanning(self) -> None:
+        self.seed_repeat_conflict()
+        self.environment["FAKE_SCENARIO"] = "repeat_plan_interrupt"
+        result = self.start("--max-turns", "1", "--session-checkpoints", "0")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(records[-1]["event"], "measurement_plan")
+        self.assertEqual(self.state()["repeat_review_checkpoints"], {})
+        self.environment["FAKE_SCENARIO"] = "repeat_plan"
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        second = json.loads((runtime.turn_directory(self.campaign, 2) / "request.json").read_text())
+        self.assertEqual(second["mode"], "measure")
+        self.assertEqual(second["context"]["measurement_plan"]["plan_id"], "paired-repeat")
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual(sum(entry["event"] == "measurement_plan" for entry in records), 1)
+        self.assertEqual(records[-1]["result"]["measurement_plan_id"], "paired-repeat")
 
     def test_comparison_review_429_retry_preserves_required_fresh_diagnosis(self) -> None:
         self.assert_failed_comparison_review_retries("comparison_retry_429")
@@ -902,7 +1737,7 @@ class AutonomousCampaignTests(unittest.TestCase):
 
     def test_prepared_frontier_exposure_requires_cards_surviving_packet_bounds(self) -> None:
         self.seed_open_branches(3)
-        handoff = driver.handoff_packet
+        handoff = search.handoff_packet
         cases = ("missing_root", "unchecked_root", "missing_feedback", "missing_successor",
                  "truncated_artifact_path", "truncated_implementation", "truncated_feedback_result",
                  "truncated_successor_result", "truncated_reuse_history", "truncated_feedback_text")
@@ -957,7 +1792,7 @@ class AutonomousCampaignTests(unittest.TestCase):
                         packet["truncated_fields"][prefix + field] = 1
                     return packet
 
-                with mock.patch.object(driver, "handoff_packet", side_effect=bounded_packet):
+                with mock.patch.object(search, "handoff_packet", side_effect=bounded_packet):
                     driver.prepare_turn(campaign, state)
                 selection = state["inflight"]["context"]["development_brief"]["review_frontier"]["selection"]
                 self.assertEqual(len(selection), 2)
@@ -968,7 +1803,7 @@ class AutonomousCampaignTests(unittest.TestCase):
 
     def test_prepared_pending_exposure_requires_complete_targets_and_reference_cards(self) -> None:
         self.seed_pending_proposals(1)
-        handoff = driver.handoff_packet
+        handoff = search.handoff_packet
         for case in ("missing_reference", "truncated_reference", "truncated_target", "unchecked_targets", "truncated_basis"):
             with self.subTest(case=case):
                 campaign = self.root / ("pending-bounded-" + case)
@@ -997,7 +1832,7 @@ class AutonomousCampaignTests(unittest.TestCase):
                         packet["truncated_fields"][field] = 1
                     return packet
 
-                with mock.patch.object(driver, "handoff_packet", side_effect=bounded_packet):
+                with mock.patch.object(search, "handoff_packet", side_effect=bounded_packet):
                     driver.prepare_turn(campaign, state)
                 self.assertEqual(state["inflight"]["pending_proposal_exposure"]["proposals"],
                                  ["p0"] if case == "truncated_basis" else [])

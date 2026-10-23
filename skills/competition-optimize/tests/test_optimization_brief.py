@@ -279,7 +279,7 @@ class OptimizationBriefTests(unittest.TestCase):
         self.assertEqual(set(value["candidates"]), {"failed"})
         self.assertEqual(set(value["pending_references"]), {"good"})
         recovered = value["pending_references"]["good"]
-        self.assertEqual(set(recovered), {"implementation", "artifact_paths", "result", "comparison_sha256",
+        self.assertEqual(set(recovered), {"role", "implementation", "artifact_paths", "result", "comparison_sha256",
                                           "requires_revalidation", "identity_checks", "scope"})
         self.assertEqual(recovered["implementation"], reference["implementation"])
         self.assertEqual(recovered["comparison_sha256"], archive.sha256(archive.canonical(reference["comparison"])))

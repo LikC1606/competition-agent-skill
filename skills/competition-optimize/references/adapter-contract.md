@@ -59,9 +59,41 @@ Each invocation should produce an immutable machine-readable result with informa
 
 When using the candidate archive, declare what `candidate_hash` identifies with `candidate_scope`: `prediction_csv` for the bundled prediction interface, `generated_artifact` for other produced outputs or weights, and a source scope such as `program_source` for directly evaluated code. Snapshot the complete executable recipe separately for produced artifacts, passed as `--configuration` to the archive. Include intended candidate arguments and feature/data dependencies; record measurement seeds under the declared repetition protocol. Produced bytes identify an execution artifact, while the recipe identifies the implementation. Source candidates use source plus configuration. The archive does not infer artifact meaning from extensions, recompute missing recipes or certify their provenance; other task-specific scopes keep their declared source/configuration identity until adapted.
 
+For a frozen repeatability plan, add `evaluation.measurement_plan_id` and `evaluation.measurement_run_id` to each actual result, alongside exactly matching `evaluation.seeds` and `evaluation.repetitions`. Keep those run-specific fields outside the implementation recipe. The archive checks them against a pre-existing `measurement_plan` event and the complete comparison before accepting the record. This binding proves the recorded plan/result order and declared metadata match; the task adapter still owns actual seed use, aggregation and scoring correctness.
+
 `score.kind` is `official_metric` (the specified formula), `proxy`, or `unknown`; `score.origin` is `local` or `platform`. A local evaluation using the official metric is still a local estimate, not a leaderboard result. `score.direction` is `maximize` or `minimize`. A proxy must name its formula and assumptions. An unknown score has a null value and explicit missing terms. For tasks with multiple test cases, report per-case scores and use the official aggregation rather than an unweighted average chosen by the adapter author.
 
 An adapter may use different field names during an initial pilot, but it must preserve these distinctions and hashes. A shared runner should normalize adapters only after more than one real adapter demonstrates a stable common contract.
+
+## Optional Case Profile
+
+An adapter may provide aligned development outcomes for finding useful construction references:
+
+```json
+"case_profile": {
+  "metric": "per-case-profit",
+  "direction": "maximize",
+  "cases": {"case-0": 97, "case-1": 78}
+}
+```
+
+Use stable nonempty string case IDs and finite numeric values, with an explicit metric and `maximize` or `minimize` direction. The profile can differ from the aggregate metric: squared errors, for example, accompany an RMSE score. It does not replace the score, evaluation contract, case-completion checks or validity evidence. The archive retains a compact descriptor and hashes; complete case values stay in the immutable result. Complementary retrieval additionally requires the same complete comparison and matching profile metric, direction and exact IDs. It uses ordinary executed development candidates only. These values guide the next construction, not promotion or a hypothetical combined score. See [retrieval semantics](iteration-trace.md#retrieve-complementary-case-evidence).
+
+## Optional Measured Resource Profile
+
+An adapter that actually measures candidate latency, memory, energy or another consumed resource may opt in to resource tradeoff retrieval:
+
+    "resource_profile": {
+      "metric": "latency",
+      "unit": "seconds",
+      "scope": "candidate_inference",
+      "protocol_sha256": "<SHA-256 of the fixed measurement protocol>",
+      "value": 0.012
+    }
+
+All five fields are required and no others are accepted. Metric, unit and scope are nonempty strings of at most 128 characters; protocol_sha256 is a lowercase SHA-256; value is a finite nonnegative number. This interface always minimizes consumed resource; throughput or another higher-is-better quantity is not a direct input. Preserve measurement code, workload, warmup/repetition/aggregation policy, environment and inclusions/exclusions in the hashed protocol and raw result. The hash identifies a declaration, not proof that the measurement is valid.
+
+The archive never infers this profile from elapsed_seconds, score components or an arbitrary --cost object. Evaluation elapsed time can include compilation, validation and orchestration; it is not automatically training, inference or algorithm latency. No profile means unknown in this view. Profiles are comparable only when metric, unit, scope, protocol hash and the complete ordinary development comparison match exactly; no implicit unit conversion occurs. Quality and resource must come from the same actual successful observation. The optional view leaves the scalar score and promotion protocol intact. See [retrieval semantics](iteration-trace.md#retrieve-measured-resource-tradeoffs).
 
 ## Comparability
 

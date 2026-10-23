@@ -133,6 +133,9 @@ def evaluate(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, An
         raise PredictionFailure("invalid_config", "Split ID and column names must be non-empty")
     if args.id_column in {args.target_column, args.prediction_column}:
         raise PredictionFailure("invalid_config", "ID and numeric value columns must differ")
+    include_case_profile = getattr(args, "case_profile", False)
+    if include_case_profile and args.metric == "roc_auc":
+        raise PredictionFailure("invalid_input", "ROC-AUC does not decompose into per-sample losses")
     truth_path = args.truth.expanduser().resolve(strict=True)
     prediction_path = args.predictions.expanduser().resolve(strict=True)
     if truth_path == prediction_path:
@@ -161,10 +164,31 @@ def evaluate(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, An
         "target_column": args.target_column, "prediction_column": args.prediction_column,
         "score_model": score_model,
     }
+    case_profile = None
+    if include_case_profile:
+        losses = {}
+        for key in sample_ids:
+            label, prediction = labels[key], predictions[key]
+            if args.metric == "rmse":
+                residual = label - prediction
+                loss = residual * residual
+            elif args.metric == "mae":
+                loss = abs(label - prediction)
+            else:
+                clipped = min(1 - args.log_loss_epsilon, max(args.log_loss_epsilon, prediction))
+                loss = -math.log(clipped) if label == 1 else -math.log1p(-clipped)
+            if not math.isfinite(loss):
+                raise PredictionFailure("invalid_score", "Case loss exceeds finite floating-point range")
+            losses[key] = loss
+        case_profile = {
+            "metric": {"rmse": "squared_error", "mae": "absolute_error",
+                       "binary_log_loss": "binary_log_loss"}[args.metric],
+            "direction": "minimize", "cases": losses,
+        }
     snapshot = output_dir / "predictions.csv"
     with snapshot.open("xb") as stream:
         stream.write(prediction_raw)
-    return {
+    result = {
         "schema_version": 1,
         "adapter": "prediction_csv",
         "status": "success", "valid": True,
@@ -186,6 +210,9 @@ def evaluate(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, An
         "inputs": {"truth": str(truth_path), "predictions": str(prediction_path)},
         "artifacts": [str(snapshot)], "error": None,
     }
+    if case_profile is not None:
+        result["case_profile"] = case_profile
+    return result
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -201,6 +228,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--score-kind", choices=["proxy", "official_metric"], default="proxy",
                         help="official_metric only after verifying this exact formula against the contest scorer")
     parser.add_argument("--log-loss-epsilon", type=float, default=1e-15)
+    parser.add_argument("--case-profile", action="store_true",
+                        help="include per-sample losses (RMSE uses squared error; unavailable for ROC-AUC)")
     parser.add_argument("--output-dir", required=True, type=pathlib.Path,
                         help="new directory under an existing parent; never overwrite prior runs")
     return parser
