@@ -1,5 +1,7 @@
 # 长周期驱动验证（2026-10-22）
 
+> 历史证据可访问性（2026-11-10）：本文引用的 `/home/lzh/competition-agent-validation/` 原始路径在当前环境不可访问。以下数字保留为历史记录，不视为本轮重新验证；原始链接不重写。当前验证见 [本轮实施记录](refactor-implementation-2026-11-10.md)。
+
 本轮验证的是持续执行、检查点交接、故障恢复、共同基准恢复、同口径收益信号、旧分支检索与跨上下文证据。实现入口为 [autonomous_campaign.py](../skills/competition-optimize/scripts/autonomous_campaign.py)，进程原语在 [campaign_runtime.py](../skills/competition-optimize/scripts/campaign_runtime.py)，搜索信号与交接包在 [campaign_search.py](../skills/competition-optimize/scripts/campaign_search.py)，已完成试验召回在 [campaign_trials.py](../skills/competition-optimize/scripts/campaign_trials.py)。启动及恢复命令见[使用说明](../skills/competition-optimize/references/unattended-campaign.md)。
 
 ## 候选规则与文件核验直接依赖（2026-10-23）

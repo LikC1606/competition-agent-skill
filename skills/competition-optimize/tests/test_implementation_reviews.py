@@ -12,6 +12,7 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+from handoff_fixtures import bounded_packet
 archive = importlib.import_module("candidate_archive")
 trials = importlib.import_module("campaign_trials")
 search = importlib.import_module("campaign_search")
@@ -240,9 +241,7 @@ class ImplementationReviewTests(unittest.TestCase):
         self.propose("bounded")
         self.record("bounded-child", proposal="bounded", review=self.review())
         packet = {"archive_path": str(self.path), "trial_history": self.history()}
-        omissions = {}
-        bounded = search._bounded(packet, 240, 2, omissions)
-        bounded["truncated_fields"] = omissions
+        bounded = bounded_packet(packet)
         self.assertEqual(trials.delivered_trials(bounded), ["bounded"])
         for field, value in (("fidelity", "no"), ("implementation_fingerprint", "0" * 64)):
             changed = copy.deepcopy(bounded)
@@ -251,9 +250,9 @@ class ImplementationReviewTests(unittest.TestCase):
                 self.assertEqual(trials.delivered_trials(changed), [])
         self.assertTrue(self.path.read_bytes().startswith(legacy))
         self.propose("long-review")
-        self.record("long-child", proposal="long-review", review=self.review(detail="Observed source mechanism " * 200))
+        self.record("long-child", proposal="long-review", review=self.review(detail="Observed source mechanism " * 4000))
         packet = {"archive_path": str(self.path), "trial_history": self.history()}
-        bounded = search._bounded(packet, 240, 2, {})
+        bounded = bounded_packet(packet)
         self.assertEqual(trials.delivered_trials(bounded), ["bounded"])
 
 

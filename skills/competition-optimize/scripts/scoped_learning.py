@@ -158,7 +158,8 @@ def retrieve(candidates: dict[str, dict[str, Any]], comparison: dict[str, Any],
             row.update(retrieval_reason=reason, last_exposed_turn=seen.get(entry["candidate_id"]))
             if archive_path is not None:
                 row["retrieval_sha256"] = sha256(canonical(
-                    _retrieval_identity(str(archive_path.expanduser().resolve()), comparison_key, row)))
+                    _retrieval_identity(reads.archive_name(archive_path) if reads is not None else
+                                        str(archive_path.expanduser().resolve()), comparison_key, row)))
         selection.append(row)
     result = {"available": len(heads), "omitted": len(heads) - len(selection), "selection": selection,
             "scope": "Current conditional agent reports under this complete development comparison; related implementations then recent revisions. "

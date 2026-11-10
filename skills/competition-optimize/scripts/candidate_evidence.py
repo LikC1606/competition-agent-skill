@@ -240,3 +240,101 @@ class ComparisonEvidence:
     def first_observations(self) -> tuple[tuple[bytes, str, dict[str, Any]], ...]:
         """One observed implementation per complete comparison, in archive order."""
         return tuple(self._first)
+
+
+def construction_mode(value: dict[str, Any]) -> str:
+    if not isinstance(value, dict):
+        raise ArchiveFailure("invalid_proposal", "Construction metadata must be an object")
+    mode = value.get("construction_mode", "refinement")
+    if mode not in ("refinement", "independent"):
+        raise ArchiveFailure("invalid_proposal", "construction_mode must be refinement or independent")
+    return mode
+
+
+def review_opportunities(scoped: list[dict[str, Any]], index: dict[str, dict[str, Any]],
+                          rankable: Callable[[dict[str, Any]], bool] | None = None, *,
+                          include_manual: bool = False) -> tuple[
+                              dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Replay open implementation opportunities and their actual successors.
+
+    Opportunity declarations and runs stay separate: a repeat can add useful
+    feedback, but neither another route name nor a lucky score creates a node.
+    """
+    scoped = [entry for entry in scoped if entry["role"] == "development"]
+    identities = {entry["candidate_id"]: implementation_identity(entry) for entry in scoped}
+    observed = {entry["candidate_id"] for entry in scoped
+                if observed_snapshot(entry, identities[entry["candidate_id"]])
+                and (rankable is None or rankable(entry))}
+    # The legacy advisory decide command accepts manually scored declarations.
+    # They can open a reported opportunity, but only an observed execution can
+    # close one. The brief defaults to actual observed declarations throughout.
+    declarations = observed | ({entry["candidate_id"] for entry in scoped
+                                 if measurable(entry) and identities[entry["candidate_id"]]["scope"] not in OUTPUT_ONLY_SCOPES}
+                                if include_manual else set())
+    representatives: dict[str, dict[str, Any]] = {}
+    opportunities: dict[str, dict[str, Any]] = {}
+    for position, entry in enumerate(scoped):
+        if entry["candidate_id"] not in declarations:
+            continue
+        fingerprint = identities[entry["candidate_id"]]["fingerprint"]
+        representatives.setdefault(fingerprint, entry)
+        if (fingerprint not in opportunities and entry["status"] in {"promising", "unresolved"}
+                and entry.get("feedback")):
+            opportunities[fingerprint] = {"candidate": representatives[fingerprint],
+                                          "feedback_candidate": entry, "position": position,
+                                          "successors": set(), "measured_successors": set(),
+                                          "latest_successor": None, "superseded": False}
+    for position, child in enumerate(scoped):
+        if construction_mode(child) == "independent":
+            # Its parents are comparison references, not inherited branches.
+            continue
+        child_identity = identities[child["candidate_id"]]
+        if not executed_snapshot(child, child_identity):
+            continue
+        # Parent IDs can name earlier aliases. Use implementation identities so
+        # renaming a route or repeating a run cannot hide related descendants.
+        parent_fingerprints = {identities[parent_id]["fingerprint"]
+                               for parent_id in child["parent_ids"] if parent_id in identities
+                               and index[parent_id]["comparison"] == child["comparison"]}
+        for fingerprint in parent_fingerprints:
+            opportunity = opportunities.get(fingerprint)
+            if (opportunity is None or position <= opportunity["position"]
+                    or fingerprint == child_identity["fingerprint"]):
+                continue
+            opportunity["successors"].add(child_identity["fingerprint"])
+            opportunity["latest_successor"] = child
+            if child["candidate_id"] in observed:
+                opportunity["measured_successors"].add(child_identity["fingerprint"])
+                if child.get("prediction_status") != "unresolved":
+                    opportunity["superseded"] = True
+    return ({fingerprint: value for fingerprint, value in opportunities.items()
+             if not value["superseded"]}, identities)
+
+
+
+def proposal_identity_checks(value: dict[str, Any]) -> dict[str, str]:
+    checks = ({"code_targets": "not_applicable", "construction_mode": "independent"}
+              if construction_mode(value) == "independent" else {"code_targets": "checked"})
+    if "learning_from" in value:
+        checks["learning_from_sha256"] = sha256(canonical(value["learning_from"]))
+    return checks
+
+
+def validate_construction_targets(value: dict[str, Any]) -> None:
+    mode = construction_mode(value)
+    targets = value.get("code_targets")
+    independent = mode == "independent"
+    if not isinstance(targets, list) or (bool(targets) == independent):
+        raise ArchiveFailure("invalid_proposal", "Independent construction requires empty code_targets; refinement requires parent files")
+
+
+
+def distinct_implementations(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use the first recipe/code observation, not its luckiest output repeat."""
+    distinct, seen = [], set()
+    for entry in entries:
+        fingerprint = implementation_identity(entry)["fingerprint"]
+        if fingerprint not in seen:
+            distinct.append(entry)
+            seen.add(fingerprint)
+    return distinct

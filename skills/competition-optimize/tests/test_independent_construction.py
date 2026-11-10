@@ -12,6 +12,7 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+from handoff_fixtures import bounded_packet
 archive = importlib.import_module("candidate_archive")
 search = importlib.import_module("campaign_search")
 trials = importlib.import_module("campaign_trials")
@@ -263,9 +264,7 @@ class IndependentConstructionTests(unittest.TestCase):
                 self.assertEqual(search.delivered_exposures(changed)["proposals"], [])
         self.record("sealed-result", 110, proposal="sealed-independent", review=True)
         packet = self.packet()
-        omissions = {}
-        bounded = search._bounded(packet, 240, 2, omissions)
-        bounded["truncated_fields"] = omissions
+        bounded = bounded_packet(packet)
         self.assertEqual(trials.delivered_trials(bounded), ["sealed-independent"])
         self.assertEqual(bounded["development_brief"]["candidates"]["sealed-result"]["construction_mode"], "independent")
         self.assertEqual(bounded["development_brief"]["candidates"]["sealed-result"]["implementation_review"]["fidelity"], "yes")

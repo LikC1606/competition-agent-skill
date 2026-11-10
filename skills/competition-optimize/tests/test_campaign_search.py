@@ -550,11 +550,10 @@ class CampaignSearchTests(unittest.TestCase):
                 actual_pointer = entry["candidate_id"] if key == "candidate_id" else entry["result"]["result_path"]
                 bounded = self.packet()
                 self.assertIn("details_omitted", bounded["comparison_recovery"])
-                self.assertNotEqual(bounded["comparison_recovery"]["target"][key], actual_pointer)
-                # Large comparison metadata can exhaust the omission-path cap
-                # before required pointers are visited. Those pointers remain
-                # incomplete even if only an aggregate omission was retained.
-                self.assertFalse(search.delivered_comparison_review(bounded))
+                # Whole-card selection preserves identities even when ordinary
+                # descriptive metadata needs compaction.
+                self.assertEqual(bounded["comparison_recovery"]["target"][key], actual_pointer)
+                self.assertTrue(search.delivered_comparison_review(bounded))
 
     def test_review_requires_a_new_nonimproving_window_after_each_review(self) -> None:
         self.record("baseline", 10)

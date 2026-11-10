@@ -104,6 +104,68 @@ class OptimizationBriefTests(unittest.TestCase):
     def trace(self, *arguments: str) -> dict:
         return archive.trace_report(archive.parser().parse_args(["trace", "--archive", str(self.path), *arguments]))
 
+    def decide(self, *arguments: str) -> dict:
+        run = subprocess.run([sys.executable, str(SCRIPTS / "candidate_archive.py"), "decide",
+                              "--archive", str(self.path), "--recent", "4", "--min-stagnant", "2",
+                              *arguments], capture_output=True, text=True, timeout=15)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        return json.loads(run.stdout)
+
+    def assert_open_in_decide_and_brief(self, expected: str) -> None:
+        decision = self.decide()
+        self.assertEqual(decision["action"], "exploit")
+        self.assertEqual(decision["unresolved_candidates"], [expected])
+        value = self.brief()
+        self.assertEqual([row["candidate_id"] for row in value["review_frontier"]["selection"]], [expected])
+        self.assertEqual(value["routes"][0]["unresolved"], expected)
+
+    def test_decide_and_brief_keep_opportunity_after_failed_successor(self) -> None:
+        self.record("baseline", 10, status="incumbent")
+        self.record("open-parent", 9, status="unresolved", feedback="Decoder mechanism remains incomplete")
+        self.record("failed-child", None, valid=False, status="rejected", parent="open-parent",
+                    score_fields={"kind": "official_metric"}, feedback="Execution failed before comparison")
+        self.record("unrelated", 8, status="rejected")
+        self.assert_open_in_decide_and_brief("open-parent")
+
+    def test_decide_and_brief_keep_opportunity_after_unscored_successor(self) -> None:
+        self.record("baseline", 10, status="incumbent")
+        self.record("open-parent", 9, status="unresolved", feedback="Decoder mechanism remains incomplete")
+        self.record("unscored-child", None, status="rejected", parent="open-parent",
+                    score_fields={"kind": "official_metric"}, feedback="Output exists but the metric is unavailable")
+        self.record("unrelated", 8, status="rejected")
+        self.assert_open_in_decide_and_brief("open-parent")
+
+    def test_decide_and_brief_keep_explicitly_unresolved_successor(self) -> None:
+        self.record("baseline", 10, status="incumbent")
+        self.record("open-parent", 9, status="unresolved", feedback="Decoder mechanism remains incomplete")
+        self.propose("partial", "open-parent", route="current")
+        self.record("partial-child", 8, parent="open-parent", proposal="partial", prediction="unresolved",
+                    feedback="Coupled decoder component still missing")
+        self.record("unrelated", 7, status="rejected")
+        self.assert_open_in_decide_and_brief("open-parent")
+
+    def test_decide_and_brief_keep_independent_control_opportunity(self) -> None:
+        self.record("baseline", 10, status="incumbent")
+        self.record("open-parent", 9, status="unresolved", feedback="Decoder mechanism remains incomplete")
+        proposal = {"proposal_id": "independent", "parent_ids": ["open-parent"], "feedback_from": ["open-parent"],
+                    "route": "current", "construction_mode": "independent", "code_targets": [],
+                    "basis": "Task-derived construction with the parent as a control", "change": "Implement an independent decoder",
+                    "expected_observation": "Different valid construction", "validation": "Same evaluator", "stop_condition": "Measured outcome"}
+        path = self.root / "independent.json"
+        path.write_text(json.dumps(proposal), encoding="utf-8")
+        archive.propose_candidate(archive.parser().parse_args(["propose", "--archive", str(self.path), "--proposal", str(path)]))
+        self.record("independent-child", 8, parent="open-parent", proposal="independent", feedback="Independent route measured")
+        self.record("unrelated", 7, status="rejected")
+        self.assert_open_in_decide_and_brief("open-parent")
+
+    def test_decide_and_brief_close_opportunity_through_parent_alias(self) -> None:
+        self.record("baseline", 10, status="incumbent")
+        self.record("open-parent", 9, status="unresolved", feedback="Decoder mechanism remains incomplete")
+        self.record("alias", 9, reuse="open-parent")
+        self.record("completed-child", 8, parent="alias", feedback="Decoder mechanism tested")
+        self.assertEqual(self.decide()["unresolved_candidates"], [])
+        self.assertEqual(self.brief()["review_frontier"]["selection"], [])
+
     def test_best_representatives_survive_weak_recent_history(self) -> None:
         self.record("best-current", 10, status="incumbent")
         self.record("alternative-best", 12, route="alternative")
@@ -187,12 +249,19 @@ class OptimizationBriefTests(unittest.TestCase):
             self.record(f"later-{number}", 5)
         Path(old["artifact_paths"]["source"]).unlink()
         Path(old["result"]["result_path"]).unlink()
-        with mock.patch.object(archive, "verify_result", wraps=archive.verify_result) as results, \
-                mock.patch.object(archive, "verify_artifacts", wraps=archive.verify_artifacts) as snapshots:
+        opened: set[Path] = set()
+        read_bytes = Path.read_bytes
+        def read(path: Path) -> bytes:
+            opened.add(path.resolve())
+            return read_bytes(path)
+        with mock.patch.object(Path, "read_bytes", read):
             value = self.brief("--recent", "2")
         displayed = set(value["candidates"])
-        self.assertEqual(results.call_count, len(displayed))
-        self.assertEqual(snapshots.call_count, len(displayed))
+        expected = {self.path.resolve()}
+        for name in displayed:
+            expected.add(Path(self.records[name]["result"]["result_path"]))
+            expected.add(Path(self.records[name]["artifact_paths"]["source"]))
+        self.assertEqual(opened, expected)
         self.assertNotIn("old-low", displayed)
 
     def test_pending_details_recover_code_and_feedback_without_duplicate_cards(self) -> None:

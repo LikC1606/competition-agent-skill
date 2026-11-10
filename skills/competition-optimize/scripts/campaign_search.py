@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 import candidate_archive as archive_tools
 from campaign_trials import delivered_trials, trial_history
+from campaign_handoff import bound_packet
 
 if TYPE_CHECKING:
     from campaign_policy import TurnPlan
@@ -397,40 +398,6 @@ def recovery_evidence(records: list[dict[str, Any]], health: dict[str, Any], *,
                      "must be revalidated; do not modify the fixed evaluator to make a candidate pass."}
 
 
-def _omit(omissions: dict[str, int], location: str, count: int) -> None:
-    # Metadata must not grow back to the size of the omitted IDs/feedback.
-    if len(location) > 160:
-        location = location[:120] + "/sha256:" + archive_tools.sha256(location.encode())[:16]
-    if len(omissions) >= 64 and location not in omissions:
-        location = "/additional_truncated_fields"
-    omissions[location] = omissions.get(location, 0) + count
-
-
-def _bounded(value: Any, string_limit: int, item_limit: int,
-             omissions: dict[str, int], location: str = "") -> Any:
-    if isinstance(value, str) and len(value) > string_limit:
-        _omit(omissions, location, len(value) - string_limit)
-        return value[:string_limit] + " [truncated; retrieve from archive]"
-    if isinstance(value, list):
-        if len(value) > item_limit:
-            _omit(omissions, location, len(value) - item_limit)
-        return [_bounded(item, string_limit, item_limit, omissions, f"{location}/{i}")
-                for i, item in enumerate(value[:item_limit])]
-    if isinstance(value, dict):
-        result = {}
-        limit = max(27, item_limit * 4)  # Preserve fixed trial fields and optional construction/learning.
-        for i, (key, item) in enumerate(value.items()):
-            if i >= limit:
-                _omit(omissions, location, len(value) - i)
-                break
-            if len(key) > string_limit:
-                _omit(omissions, f"{location}/oversized_keys", 1)
-                continue
-            result[key] = _bounded(item, string_limit, item_limit, omissions, f"{location}/{key}")
-        return result
-    return value
-
-
 def delivered_exposures(packet: dict[str, Any]) -> dict[str, list[str]]:
     """A bounded hint counts as delivered only with its full evidence identity.
 
@@ -578,7 +545,7 @@ def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: Campaig
         pathlib.Path(memory["archive"]), view.records, memory["archive_snapshot"], task_sha256,
         progress=facts["objective_progress"], health=facts["execution_health"],
         continuity=facts["comparison_continuity"], _view=view,
-        measurement_plan=facts["measurement_plan"],
+        measurement_plan=facts["measurement_plan"], mode=prepared.updates["next_mode"],
         frontier_seen=memory["frontier_exposures"].get(key, {}),
         pending_seen=memory["pending_proposal_exposures"].get(key, {}),
         trial_seen=memory["trial_exposures"].get(key, {}),
@@ -610,7 +577,7 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
                    learning_seen: dict[str, int] | None = None,
                    evidence: archive_tools.ComparisonEvidence | None = None,
                    measurement_plan: dict[str, Any] | None = None,
-                   _view: CampaignEvidence | None = None) -> dict[str, Any]:
+                   _view: CampaignEvidence | None = None, mode: str = "work") -> dict[str, Any]:
     view = _view if _view is not None else CampaignEvidence(records, comparisons=evidence)
     reads, evidence = view._reads, view._comparisons
     if progress is None:
@@ -697,63 +664,4 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
     if repeat_conflict:
         repeat_conflict["retrieval_sha256"] = archive_tools.sha256(
             archive_tools.canonical(_repeat_conflict_identity(packet)))
-    # Retrieval bounds limit context size, not the number of experiments. Keep
-    # original evidence on disk and explicitly identify each omitted field.
-    for strings, items in ((1200, 8), (600, 4), (240, 2)):
-        omissions: dict[str, int] = {}
-        result = _bounded(packet, strings, items, omissions)
-        result["truncated_fields"] = omissions
-        if len(archive_tools.canonical(result)) + 1 <= HANDOFF_BYTES:
-            return result
-    # An archive can contain a candidate with arbitrarily many parents/artifacts.
-    # Avoid allowing it to turn every fresh session into an unbounded prompt.
-    packet["trial_history"] = None
-    omissions = {"/trial_history": 1}
-    result = _bounded(packet, 240, 2, omissions)
-    result["truncated_fields"] = omissions
-    if len(archive_tools.canonical(result)) + 1 <= HANDOFF_BYTES:
-        return result
-    packet["development_brief"] = None
-    omissions = {"/trial_history": 1, "/development_brief": 1}
-    result = _bounded(packet, 240, 2, omissions)
-    result["truncated_fields"] = omissions
-    if len(archive_tools.canonical(result)) + 1 > HANDOFF_BYTES:
-        result["objective_progress"] = None
-        _omit(result["truncated_fields"], "/objective_progress", 1)
-    if len(archive_tools.canonical(result)) + 1 > HANDOFF_BYTES:
-        recovery = packet["comparison_recovery"]
-        if recovery:
-            compact = {key: recovery[key] for key in ("reference_relationship", "changed_fields", "scope", "retrieval_sha256")}
-            for name in ("target", "reference"):
-                card = recovery[name]
-                compact[name] = ({key: card[key] for key in
-                                  ("candidate_id", "implementation_fingerprint", "comparison_sha256", "result_path",
-                                   "result_sha256", "identity_checks")} if card else None)
-            compact["details_omitted"] = "Read source paths and complete comparison metadata from the cited archive/results"
-            result["comparison_recovery"] = _bounded(compact, 240, 2, result["truncated_fields"], "/comparison_recovery")
-            _omit(result["truncated_fields"], "/comparison_recovery/detailed_cards", 1)
-    if len(archive_tools.canonical(result)) + 1 > HANDOFF_BYTES:
-        # A runtime identity can itself contain deeply nested package metadata.
-        # Keep verified diagnostic pointers before dropping the recovery view.
-        recovery = packet["execution_recovery"]
-        if recovery:
-            compact = {key: recovery[key] for key in
-                       ("reference_relationship", "reference_comparison_matches", "scope")}
-            for name in ("target", "reference"):
-                card = recovery[name]
-                compact[name] = ({key: card[key] for key in
-                                  ("candidate_id", "role", "result_path", "result_sha256", "execution_status", "diagnostic")}
-                                 if card else None)
-                if card:
-                    compact[name]["implementation_fingerprint"] = card["implementation"]["fingerprint"]
-                    compact[name]["comparison_sha256"] = archive_tools.sha256(archive_tools.canonical(card["comparison"]))
-            compact["details_omitted"] = "Read full source paths and comparison metadata from the cited archive/results"
-            result["execution_recovery"] = _bounded(compact, 240, 2, result["truncated_fields"], "/execution_recovery")
-            _omit(result["truncated_fields"], "/execution_recovery/detailed_cards", 1)
-    if len(archive_tools.canonical(result)) + 1 > HANDOFF_BYTES:
-        result["comparison_recovery"] = None
-        _omit(result["truncated_fields"], "/comparison_recovery", 1)
-    if len(archive_tools.canonical(result)) + 1 > HANDOFF_BYTES:
-        result["execution_recovery"] = None
-        _omit(result["truncated_fields"], "/execution_recovery", 1)
-    return result
+    return bound_packet(packet, budget=HANDOFF_BYTES, mode=mode)

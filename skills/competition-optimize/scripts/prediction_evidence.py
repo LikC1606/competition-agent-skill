@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import evaluate_predictions as evaluator
-from compare_prediction_results import compare, load_result
+from prediction_core import compare, load_result
 
 
 class EvidenceFailure(Exception):
@@ -37,7 +37,7 @@ def load_pair(baseline: pathlib.Path, candidate: pathlib.Path, truth: pathlib.Pa
     result_bytes = [paths[role].read_bytes() for role in ["baseline", "candidate"]]
     results = [load_result(paths[role]) for role in ["baseline", "candidate"]]
     comparison = compare(*results, 0)
-    if results[0]["evaluator_hash"] != evaluator.byte_hash(pathlib.Path(evaluator.__file__).read_bytes()):
+    if results[0]["evaluator_hash"] != evaluator.evaluator_fingerprint():
         raise EvidenceFailure("Reevaluate both candidates with the installed prediction evaluator before analysis")
     config = results[0]["evaluation"]["configuration"]
     for key in ["id_column", "target_column", "prediction_column"]:

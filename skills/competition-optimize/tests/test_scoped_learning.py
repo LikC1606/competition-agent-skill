@@ -12,6 +12,7 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+from handoff_fixtures import bounded_packet
 archive = importlib.import_module("candidate_archive")
 search = importlib.import_module("campaign_search")
 trials = importlib.import_module("campaign_trials")
@@ -286,16 +287,16 @@ class ScopedLearningTests(unittest.TestCase):
             changed = copy.deepcopy(packet)
             mutation(changed["trial_history"]["selection"][apply_index])
             self.assertNotIn("apply", trials.delivered_trials(changed))
-        bounded = search._bounded(packet, 240, 2, {})
+        bounded = bounded_packet(packet)
         self.assertIn("apply", trials.delivered_trials(bounded))
         self.assertTrue(self.path.read_bytes().startswith(legacy))
         self.propose("long-report")
-        self.record("long", proposal="long-report", learning=self.lesson(key="long", text="Measured conditional explanation " * 100))
+        self.record("long", proposal="long-report", learning=self.lesson(key="long", text="Measured conditional explanation " * 4000))
         history = trials.trial_history(self.path, archive.read_records(self.path), self.control["comparison"], set(),
                                        seen={"first-proposal": 1, "apply": 1})
         packet = {"archive_path": str(self.path), "trial_history": history}
         self.assertIn("long-report", trials.delivered_trials(packet))
-        self.assertNotIn("long-report", trials.delivered_trials(search._bounded(packet, 240, 2, {})))
+        self.assertNotIn("long-report", trials.delivered_trials(bounded_packet(packet)))
 
     def test_standalone_learning_reads_revision_and_delivery_without_archive_module(self) -> None:
         self.learned(lesson=self.lesson(evidence=["control"]))

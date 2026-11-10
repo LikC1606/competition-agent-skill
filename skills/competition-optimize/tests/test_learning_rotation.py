@@ -9,6 +9,7 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+from handoff_fixtures import bounded_packet
 archive = importlib.import_module("candidate_archive")
 search = importlib.import_module("campaign_search")
 learning = importlib.import_module("scoped_learning")
@@ -179,13 +180,13 @@ class LearningRotationTests(unittest.TestCase):
     def test_bounded_report_is_not_consumed_but_unchanged_report_survives_bounding(self):
         self.learned()
         packet = self.packet()
-        self.assertEqual(learning.delivered(search._bounded(packet, 240, 2, {})), ["first"])
-        self.learned("long", lesson=self.lesson(key="long", text="Detailed conditional observation " * 100))
+        self.assertEqual(learning.delivered(bounded_packet(packet)), ["first"])
+        self.learned("long", lesson=self.lesson(key="long", text="Detailed conditional observation " * 4000))
         packet = {"archive_path": str(self.path),
                   "development_brief": {"comparison": self.control["comparison"],
                                         "scoped_learning": self.retrieve(seen={})}}
         self.assertEqual(set(learning.delivered(packet)), {"first", "long"})
-        bounded = search._bounded(packet, 240, 2, {})
+        bounded = bounded_packet(packet)
         self.assertEqual(learning.delivered(bounded), ["first"])
 
     def test_new_retrieval_rechecks_source_and_result_bytes(self):

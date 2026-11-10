@@ -31,8 +31,14 @@ from candidate_evidence import (
     KINDS, OUTPUT_ONLY_SCOPES, PIPELINE_SCOPES, candidate_index, canonical, directed_score,
     executed_snapshot as _executed_snapshot, implementation_identity, load_json, measurable,
     nonempty_text, observed_snapshot as _observed_snapshot, reject_constant, sha256, unique_object,
+    construction_mode, review_opportunities as _review_opportunities, distinct_implementations,
+    proposal_identity_checks, validate_construction_targets,
 )
-from evidence_files import EvidenceReads, hash_path, verify_artifacts, verify_result
+from evidence_files import (EvidenceReads, hash_path, verify_artifacts, verify_result,
+                            verify_proposal_targets as _verify_proposal_targets)
+from result_evidence import ObservationClaims, ResultEvidence, finite_number
+from evidence_queries import (BriefQuery, EvidenceSnapshot, evidence_summary, read_case_profile,
+                              verify_resource_profile)
 
 
 STATUSES = {"incumbent", "runner_up", "promising", "rejected", "unresolved"}
@@ -124,16 +130,6 @@ def parse_records(raw: bytes, source: str) -> list[dict[str, Any]]:
     return records
 
 
-def finite_number(value: Any, field: str) -> float:
-    try:
-        valid = not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
-    except OverflowError:
-        valid = False
-    if not valid:
-        raise ArchiveFailure("invalid_candidate", f"{field} must be a finite number")
-    return float(value)
-
-
 def validate_candidate(value: dict[str, Any]) -> None:
     for field in ("candidate_id", "fingerprint", "route", "mechanism"):
         nonempty_text(value.get(field), field)
@@ -192,104 +188,9 @@ def validate_candidate(value: dict[str, Any]) -> None:
 
 def result_metadata(path: pathlib.Path | None, *, include_case_profile: bool = True,
                     include_resource_profile: bool = True) -> dict[str, Any]:
-    if path is None:
-        return {}
-    path = path.expanduser().resolve(strict=True)
-    raw = path.read_bytes()
-    value = load_json(raw, str(path))
-    if not isinstance(value, dict):
-        raise ArchiveFailure("invalid_result", "Result must be a JSON object")
-    metadata: dict[str, Any] = {"result_path": str(path), "result_sha256": sha256(raw),
-                               "execution_status": value.get("status"),
-                               "validity_scope": value.get("validity_scope", "adapter_declared_checks"),
-                               "unchecked_rules": value.get("unchecked_rules", ["training_and_hard_rule_provenance"])}
-    for key in ("candidate_hash", "candidate_scope", "evaluator_hash", "workload_hash", "score_model_hash", "stage"):
-        if key in value:
-            metadata[key] = value[key]
-    if isinstance(value.get("evaluation"), dict):
-        for key in ("config_hash", "split_hash", "stage", "runtime_environment"):
-            if key in value["evaluation"]:
-                metadata[key] = value["evaluation"][key]
-        evaluation = value["evaluation"]
-        if "measurement_plan_id" in evaluation:
-            for key in ("measurement_plan_id", "measurement_run_id", "seeds", "repetitions"):
-                if key in evaluation:
-                    metadata[key] = evaluation[key]
-        expected, completed = evaluation.get("expected_cases"), evaluation.get("completed_cases")
-        if expected is not None and (type(expected) is not int or expected <= 0 or expected != completed):
-            metadata["partial"] = True
-    if isinstance(value.get("metrics"), dict) and value["metrics"].get("partial"):
-        metadata["partial"] = True
-    if "runtime_environment" in value:
-        metadata["runtime_environment"] = value["runtime_environment"]
-    if "valid" in value:
-        metadata["valid"] = value["valid"]
-    elif "correct" in value:
-        metadata["valid"] = value["correct"]
-    if metadata.get("valid") is not None and type(metadata["valid"]) is not bool:
-        raise ArchiveFailure("invalid_result", "Result validity must be boolean or null")
-    if value.get("status") != "success" or metadata.get("partial"):
-        metadata["valid"] = False
-    score = value.get("score")
-    if isinstance(score, dict):
-        if score.get("kind") is not None and score["kind"] not in KINDS:
-            raise ArchiveFailure("invalid_result", "Unknown score kind")
-        if score.get("direction") is not None and score["direction"] not in DIRECTIONS:
-            raise ArchiveFailure("invalid_result", "Unknown score direction")
-        metadata["objective_kind"] = score.get("kind", "unknown")
-        metadata["objective_name"] = score.get("metric", score.get("aggregation"))
-        metadata["components"] = score.get("components", {})
-        if score.get("direction") in DIRECTIONS:
-            metadata["objective_direction"] = score["direction"]
-        if score.get("value") is not None:
-            metadata["objective_value"] = finite_number(score["value"], "result.score.value")
-    if isinstance(value.get("metrics"), dict):
-        metadata["metric_summary"] = value["metrics"].get("summary", {})
-    if value.get("elapsed_seconds") is not None:
-        metadata["elapsed_seconds"] = finite_number(value["elapsed_seconds"], "result.elapsed_seconds")
-    if include_case_profile and "case_profile" in value:
-        try:
-            metadata["case_profile"] = candidate_profiles.describe(value["case_profile"])
-        except candidate_profiles.ProfileFailure as exc:
-            raise ArchiveFailure("invalid_case_profile", str(exc)) from exc
-    if include_resource_profile and "resource_profile" in value:
-        try:
-            metadata["resource_profile"] = resource_profiles.describe(value["resource_profile"])
-        except resource_profiles.ResourceFailure as exc:
-            raise ArchiveFailure("invalid_resource_profile", str(exc)) from exc
-    return metadata
-
-
-def read_case_profile(entry: dict[str, Any], *, reads: EvidenceReads | None = None) -> dict[str, Any]:
-    """Read the immutable vector only when its archived descriptor was opted in."""
-    result = entry["result"]
-    path = pathlib.Path(result["result_path"])
-    raw = reads.read_bytes(path) if reads is not None else path.read_bytes()
-    if sha256(raw) != result["result_sha256"]:
-        raise ArchiveFailure("result_changed", f"Result bytes changed for {entry['candidate_id']}")
-    value = load_json(raw, str(path))
-    profile = value.get("case_profile") if isinstance(value, dict) else None
-    try:
-        descriptor = candidate_profiles.describe(profile)
-    except candidate_profiles.ProfileFailure as exc:
-        raise ArchiveFailure("invalid_case_profile", str(exc)) from exc
-    if descriptor != result.get("case_profile"):
-        raise ArchiveFailure("invalid_case_profile", f"Profile metadata differs from its result: {entry['candidate_id']}")
-    return profile
-
-
-def verify_resource_profile(entry: dict[str, Any], *, reads: EvidenceReads) -> None:
-    result = entry["result"]
-    raw = reads.read_bytes(pathlib.Path(result["result_path"]))
-    if sha256(raw) != result["result_sha256"]:
-        raise ArchiveFailure("result_changed", f"Result bytes changed for {entry['candidate_id']}")
-    value = load_json(raw, result["result_path"])
-    try:
-        profile = resource_profiles.describe(value.get("resource_profile") if isinstance(value, dict) else None)
-    except resource_profiles.ResourceFailure as exc:
-        raise ArchiveFailure("invalid_resource_profile", str(exc)) from exc
-    if profile != result["resource_profile"]:
-        raise ArchiveFailure("invalid_resource_profile", f"Resource metadata differs from its result: {entry['candidate_id']}")
+    """Compatibility facade for the shared result-evidence Interface."""
+    return ResultEvidence.read(path, include_case_profile=include_case_profile,
+                               include_resource_profile=include_resource_profile).metadata
 
 
 def make_fingerprint(source: pathlib.Path | None, configuration: pathlib.Path | None,
@@ -372,31 +273,6 @@ def validate_diagnostic_parent(value: dict[str, Any], candidates: dict[str, dict
         raise ArchiveFailure("invalid_diagnostic_parent", "A diagnostic requires its ordinary development control as first parent")
     if any(candidates.get(candidate_id, {}).get("role") not in DEVELOPMENT_ROLES for candidate_id in parents):
         raise ArchiveFailure("confirmation_feedback", "Confirmation evidence cannot supply diagnostic parents")
-
-
-def construction_mode(value: dict[str, Any]) -> str:
-    if not isinstance(value, dict):
-        raise ArchiveFailure("invalid_proposal", "Construction metadata must be an object")
-    mode = value.get("construction_mode", "refinement")
-    if mode not in ("refinement", "independent"):
-        raise ArchiveFailure("invalid_proposal", "construction_mode must be refinement or independent")
-    return mode
-
-
-def proposal_identity_checks(value: dict[str, Any]) -> dict[str, str]:
-    checks = ({"code_targets": "not_applicable", "construction_mode": "independent"}
-              if construction_mode(value) == "independent" else {"code_targets": "checked"})
-    if "learning_from" in value:
-        checks["learning_from_sha256"] = sha256(canonical(value["learning_from"]))
-    return checks
-
-
-def validate_construction_targets(value: dict[str, Any]) -> None:
-    mode = construction_mode(value)
-    targets = value.get("code_targets")
-    independent = mode == "independent"
-    if not isinstance(targets, list) or (bool(targets) == independent):
-        raise ArchiveFailure("invalid_proposal", "Independent construction requires empty code_targets; refinement requires parent files")
 
 
 def validate_proposal(value: dict[str, Any], records: list[dict[str, Any]], *,
@@ -603,92 +479,28 @@ def stop_proposal(args: argparse.Namespace) -> dict[str, Any]:
     return value
 
 
-def evidence_summary(entry: dict[str, Any]) -> dict[str, Any]:
-    result = entry["result"]
-    summary = {"candidate_id": entry["candidate_id"], "role": entry["role"], "valid": entry["valid"],
-            "objective": entry["objective"], "feedback": entry["feedback"],
-            "result_path": result.get("result_path"), "result_sha256": result.get("result_sha256"),
-            "validity_scope": result.get("validity_scope"), "implementation": implementation_identity(entry)}
-    if "implementation_review" in entry:
-        summary["implementation_review"] = entry["implementation_review"]
-    if "construction_mode" in entry:
-        summary["construction_mode"] = entry["construction_mode"]
-    for key in ("learning", "learning_from"):
-        if key in entry:
-            summary[key] = entry[key]
-    return summary
-
-
-def _verify_proposal_targets(proposal: dict[str, Any], checked: set[tuple[str, str]], *,
-                             reads: EvidenceReads | None = None) -> None:
-    for target in proposal["code_targets"]:
-        identity = (target["path"], target["sha256"])
-        if identity not in checked:
-            if hash_path(pathlib.Path(target["path"]), reads=reads) != target["sha256"]:
-                raise ArchiveFailure("parent_artifact_changed", f"Pending code target changed: {target['path']}")
-            checked.add(identity)
-
-
 def iteration_trace(records: list[dict[str, Any]], recent: int | None = None, *,
                     proposal_id: str | None = None, reads: EvidenceReads | None = None) -> list[dict[str, Any]]:
-    reads = EvidenceReads() if reads is None else reads
-    candidates = candidate_index(records)
-    outcomes = {entry["proposal_id"]: entry for entry in records
-                if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
-    trace = []
-    verified: set[str] = set()
-    def verify(entry: dict[str, Any]) -> None:
-        if entry["candidate_id"] not in verified:
-            verify_result(entry, reads=reads)
-            verify_artifacts(entry, reads=reads)
-            if "learning" in entry:
-                scoped_learning.verify_evidence(entry["learning"], candidates, reads=reads)
-            verified.add(entry["candidate_id"])
-    proposals = [entry for entry in records if entry["event"] == "proposal"]
-    if proposal_id is not None:
-        proposals = [entry for entry in proposals if entry["proposal_id"] == proposal_id]
-        if not proposals:
-            raise ArchiveFailure("unknown_proposal", f"No archived proposal {proposal_id!r}")
-    checked_targets: set[tuple[str, str]] = set()
-    for proposal in proposals if recent is None else proposals[-recent:]:
-        outcome = outcomes.get(proposal["proposal_id"])
-        row = {key: proposal[key] for key in ("proposal_id", "parent_ids", "feedback_from", "route", "basis", "change",
-                                              "expected_observation", "code_targets", "validation", "stop_condition")}
-        row["input_sha256"] = proposal.get("input_sha256")
-        if "construction_mode" in proposal:
-            row["construction_mode"] = proposal["construction_mode"]
-        if "learning_from" in proposal:
-            row["learning_from"] = proposal["learning_from"]
-        row["feedback_evidence"] = [evidence_summary(candidates[i]) for i in proposal["feedback_from"]]
-        if "learning_from" in proposal:
-            row["learning_evidence"] = {i: candidates[i]["learning"] for i in proposal["learning_from"]}
-        for candidate_id in proposal["parent_ids"] + proposal["feedback_from"] + proposal.get("learning_from", []):
-            verify(candidates[candidate_id])
-        for candidate_id in proposal.get("learning_from", []):
-            scoped_learning.verify_evidence(candidates[candidate_id]["learning"], candidates, reads=reads)
-        _verify_proposal_targets(proposal, checked_targets, reads=reads)
-        row["identity_checks"] = proposal_identity_checks(proposal)
-        row["state"] = "pending"
-        if outcome is not None and outcome["event"] == "proposal_stop":
-            row.update(state="stopped", reason=outcome["reason"])
-        elif outcome is not None:
-            verify(outcome)
-            row.update(state="evaluated_valid" if outcome["valid"] else "evaluation_failed_or_invalid",
-                       candidate_id=outcome["candidate_id"], evidence=evidence_summary(outcome), objective=outcome["objective"],
-                       feedback=outcome["feedback"], prediction_status=outcome["prediction_status"],
-                       failure_mechanism=outcome["failure_mechanism"], cost=outcome["cost"])
-            gains = {}
-            for parent_id in proposal["parent_ids"]:
-                parent = candidates[parent_id]
-                verify(parent)
-                if measurable(outcome) and measurable(parent) and outcome["comparison"] == parent["comparison"]:
-                    delta = outcome["objective"]["value"] - parent["objective"]["value"]
-                    gains[parent_id] = delta * (-1 if outcome["objective"]["direction"] == "minimize" else 1)
-                else:
-                    gains[parent_id] = None
-            row["objective_gain_vs_parents"] = gains
-        trace.append(row)
-    return trace
+    return EvidenceSnapshot._from_views(None, records, reads=reads).trace(proposal_id=proposal_id, recent=recent)
+
+
+def optimization_brief(args: argparse.Namespace,
+                       records: list[dict[str, Any]] | None = None, *,
+                       rankable: Callable[[dict[str, Any]], bool] | None = None,
+                       frontier_seen: dict[str, int] | None = None,
+                       pending_seen: dict[str, int] | None = None,
+                       learning_seen: dict[str, int] | None = None,
+                       reads: EvidenceReads | None = None,
+                       evidence: ComparisonEvidence | None = None) -> dict[str, Any]:
+    """Compatibility adapter; new callers query an EvidenceSnapshot directly."""
+    query = BriefQuery(anchor=args.anchor, recent=args.recent, routes=args.routes,
+                       frontier=getattr(args, "frontier", 2), frontier_seen=frontier_seen,
+                       pending_seen=pending_seen, learning_seen=learning_seen)
+    query.validate()
+    if records is None:
+        records = read_records(args.archive.expanduser().resolve())
+    return EvidenceSnapshot._from_views(args.archive, records, rankable=rankable,
+                                        reads=reads, comparisons=evidence).brief(query)
 
 
 def trace_report(args: argparse.Namespace) -> dict[str, Any]:
@@ -718,7 +530,8 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
     status = args.status
     if args.reuse_reason is not None:
         nonempty_text(args.reuse_reason, "reuse_reason")
-    result = result_metadata(args.result)
+    evidence = ResultEvidence.read(args.result)
+    result = evidence.metadata
     fingerprint, artifacts = make_fingerprint(args.source, args.configuration, result)
     for previous in old:
         if previous.get("event") != "candidate":
@@ -734,51 +547,14 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
     known_ids = {entry["candidate_id"] for entry in old if entry["event"] == "candidate"}
     if not set(parents) <= known_ids:
         raise ArchiveFailure("unknown_parent", "Record or reconcile the parent candidates first")
-    objective: dict[str, Any] = {}
-    direction = args.objective_direction or result.get("objective_direction")
-    value = args.objective_value
-    if value is None and result.get("objective_value") is not None:
-        value = result["objective_value"]
-    if value is not None:
-        objective["value"] = finite_number(value, "objective_value")
-    if direction is not None:
-        if direction not in DIRECTIONS:
-            raise ArchiveFailure("invalid_candidate", "objective_direction must be maximize or minimize")
-        objective["direction"] = direction
-    if value is not None and direction is None:
-        raise ArchiveFailure("invalid_candidate", "A scalar objective value requires an explicit direction")
-    objective["kind"] = args.objective_kind or result.get("objective_kind", "unknown")
-    objective["name"] = args.objective_name or result.get("objective_name")
-    objective["components"] = result.get("components", {})
-    for flag_value, key in [(args.objective_value, "objective_value"),
-                            (args.objective_direction, "objective_direction"),
-                            (args.objective_kind, "objective_kind"), (args.objective_name, "objective_name"),
-                            (args.evaluator_hash, "evaluator_hash"), (args.stage, "stage"),
-                            (args.workload_hash, "workload_hash" if "workload_hash" in result else "split_hash"),
-                            (args.score_model_hash, "score_model_hash")]:
-        if flag_value is not None and result.get(key) is not None and flag_value != result[key]:
-            raise ArchiveFailure("result_override", f"Explicit {key} contradicts the evaluator result")
-    validity = args.valid
-    if validity is None and "valid" in result:
-        validity = result["valid"]
-    if validity is None:
-        raise ArchiveFailure("invalid_candidate", "Provide --valid/--invalid or a result with valid/correct")
-    if validity and result.get("valid") is False:
-        raise ArchiveFailure("result_override", "Cannot declare a failed/partial/invalid result valid")
-    if status in {"incumbent", "runner_up"} and not validity:
-        raise ArchiveFailure("invalid_candidate", "Invalid candidates cannot be an incumbent or runner-up")
-    role = args.role or ("confirmation" if result.get("stage") in {"confirmation", "test", "holdout"} else "development")
-    if role in DEVELOPMENT_ROLES and (args.stage or result.get("stage")) in {"confirmation", "test", "holdout"}:
-        raise ArchiveFailure("result_override", "Confirmation/test evidence cannot become development or diagnostic through a flag")
-    comparison = {
-        "evaluator_hash": args.evaluator_hash or result.get("evaluator_hash"),
-        "workload_hash": args.workload_hash or result.get("workload_hash") or result.get("split_hash"),
-        "score_model_hash": args.score_model_hash or result.get("score_model_hash"),
-        "config_hash": result.get("config_hash"), "stage": args.stage or result.get("stage"),
-        "runtime_environment": result.get("runtime_environment"),
-        "objective_kind": objective["kind"], "objective_name": objective["name"],
-        "direction": direction,
-    }
+    observation = evidence.resolve(ObservationClaims(
+        objective_value=args.objective_value, objective_direction=args.objective_direction,
+        objective_kind=args.objective_kind, objective_name=args.objective_name,
+        evaluator_hash=args.evaluator_hash, workload_hash=args.workload_hash,
+        score_model_hash=args.score_model_hash, stage=args.stage, valid=args.valid, role=args.role),
+        candidate_status=status)
+    objective, comparison = observation.objective, observation.comparison
+    validity, role = observation.valid, observation.role
     cost: Any = {"evaluation_elapsed_seconds": result["elapsed_seconds"]} if "elapsed_seconds" in result else {}
     if args.cost is not None:
         cost = load_json(args.cost.encode("utf-8"), "--cost")
@@ -893,11 +669,14 @@ def route_decision(args: argparse.Namespace) -> dict[str, Any]:
             progress.add(entry["candidate_id"])
         best_value = score if best_value is None else max(best_value, score)
     recent_progress = [entry["candidate_id"] for entry in recent if entry["candidate_id"] in progress]
-    unresolved = [entry for entry in current[-args.recent:]
-                  if entry["comparison"] == context and entry["status"] in {"promising", "unresolved"}
-                  and entry.get("feedback") and not any(entry["candidate_id"] in later["parent_ids"]
-                                                       and later["comparison"] == context and changed_implementation(later, entry)
-                                                       for later in development)]
+    opportunities, _ = _review_opportunities(
+        [entry for entry in development if entry["comparison"] == context],
+        candidate_index(records), include_manual=True)
+    # Keep this command's recent-route presentation window while sharing the
+    # same lineage/observation closure rules used by brief and the campaign.
+    current_ids = {entry["candidate_id"] for entry in current[-args.recent:]}
+    unresolved = [opportunity["feedback_candidate"] for opportunity in opportunities.values()
+                  if opportunity["feedback_candidate"]["candidate_id"] in current_ids]
     for entry in measured:
         verify_result(entry)
     if latest["valid"] is False:
@@ -975,367 +754,6 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
             "routes": {route: {"candidates": info["candidates"],
                                "statuses": dict(info["statuses"]), "latest": info["latest"]}
                        for route, info in sorted(routes.items())}}
-
-
-def distinct_implementations(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Use the first recipe/code observation, not its luckiest output repeat."""
-    distinct, seen = [], set()
-    for entry in entries:
-        fingerprint = implementation_identity(entry)["fingerprint"]
-        if fingerprint not in seen:
-            distinct.append(entry)
-            seen.add(fingerprint)
-    return distinct
-
-
-def _review_opportunities(scoped: list[dict[str, Any]], index: dict[str, dict[str, Any]],
-                          rankable: Callable[[dict[str, Any]], bool] | None) -> tuple[
-                              dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Replay open implementation opportunities and their actual successors.
-
-    Opportunity declarations and runs stay separate: a repeat can add useful
-    feedback, but neither another route name nor a lucky score creates a node.
-    """
-    scoped = [entry for entry in scoped if entry["role"] == "development"]
-    identities = {entry["candidate_id"]: implementation_identity(entry) for entry in scoped}
-    observed = {entry["candidate_id"] for entry in scoped
-                if _observed_snapshot(entry, identities[entry["candidate_id"]])
-                and (rankable is None or rankable(entry))}
-    representatives: dict[str, dict[str, Any]] = {}
-    opportunities: dict[str, dict[str, Any]] = {}
-    for position, entry in enumerate(scoped):
-        if entry["candidate_id"] not in observed:
-            continue
-        fingerprint = identities[entry["candidate_id"]]["fingerprint"]
-        representatives.setdefault(fingerprint, entry)
-        if (fingerprint not in opportunities and entry["status"] in {"promising", "unresolved"}
-                and entry.get("feedback")):
-            opportunities[fingerprint] = {"candidate": representatives[fingerprint],
-                                          "feedback_candidate": entry, "position": position,
-                                          "successors": set(), "measured_successors": set(),
-                                          "latest_successor": None, "superseded": False}
-    for position, child in enumerate(scoped):
-        if construction_mode(child) == "independent":
-            # Its parents are comparison references, not inherited branches.
-            continue
-        child_identity = identities[child["candidate_id"]]
-        if not _executed_snapshot(child, child_identity):
-            continue
-        # Parent IDs can name earlier aliases. Use implementation identities so
-        # renaming a route or repeating a run cannot hide related descendants.
-        parent_fingerprints = {identities[parent_id]["fingerprint"]
-                               for parent_id in child["parent_ids"] if parent_id in identities
-                               and index[parent_id]["comparison"] == child["comparison"]}
-        for fingerprint in parent_fingerprints:
-            opportunity = opportunities.get(fingerprint)
-            if (opportunity is None or position <= opportunity["position"]
-                    or fingerprint == child_identity["fingerprint"]):
-                continue
-            opportunity["successors"].add(child_identity["fingerprint"])
-            opportunity["latest_successor"] = child
-            if child["candidate_id"] in observed:
-                opportunity["measured_successors"].add(child_identity["fingerprint"])
-                if child.get("prediction_status") != "unresolved":
-                    opportunity["superseded"] = True
-    return ({fingerprint: value for fingerprint, value in opportunities.items()
-             if not value["superseded"]}, identities)
-
-
-def optimization_brief(args: argparse.Namespace,
-                       records: list[dict[str, Any]] | None = None, *,
-                       rankable: Callable[[dict[str, Any]], bool] | None = None,
-                       frontier_seen: dict[str, int] | None = None,
-                       pending_seen: dict[str, int] | None = None,
-                       learning_seen: dict[str, int] | None = None,
-                       reads: EvidenceReads | None = None,
-                       evidence: ComparisonEvidence | None = None) -> dict[str, Any]:
-    """Retrieve decision-relevant development evidence without another ledger/card."""
-    reads = EvidenceReads() if reads is None else reads
-    if args.recent < 1 or args.routes < 1:
-        raise ArchiveFailure("invalid_config", "recent and routes must be positive")
-    frontier_limit = getattr(args, "frontier", 2)
-    if type(frontier_limit) is not int or frontier_limit < 0:
-        raise ArchiveFailure("invalid_config", "frontier must be a nonnegative integer")
-    if frontier_seen is None:
-        frontier_seen = {}
-    if (not isinstance(frontier_seen, dict) or any(
-            not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
-            or type(turn) is not int or turn < 0 for fingerprint, turn in frontier_seen.items())):
-        raise ArchiveFailure("invalid_config", "frontier_seen must map implementation SHA-256 hashes to nonnegative checkpoint turns")
-    if pending_seen is not None and (not isinstance(pending_seen, dict) or any(
-            not isinstance(proposal_id, str) or not proposal_id.strip() or type(turn) is not int or turn < 0
-            for proposal_id, turn in pending_seen.items())):
-        raise ArchiveFailure("invalid_config", "pending_seen must map nonempty proposal IDs to nonnegative checkpoint turns")
-    if records is None:
-        records = read_records(args.archive.expanduser().resolve())
-    index = candidate_index(records)
-    if not index:
-        raise ArchiveFailure("empty_archive", "Record a baseline before requesting optimization context")
-    development = [entry for entry in index.values() if entry["role"] == "development"]
-    if args.anchor is not None:
-        if args.anchor not in index:
-            raise ArchiveFailure("unknown_candidate", f"No archived candidate {args.anchor!r}")
-        anchor = index[args.anchor]
-        if anchor["role"] != "development":
-            raise ArchiveFailure("confirmation_feedback", "Only ordinary development evidence can anchor optimization context")
-    elif development:
-        anchor = development[-1]
-    else:
-        raise ArchiveFailure("no_development_evidence", "Confirmation evidence cannot guide new optimization")
-    context = anchor["comparison"]
-    if evidence is None:
-        scoped = [entry for entry in development if entry["comparison"] == context]
-        evidence = ComparisonEvidence(scoped, eligible=lambda entry: measurable(entry) and
-                                      (rankable is None or rankable(entry)))
-    view = evidence.for_candidate(anchor["candidate_id"])
-    scoped = list(view.entries)
-    by_route: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for entry in scoped:
-        by_route[entry["route"]].append(entry)
-    measured = view.representatives
-    measured_ids = {entry["candidate_id"] for entry in measured}
-    best = max(measured, key=directed_score) if measured else None
-    route_bests = {}
-    for route, entries in by_route.items():
-        eligible = [entry for entry in entries if entry["candidate_id"] in measured_ids]
-        route_bests[route] = max(eligible, key=directed_score) if eligible else None
-    # The active route is always included. Alternatives are a factual score
-    # ordering, not an effort quota or an automated choice of the next method.
-    alternatives = sorted((route for route in by_route if route != anchor["route"]),
-                          key=lambda route: (-directed_score(route_bests[route]) if route_bests[route] else math.inf, route))
-    selected_routes = [anchor["route"]] + alternatives[:args.routes - 1]
-    selected: dict[str, dict[str, Any]] = {}
-
-    def include(entry: dict[str, Any] | None) -> str | None:
-        if entry is None:
-            return None
-        selected[entry["candidate_id"]] = entry
-        return entry["candidate_id"]
-
-    include(anchor)
-    include(best)
-    resource_entries = [entry for entry in scoped if "resource_profile" in entry["result"]
-                        and _observed_snapshot(entry, implementation_identity(entry))
-                        and (rankable is None or rankable(entry))]
-    resource_tradeoffs = resource_profiles.retrieve(
-        resource_entries, best, anchor, identity=lambda entry: implementation_identity(entry)["fingerprint"],
-        score=directed_score)
-    if resource_tradeoffs["reference_candidate_id"] is not None:
-        include(index[resource_tradeoffs["reference_candidate_id"]])
-    for point in resource_tradeoffs["selection"]:
-        include(index[point["candidate_id"]])
-    opportunities, identities = _review_opportunities(scoped, index, rankable)
-
-    def include_opportunity(opportunity: dict[str, Any] | None) -> str | None:
-        if opportunity is None:
-            return None
-        candidate_id = include(opportunity["candidate"])
-        include(opportunity["feedback_candidate"])
-        return candidate_id
-
-    # Preserve the actual exploration evidence before route/recent cards when
-    # an automatic handoff must bound a large candidate-card mapping.
-    frontier = sorted(opportunities.items(), key=lambda item: (
-        item[0] in frontier_seen, frontier_seen.get(item[0], 0), item[1]["position"]))
-    frontier_selection = []
-    for fingerprint, opportunity in frontier[:frontier_limit]:
-        candidate_id = include_opportunity(opportunity)
-        frontier_selection.append({"candidate_id": candidate_id,
-                                   "implementation_fingerprint": fingerprint,
-                                   "feedback_candidate_id": opportunity["feedback_candidate"]["candidate_id"],
-                                   "last_exposed_turn": frontier_seen.get(fingerprint),
-                                   "successor_implementations": len(opportunity["successors"]),
-                                   "measured_successor_implementations": len(opportunity["measured_successors"]),
-                                   "latest_successor": include(opportunity["latest_successor"])})
-
-    profile_entries = view.first_profiles("case_profile")
-    try:
-        complementary = candidate_profiles.retrieve(
-            profile_entries, best, identity=lambda entry: implementation_identity(entry)["fingerprint"],
-            read_profile=lambda entry: read_case_profile(entry, reads=reads), score=directed_score)
-    except candidate_profiles.ProfileFailure as exc:
-        raise ArchiveFailure("invalid_case_profile", str(exc)) from exc
-    if complementary["reference_candidate_id"] is not None:
-        include(index[complementary["reference_candidate_id"]])
-    for item in complementary["selection"]:
-        include(index[item["candidate_id"]])
-
-    closed = {entry["proposal_id"] for entry in records
-              if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
-    pending = [entry for entry in records if entry["event"] == "proposal" and entry["proposal_id"] not in closed]
-    # A proposal belongs to its first parent's own comparison. Other parents
-    # or feedback may supply code or diagnostic references under a different
-    # contract; their control relationship does not move proposal ownership.
-    matching_pending = [entry for entry in pending if index[entry["parent_ids"][0]]["comparison"] == context]
-    if pending_seen is None:
-        details = matching_pending[-args.recent:]
-    else:
-        details = sorted(matching_pending, key=lambda entry: (
-            entry["proposal_id"] in pending_seen, pending_seen.get(entry["proposal_id"], 0)))[:args.recent]
-    reference_entries: dict[str, dict[str, Any]] = {}
-    diagnostics = [entry for entry in index.values() if entry["role"] == "diagnostic"
-                   and index[entry["parent_ids"][0]]["comparison"] == context]
-    selected_diagnostics = diagnostics[-2:]
-    for entry in selected_diagnostics:
-        include(index[entry["parent_ids"][0]])
-        if entry["comparison"] == context:
-            include(entry)
-        else:
-            reference_entries[entry["candidate_id"]] = entry
-    for proposal in details:
-        for candidate_id in proposal.get("learning_from", []):
-            scoped_learning.verify_evidence(index[candidate_id]["learning"], index, reads=reads)
-        for candidate_id in proposal["parent_ids"] + proposal["feedback_from"] + proposal.get("learning_from", []):
-            entry = index[candidate_id]
-            if entry["role"] not in DEVELOPMENT_ROLES:
-                raise ArchiveFailure("confirmation_feedback", "Confirmation evidence cannot supply pending work or references")
-            if entry["role"] == "diagnostic":
-                control = index[entry["parent_ids"][0]]
-                if control["comparison"] == context:
-                    include(control)
-                else:
-                    reference_entries[control["candidate_id"]] = control
-            if entry["comparison"] == context:
-                include(entry)
-            else:
-                reference_entries[candidate_id] = entry
-
-    recent = distinct_implementations(by_route[anchor["route"]])[-args.recent:]
-    recent_ids = [include(entry) for entry in recent]
-    routes = []
-    for route in selected_routes:
-        entries = by_route[route]
-        unresolved = next((opportunities[identities[entry["candidate_id"]]["fingerprint"]]
-                           for entry in reversed(entries)
-                           if identities[entry["candidate_id"]]["fingerprint"] in opportunities), None)
-        failure = next((entry for entry in reversed(entries)
-                        if not entry["valid"] or entry["status"] == "rejected" or entry.get("failure_mechanism")), None)
-        routes.append({"route": route, "measurements": len(entries),
-                       "distinct_artifact_fingerprints": len({entry["fingerprint"] for entry in entries}),
-                       "distinct_implementations": (len(distinct_implementations(entries))
-                                                    if all(implementation_identity(entry)["scope"] not in OUTPUT_ONLY_SCOPES
-                                                           for entry in entries) else None),
-                       "best": include(route_bests[route]), "latest": include(entries[-1]),
-                       "unresolved": include_opportunity(unresolved),
-                       "unresolved_feedback": (unresolved["feedback_candidate"]["candidate_id"] if unresolved else None),
-                       "latest_failure": include(failure)})
-    artifact_groups: dict[str, list[str]] = defaultdict(list)
-    artifact_reused: dict[str, list[str]] = {}
-    for entry in index.values():
-        fingerprint = entry["fingerprint"]
-        if entry["candidate_id"] in selected:
-            artifact_reused[entry["candidate_id"]] = list(artifact_groups[fingerprint])
-        artifact_groups[fingerprint].append(entry["candidate_id"])
-    implementation_groups: dict[str, list[str]] = defaultdict(list)
-    reused: dict[str, list[str]] = {}
-    for entry in index.values():
-        if entry["role"] not in DEVELOPMENT_ROLES or entry["comparison"] != context:
-            continue
-        fingerprint = implementation_identity(entry)["fingerprint"]
-        # Only displayed cards consume these prefixes. Copying a growing list
-        # for every unselected repeat makes long-running retrieval quadratic.
-        if entry["candidate_id"] in selected:
-            reused[entry["candidate_id"]] = list(implementation_groups[fingerprint])
-        implementation_groups[fingerprint].append(entry["candidate_id"])
-    cards = {}
-    for candidate_id, entry in selected.items():
-        verify_result(entry, reads=reads)
-        verify_artifacts(entry, reads=reads)
-        card = {key: entry.get(key) for key in ("role", "parent_ids", "fingerprint", "artifact_paths", "route", "mechanism",
-                                              "valid", "status", "objective", "cost", "feedback", "failure_mechanism",
-                                              "proposal_id", "prediction_status")}
-        result = entry["result"]
-        card["reused_from"] = artifact_reused[candidate_id]
-        card["implementation"] = implementation_identity(entry)
-        card["reused_implementation_from"] = reused[candidate_id]
-        card["result"] = {key: result.get(key) for key in ("result_path", "result_sha256", "execution_status",
-                                                         "validity_scope", "unchecked_rules")}
-        if "case_profile" in result:
-            card["result"]["case_profile"] = result["case_profile"]
-        if "resource_profile" in result:
-            verify_resource_profile(entry, reads=reads)
-            card["result"]["resource_profile"] = result["resource_profile"]
-        card["identity_checks"] = {"result_bytes": "checked" if result.get("result_path") else "not_recorded",
-                                   "snapshot_bytes": "checked" if entry["artifact_paths"] else "not_recorded"}
-        card["objective_gain_vs_best"] = (directed_score(entry) - directed_score(best)
-                                          if best is not None and candidate_id in measured_ids else None)
-        if "implementation_review" in entry:
-            card["implementation_review"] = entry["implementation_review"]
-        if "construction_mode" in entry:
-            card["construction_mode"] = entry["construction_mode"]
-        for key in ("learning", "learning_from"):
-            if key in entry:
-                if key == "learning":
-                    scoped_learning.verify_evidence(entry[key], index, reads=reads)
-                card[key] = entry[key]
-        cards[candidate_id] = card
-    checked_targets: set[tuple[str, str]] = set()
-    for proposal in details:
-        _verify_proposal_targets(proposal, checked_targets, reads=reads)
-    pending_references = {}
-    for candidate_id, entry in reference_entries.items():
-        verify_result(entry, reads=reads)
-        verify_artifacts(entry, reads=reads)
-        result = entry["result"]
-        pending_references[candidate_id] = {
-            "role": entry["role"],
-            "implementation": implementation_identity(entry), "artifact_paths": entry["artifact_paths"],
-            "result": {key: result.get(key) for key in ("result_path", "result_sha256", "execution_status")},
-            "comparison_sha256": sha256(canonical(entry["comparison"])), "requires_revalidation": True,
-            "identity_checks": {"result_bytes": "checked" if result.get("result_path") else "not_recorded",
-                                "snapshot_bytes": "checked" if entry["artifact_paths"] else "not_recorded"},
-            "scope": "Development or diagnostic code/result identity from another comparison. Read cited artifacts for repair or transfer; "
-                     "revalidate under the target contract. Its objective and feedback do not guide active score ranking."}
-    return {"schema_version": 1, "archive_path": str(args.archive.expanduser().resolve()),
-            "anchor_candidate": anchor["candidate_id"], "comparison": context,
-            "best_development": best["candidate_id"] if best else None,
-            "recent_current": recent_ids, "routes": routes, "candidates": cards,
-            "pending_references": pending_references,
-            "complementary_evidence": complementary,
-            "resource_tradeoffs": resource_tradeoffs,
-            "scoped_learning": scoped_learning.retrieve(
-                index, context, {implementation_identity(entry)["fingerprint"]
-                                 for entry in (anchor, best) if entry is not None}, reads=reads,
-                seen=learning_seen, archive_path=args.archive),
-            "diagnostic_evidence": {"selection": [entry["candidate_id"] for entry in selected_diagnostics],
-                                    "available": len(diagnostics), "omitted": len(diagnostics) - len(selected_diagnostics),
-                                    "scope": "Latest two diagnostic interventions whose first development control matches the complete active comparison. "
-                                             "Diagnostics inform the next change, not candidate ranking, route progress, opportunity closure or promotion. "
-                                             "A diagnostic under another contract supplies identity only and requires revalidation. "
-                                             "This retrieval window does not limit diagnostic experiments."},
-            "review_frontier": {"selection": frontier_selection, "available": len(frontier),
-                                "omitted": len(frontier) - len(frontier_selection),
-                                "scope": "Matched development opportunities, separate from elite ranking. "
-                                         "Never exposed implementations precede least recently exposed ones; "
-                                         "archive declaration order breaks ties. Exposure turns are caller-supplied checkpoints. "
-                                         "First valid scored execution represents each code/recipe; feedback may come from an alias. "
-                                         "Successor counts cover distinct executed implementations after the first opportunity declaration. "
-                                         "Only a measured changed successor with a non-unresolved outcome supersedes an opportunity. "
-                                         "This retrieval size does not limit experiments or establish causal value."},
-            "pending_proposals": [entry["proposal_id"] for entry in pending],
-            "matched_pending_proposals": [entry["proposal_id"] for entry in matching_pending],
-            "pending_summary": {"available": len(matching_pending), "omitted": len(matching_pending) - len(details),
-                                "selection_policy": "latest" if pending_seen is None else "least_recently_exposed",
-                                "scope": "Unfinished work belongs to its first parent's own complete comparison. "
-                                         "Other development or diagnostic references require revalidation and supply no active objective or feedback. "
-                                         "Exposure turns are caller-supplied successful checkpoints, not execution or closure. "
-                                         "Retrieval windows do not limit experiments."},
-            "pending_details": [{**{key: entry[key] for key in ("proposal_id", "parent_ids", "feedback_from", "route",
-                                                               "code_targets", "basis", "change", "expected_observation",
-                                                               "validation", "stop_condition")},
-                                 **({"construction_mode": entry["construction_mode"]} if "construction_mode" in entry else {}),
-                                 **({"learning_from": entry["learning_from"]} if "learning_from" in entry else {}),
-                                 "input_sha256": entry.get("input_sha256"),
-                                 "last_exposed_turn": pending_seen.get(entry["proposal_id"]) if pending_seen is not None else None,
-                                 "identity_checks": proposal_identity_checks(entry)} for entry in details],
-            "omitted": {"routes": len(by_route) - len(routes),
-                        "current_comparison_candidates": len(scoped) - sum(entry["role"] == "development" for entry in selected.values()),
-                        "other_development_comparisons": len(development) - len(scoped),
-                        "pending_details": len(pending) - len(details)},
-            "scope": "Development ranking with separate diagnostic evidence; first valid development observation per implementation identity ranks representatives. "
-                     "Output-only artifacts do not establish distinct code/recipe counts. "
-                     "Identity checks cover displayed evidence, not all history, score recomputation, causality or promotion. "
-                     "Inspect relevant code and raw results before proposing the next implementation."}
 
 
 def parser() -> argparse.ArgumentParser:

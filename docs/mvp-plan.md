@@ -1,5 +1,7 @@
 # MVP 实施方案
 
+> 历史设计说明：本文保留早期方案与局部试验设置。候选次数、默认预算等旧设计不构成当前运行限制；现行规则以 [SKILL.md](../skills/competition-optimize/SKILL.md) 和 [重构方案](refactor-plan-2026-11-10.md) 为准。
+
 > 这是早期实施计划。用户在 2026-10-22 明确要求长周期无人值守优化，现已增加[可恢复的 campaign driver](../skills/competition-optimize/references/unattended-campaign.md)；下文“暂不做 runner”仅记录当时的范围，不再代表当前能力边界。
 
 ## 目标

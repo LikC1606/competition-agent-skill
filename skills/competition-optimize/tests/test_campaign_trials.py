@@ -118,7 +118,10 @@ class CampaignTrialTests(unittest.TestCase):
                                     related or set(), seen=seen, limit=limit)
 
     def packet(self, history: dict) -> dict:
-        return {"archive_path": str(self.path), "trial_history": history}
+        raw = self.path.read_bytes()
+        return {"schema_version": 1, "archive_path": str(self.path),
+                "archive_snapshot": {"size": len(raw), "sha256": archive.sha256(raw)},
+                "task_sha256": "t" * 64, "scope": "Test development evidence", "trial_history": history}
 
     def test_diagnostics_recall_predictions_and_inform_successors_without_candidate_gains(self) -> None:
         for name, score in (("ablation", 1), ("counterfactual", 150)):
@@ -133,8 +136,7 @@ class CampaignTrialTests(unittest.TestCase):
             self.assertEqual(row["objective_gain_vs_parents"], {"baseline": None})
             self.assertEqual(row["evidence"][row["candidate_id"]]["role"], "diagnostic")
             self.assertEqual(row["feedback"], self.entries[row["candidate_id"]]["feedback"])
-        omissions = {}
-        bounded = search._bounded(self.packet(history), 240, 2, omissions)
+        bounded = search.bound_packet(self.packet(history), budget=48 * 1024, mode="work")
         self.assertEqual(trials.delivered_trials(bounded), ["ablation", "counterfactual"])
         bounded["trial_history"]["selection"][0]["evidence"]["ablation-result"]["role"] = "development"
         self.assertEqual(trials.delivered_trials(bounded), ["counterfactual"])
@@ -269,11 +271,19 @@ class CampaignTrialTests(unittest.TestCase):
         untouched = self.entries["outcome-2"]
         Path(untouched["artifact_paths"]["source"]).unlink()
         Path(untouched["result"]["result_path"]).unlink()
-        with mock.patch.object(archive, "verify_result", wraps=archive.verify_result) as verify_result:
+        opened: set[Path] = set()
+        read_bytes = Path.read_bytes
+        def read(path: Path) -> bytes:
+            opened.add(path.resolve())
+            return read_bytes(path)
+        with mock.patch.object(Path, "read_bytes", read):
             history = self.history()
         self.assertEqual([row["proposal_id"] for row in history["selection"]], ["trial-0", "trial-1"])
-        self.assertEqual([call.args[0]["candidate_id"] for call in verify_result.call_args_list],
-                         ["baseline", "outcome-0", "outcome-1"])
+        expected = {self.path.resolve()}
+        for name in ("baseline", "outcome-0", "outcome-1"):
+            expected.add(Path(self.entries[name]["result"]["result_path"]))
+            expected.add(Path(self.entries[name]["artifact_paths"]["source"]))
+        self.assertEqual(opened, expected)
         target = Path(self.baseline["artifact_paths"]["source"])
         target.write_text("print('changed parent')\n", encoding="utf-8")
         with self.assertRaises(archive.ArchiveFailure):
@@ -283,10 +293,8 @@ class CampaignTrialTests(unittest.TestCase):
         self.propose("completed", prose="原始推测" * 3000)
         self.record("outcome", proposal="completed", feedback="实际反馈" * 3000)
         packet = self.packet(self.history())
-        omissions = {}
-        bounded = search._bounded(packet, 240, 2, omissions)
-        bounded["truncated_fields"] = omissions
-        self.assertTrue(omissions)
+        bounded = search.bound_packet(packet, budget=48 * 1024, mode="work")
+        self.assertTrue(bounded["truncated_fields"])
         self.assertEqual(trials.delivered_trials(bounded), ["completed"])
         changes = [lambda p, t: p.update(archive_path=p["archive_path"] + ".other"),
                    lambda p, t: t["code_targets"][0].update(path=t["code_targets"][0]["path"] + ".other"),
@@ -300,25 +308,23 @@ class CampaignTrialTests(unittest.TestCase):
                 self.assertEqual(trials.delivered_trials(mutated), [])
         self.assertEqual(trials.delivered_trials({"archive_path": str(self.path), "trial_history": None}), [])
 
-    def test_long_identifiers_and_result_paths_are_not_delivered_after_omission_index_fills(self) -> None:
-        long_id = "trial-" + "机制" * 1000
+    def test_oversized_trial_is_omitted_whole_and_long_result_path_is_preserved(self) -> None:
+        long_id = "trial-" + "机制" * 10000
         self.propose(long_id)
         self.record("long-id-outcome", proposal=long_id)
         self.propose("long-result-trial")
         self.run_root = self.root / ("nested-" + "a" * 140) / ("nested-" + "b" * 140)
         self.record("long-result-outcome", proposal="long-result-trial")
-        padding = {f"group-{group}": {f"field-{field}": "metadata" * 200 for field in range(32)}
-                   for group in range(3)}
-        packet = {"padding": padding, **self.packet(self.history())}
+        packet = self.packet(self.history())
         self.assertEqual(trials.delivered_trials(packet), [long_id, "long-result-trial"])
-        omissions = {}
-        bounded = search._bounded(packet, 240, 2, omissions)
-        bounded["truncated_fields"] = omissions
-        self.assertIn("/additional_truncated_fields", omissions)
-        self.assertNotIn("/trial_history/selection/0/proposal_id", omissions)
-        self.assertNotIn("/trial_history/selection/1/evidence/long-result-outcome/result/result_path", omissions)
+        bounded = search.bound_packet(packet, budget=48 * 1024, mode="work")
         self.assertLessEqual(len(archive.canonical(bounded)) + 1, 48 * 1024)
-        self.assertEqual(trials.delivered_trials(bounded), [])
+        self.assertEqual(trials.delivered_trials(bounded), ["long-result-trial"])
+        kept = bounded["trial_history"]["selection"][0]
+        original = packet["trial_history"]["selection"][1]
+        self.assertEqual(kept["evidence"], original["evidence"])
+        self.assertEqual(kept["retrieval_sha256"], original["retrieval_sha256"])
+        self.assertIn("/trial_history/selection/omitted_items", bounded["truncated_fields"])
 
 
 if __name__ == "__main__":

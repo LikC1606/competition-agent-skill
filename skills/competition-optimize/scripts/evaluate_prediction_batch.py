@@ -66,8 +66,10 @@ def run_batch(args: argparse.Namespace, output: pathlib.Path,
                 "metric", "stage", "split_id", "id_column", "target_column", "prediction_column",
                 "score_kind", "log_loss_epsilon",
             ]}
-            result = evaluator.evaluate(argparse.Namespace(**configuration, truth=frozen_truth,
-                                                          predictions=prediction), directory)
+            spec = evaluator.EvaluationSpec(**configuration, truth=frozen_truth,
+                                            predictions=prediction,
+                                            case_profile=getattr(args, "case_profile", False))
+            result = evaluator.evaluate(spec, directory)
             if result["evaluation"]["split_hash"] != evaluator.byte_hash(truth_raw):
                 raise BatchFailure("Frozen truth changed during batch evaluation")
         except (OSError, evaluator.PredictionFailure, BatchFailure, OverflowError, ValueError) as exc:
@@ -126,6 +128,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prediction-column", default="prediction")
     parser.add_argument("--score-kind", choices=["proxy", "official_metric"], default="proxy")
     parser.add_argument("--log-loss-epsilon", type=float, default=1e-15)
+    parser.add_argument("--case-profile", action="store_true",
+                        help="include the same per-sample losses as individual evaluation")
     parser.add_argument("--tie-epsilon", type=float, default=1e-12)
     parser.add_argument("--output-dir", required=True, type=pathlib.Path, help="new directory under an existing parent")
     return parser

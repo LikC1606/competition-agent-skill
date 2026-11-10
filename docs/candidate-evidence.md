@@ -1,5 +1,7 @@
 # 候选证据与文件核验
 
+2026-11-10 更新：adapter 解码与显式声明冲突已收进 [`ResultEvidence`](../skills/competition-optimize/scripts/result_evidence.py)；[`EvidenceSnapshot` / `BriefQuery`](../skills/competition-optimize/scripts/evidence_queries.py) 提供 brief、trace、trials，统一机会规则和按需文件核验。旧 CLI/facade 保留。`EvidenceReads` 可接显式 `ArtifactResolver` 读取搬迁包，保持原路径身份与 seals；[导出/查询用法](../skills/competition-optimize/references/evidence-portability.md)。以下纯规则和单次核验责任保持不变。
+
 候选身份、比较投影和文件核验原先集中在 `candidate_archive`，测量计划与条件经验
 通过参数接收整个档案 module，再调用其中的规则。现在它们直接依赖两个具体的
 module，调用方只传记录、比较条件和可选的单次文件读取视图。

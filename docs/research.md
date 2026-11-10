@@ -1,5 +1,7 @@
 # 竞赛优化 Skill 源码研究
 
+> 历史设计说明：本文保留早期方案与局部试验设置。候选次数、默认预算等旧设计不构成当前运行限制；现行规则以 [SKILL.md](../skills/competition-optimize/SKILL.md) 和 [重构方案](refactor-plan-2026-11-10.md) 为准。
+
 ## 结论
 
 三轮源码研究与首个案例 harness 审计后，首个可验证版本应是 **一个 Codex skill + 比赛专用 evaluator adapter**。先把题目评测做成接受任意候选路径、产出机器可读结果的稳定接口；不急着写通用 runner。若 pilot 表明快照、超时或记账容易出错，再加很小的 runner。评分实现仍属于确定性 evaluator，不交给模型从日志推断。

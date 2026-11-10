@@ -10,7 +10,12 @@ import pathlib
 import re
 from typing import Any
 
-import candidate_archive as archive_tools
+import scoped_learning
+from candidate_evidence import (
+    ArchiveFailure, DEVELOPMENT_ROLES, canonical, directed_score, executed_snapshot, implementation_identity,
+    observed_snapshot, proposal_identity_checks, sha256, validate_construction_targets,
+)
+from evidence_files import EvidenceReads, verify_artifacts, verify_result, verify_proposal_targets
 
 
 _IDENTITY_FIELDS = ("role", "implementation", "artifact_paths", "result", "comparison_sha256",
@@ -35,24 +40,24 @@ def _retrieval_identity(archive_path: str, comparison_key: str | None,
 def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
                   comparison: dict[str, Any] | None, related_implementations: set[str],
                   seen: dict[str, int] | None = None, limit: int = 2, *,
-                  reads: archive_tools.EvidenceReads | None = None) -> dict[str, Any]:
+                  reads: EvidenceReads | None = None) -> dict[str, Any]:
     """Select one recent related trial and rotate the remaining historical slot.
 
     Trials belong to their first parent's complete development comparison.
     Index metadata once; check bytes only for the selected prospective chains.
     Exposure is caller-owned and advances only after a successful handoff.
     """
-    reads = archive_tools.EvidenceReads() if reads is None else reads
+    reads = EvidenceReads() if reads is None else reads
     if type(limit) is not int or limit < 0:
-        raise archive_tools.ArchiveFailure("invalid_config", "Trial retrieval limit must be a nonnegative integer")
+        raise ArchiveFailure("invalid_config", "Trial retrieval limit must be a nonnegative integer")
     if seen is None:
         seen = {}
     if (not isinstance(seen, dict) or any(not isinstance(key, str) or not key.strip()
                                         or type(turn) is not int or turn < 0 for key, turn in seen.items())):
-        raise archive_tools.ArchiveFailure("invalid_config", "Trial exposures must map proposal IDs to nonnegative turns")
+        raise ArchiveFailure("invalid_config", "Trial exposures must map proposal IDs to nonnegative turns")
     limit = min(limit, 2)
-    archive_name = str(archive_path.expanduser().resolve())
-    comparison_key = archive_tools.sha256(archive_tools.canonical(comparison)) if comparison is not None else None
+    archive_name = reads.archive_name(archive_path)
+    comparison_key = sha256(canonical(comparison)) if comparison is not None else None
     candidates: dict[str, dict[str, Any]] = {}
     identities: dict[str, dict[str, Any]] = {}
     observed: dict[str, bool] = {}
@@ -61,14 +66,14 @@ def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
     for position, entry in enumerate(records):
         if entry["event"] == "proposal":
             proposals[entry["proposal_id"]] = entry
-        elif entry["event"] == "candidate" and entry["role"] in archive_tools.DEVELOPMENT_ROLES:
+        elif entry["event"] == "candidate" and entry["role"] in DEVELOPMENT_ROLES:
             candidate_id = entry["candidate_id"]
             candidates[candidate_id] = entry
-            identity = archive_tools.implementation_identity(entry)
+            identity = implementation_identity(entry)
             identities[candidate_id] = identity
-            observed[candidate_id] = archive_tools._observed_snapshot(entry, identity, include_diagnostics=True)
+            observed[candidate_id] = observed_snapshot(entry, identity, include_diagnostics=True)
             proposal = proposals.get(entry.get("proposal_id"))
-            if proposal is None or not archive_tools._executed_snapshot(entry, identity):
+            if proposal is None or not executed_snapshot(entry, identity):
                 continue
             references = proposal["parent_ids"] + proposal["feedback_from"] + proposal.get("learning_from", [])
             if (any(candidate_id not in candidates for candidate_id in references)
@@ -96,15 +101,15 @@ def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
     def evidence(candidate_id: str) -> dict[str, Any]:
         if candidate_id not in verified:
             entry = candidates[candidate_id]
-            archive_tools.verify_result(entry, reads=reads)
-            archive_tools.verify_artifacts(entry, reads=reads)
+            verify_result(entry, reads=reads)
+            verify_artifacts(entry, reads=reads)
             verified.add(candidate_id)
             result = entry["result"]
             matches = entry["comparison"] == comparison
             card = {"role": entry["role"], "implementation": identities[candidate_id],
                     "artifact_paths": entry["artifact_paths"],
                     "result": {key: result.get(key) for key in ("result_path", "result_sha256", "execution_status")},
-                    "comparison_sha256": archive_tools.sha256(archive_tools.canonical(entry["comparison"])),
+                    "comparison_sha256": sha256(canonical(entry["comparison"])),
                     "requires_revalidation": not (matches and observed[candidate_id]),
                     "identity_checks": {"result_bytes": "checked" if result.get("result_path") else "not_recorded",
                                         "snapshot_bytes": "checked" if entry["artifact_paths"] else "not_recorded"}}
@@ -113,20 +118,20 @@ def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
             if matches and "implementation_review" in entry:
                 card["implementation_review"] = entry["implementation_review"]
             if matches and "learning" in entry:
-                archive_tools.scoped_learning.verify_evidence(entry["learning"], candidates, reads=reads)
+                scoped_learning.verify_evidence(entry["learning"], candidates, reads=reads)
                 card["learning"] = entry["learning"]
             cards[candidate_id] = card
         return cards[candidate_id]
 
     selection = []
     for (_, proposal, outcome), reason in selected:
-        archive_tools._verify_proposal_targets(proposal, checked_targets, reads=reads)
+        verify_proposal_targets(proposal, checked_targets, reads=reads)
         outcome_id = outcome["candidate_id"]
         matches = outcome["comparison"] == comparison
         gains = {}
         for parent_id in proposal["parent_ids"]:
             parent = candidates[parent_id]
-            gains[parent_id] = (archive_tools.directed_score(outcome) - archive_tools.directed_score(parent)
+            gains[parent_id] = (directed_score(outcome) - directed_score(parent)
                                 if outcome["role"] == parent["role"] == "development"
                                 and matches and observed[outcome_id] and observed[parent_id]
                                 and parent["comparison"] == outcome["comparison"] else None)
@@ -146,7 +151,7 @@ def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
                      evidence={candidate_id: evidence(candidate_id) for candidate_id in evidence_ids},
                      feedback=outcome.get("feedback") if matches else None,
                      failure_mechanism=outcome.get("failure_mechanism") if matches else None,
-                     objective_gain_vs_parents=gains, identity_checks=archive_tools.proposal_identity_checks(proposal),
+                     objective_gain_vs_parents=gains, identity_checks=proposal_identity_checks(proposal),
                      scope="Original prospective prediction and actual outcome. Diagnostic outcomes inform design "
                            "without ranking or candidate gains. Measured means a scored "
                            "observation under the outcome's own contract; outcome_comparison_matches states whether "
@@ -156,7 +161,7 @@ def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
                            "revalidation; compare scores only within the complete current contract. Retrieve full "
                            "fields with candidate_archive.py trace --proposal-id using this proposal ID. A similar "
                            "mechanism may be retried when relevant implementation, assumptions or evidence changed.")
-        trial["retrieval_sha256"] = archive_tools.sha256(archive_tools.canonical(
+        trial["retrieval_sha256"] = sha256(canonical(
             _retrieval_identity(archive_name, comparison_key, trial)))
         selection.append(trial)
     return {"comparison_key": comparison_key, "available": len(eligible),
@@ -174,7 +179,7 @@ def _sha256(value: Any) -> bool:
 
 def _complete_card(card: dict[str, Any]) -> bool:
     identity, paths, result = card.get("implementation"), card.get("artifact_paths"), card.get("result")
-    if (card.get("role") not in archive_tools.DEVELOPMENT_ROLES or not isinstance(identity, dict)
+    if (card.get("role") not in DEVELOPMENT_ROLES or not isinstance(identity, dict)
             or not isinstance(paths, dict) or not isinstance(result, dict)):
         return False
     artifacts = identity.get("artifacts")
@@ -209,11 +214,11 @@ def delivered_trials(packet: dict[str, Any]) -> list[str]:
     delivered = []
     for trial in history["selection"]:
         try:
-            archive_tools.validate_construction_targets(trial)
+            validate_construction_targets(trial)
             if (not isinstance(trial, dict) or not isinstance(trial.get("proposal_id"), str)
                     or not trial["proposal_id"].strip() or not isinstance(trial.get("candidate_id"), str)
-                    or not trial["candidate_id"] or trial.get("identity_checks") != archive_tools.proposal_identity_checks(trial)
-                    or trial.get("outcome_role") not in archive_tools.DEVELOPMENT_ROLES
+                    or not trial["candidate_id"] or trial.get("identity_checks") != proposal_identity_checks(trial)
+                    or trial.get("outcome_role") not in DEVELOPMENT_ROLES
                     or trial["input_sha256"] is not None and not _sha256(trial["input_sha256"])):
                 continue
             parents, feedback = trial["parent_ids"], trial["feedback_from"]
@@ -228,12 +233,12 @@ def delivered_trials(packet: dict[str, Any]) -> list[str]:
                     or set(evidence) != set(parents + feedback + trial.get("learning_from", []) + [trial["candidate_id"]])
                     or not all(isinstance(card, dict) and _complete_card(card) for card in evidence.values())):
                 continue
-            digest = archive_tools.sha256(archive_tools.canonical(
+            digest = sha256(canonical(
                 _retrieval_identity(archive_name, history["comparison_key"], trial)))
             if _sha256(trial.get("retrieval_sha256")) and trial["retrieval_sha256"] == digest:
                 if trial["proposal_id"] not in delivered:
                     delivered.append(trial["proposal_id"])
-        except (KeyError, TypeError, ValueError, archive_tools.ArchiveFailure):
+        except (KeyError, TypeError, ValueError, ArchiveFailure):
             # A bounded card may have omitted complete mappings or identifiers.
             continue
     return delivered

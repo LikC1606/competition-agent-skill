@@ -11,6 +11,8 @@ import statistics
 import sys
 from typing import Any
 
+import timeslot_workloads
+
 
 QUALITY_TIE_EPSILON = 1e-12
 METRIC_FIELDS = ["uniformity", "stability", "operation_ms", "init_ms"]
@@ -25,9 +27,14 @@ def load_result(path: pathlib.Path) -> dict[str, Any]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ComparisonFailure(f"Cannot read result JSON {path}: {exc}") from exc
+    keyed_rows(value, path)
+    return value
+
+
+def validate_header(value: dict[str, Any], path: pathlib.Path) -> None:
     if not isinstance(value, dict):
         raise ComparisonFailure(f"Result must be a JSON object: {path}")
-    if type(value.get("schema_version")) is not int or value.get("schema_version") != 2:
+    if type(value.get("schema_version")) is not int or value.get("schema_version") not in {2, 3}:
         raise ComparisonFailure(f"Unsupported result schema version: {path}")
     if value.get("status") != "success" or value.get("correct") is not True:
         raise ComparisonFailure(f"Result is not a successful correct evaluation: {path}")
@@ -43,10 +50,10 @@ def load_result(path: pathlib.Path) -> dict[str, Any]:
     rows = metrics.get("rows")
     if not isinstance(rows, list) or not rows:
         raise ComparisonFailure(f"Result has no workload rows: {path}")
-    return value
 
 
 def keyed_rows(result: dict[str, Any], path: pathlib.Path) -> dict[tuple[int, int, int, str], dict[str, float]]:
+    validate_header(result, path)
     keyed: dict[tuple[int, int, int, str], dict[str, float]] = {}
     for index, row in enumerate(result["metrics"]["rows"]):
         if not isinstance(row, dict):
@@ -75,6 +82,10 @@ def keyed_rows(result: dict[str, Any], path: pathlib.Path) -> dict[tuple[int, in
         if values["operation_ms"] < 0 or values["init_ms"] < 0:
             raise ComparisonFailure(f"Negative time metric in row {index} of {path}")
         keyed[key] = values
+    try:
+        timeslot_workloads.validate_result(result, keyed)
+    except timeslot_workloads.WorkloadFailure as exc:
+        raise ComparisonFailure(f"{exc}: {path}") from exc
     return keyed
 
 
@@ -109,10 +120,6 @@ def compare(baseline: dict[str, Any], baseline_path: pathlib.Path,
 
     base_rows = keyed_rows(baseline, baseline_path)
     candidate_rows = keyed_rows(candidate, candidate_path)
-    if base_rows.keys() != candidate_rows.keys():
-        missing = sorted(base_rows.keys() - candidate_rows.keys())
-        extra = sorted(candidate_rows.keys() - base_rows.keys())
-        raise ComparisonFailure(f"Workload sets differ; missing={missing[:3]}, extra={extra[:3]}")
 
     paired = []
     groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
@@ -180,6 +187,8 @@ def compare(baseline: dict[str, Any], baseline_path: pathlib.Path,
         "baseline": {"result": str(baseline_path.resolve()), "candidate_hash": baseline["candidate_hash"]},
         "candidate": {"result": str(candidate_path.resolve()), "candidate_hash": candidate["candidate_hash"]},
         "workload_count": len(paired),
+        "workload_hash": timeslot_workloads.seal(baseline["stage"])["workload_hash"],
+        "workload_protocol": timeslot_workloads.PROTOCOL,
         "quality_proxy_definition": "0.55 * uniformity + 0.35 * stability; local proxy, not official total score",
         "timing_note": "One execution per candidate/workload; timing deltas are descriptive and should be repeated before promotion.",
         "summary": {

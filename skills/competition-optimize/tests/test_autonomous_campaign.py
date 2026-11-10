@@ -708,6 +708,30 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertEqual(self.state()["status"], "limit_reached")
         self.assertEqual(len(self.calls()), 5)
 
+    def test_turn_seals_instruction_resources_and_keeps_provenance_out_of_candidate_contract(self) -> None:
+        self.seed_open_branches(2)
+        result = self.start("--max-turns", "1")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = self.state()
+        request = json.loads((self.campaign / "turns/000001/request.json").read_text())
+        snapshot = request["instruction_snapshot"]
+        root = Path(snapshot["skill_root"])
+        self.assertEqual(request["workflow_provenance"], state["workflow_provenance"])
+        self.assertIn(str(root / "SKILL.md"), self.calls()[0]["prompt"])
+        self.assertIn(str(root / "scripts/candidate_archive.py"), self.calls()[0]["prompt"])
+        self.assertEqual((root / "SKILL.md").read_bytes(), (SCRIPTS.parent / "SKILL.md").read_bytes())
+        requirements = SCRIPTS / "requirements-tabular.txt"
+        if requirements.exists():
+            self.assertEqual((root / "scripts/requirements-tabular.txt").read_bytes(), requirements.read_bytes())
+        comparison = request["context"]["objective_progress"]["comparison"]
+        self.assertNotIn("workflow_provenance", comparison)
+        reference = root / "references/iteration-trace.md"
+        reference.write_text(reference.read_text() + "\nModified sealed reference.\n")
+        resumed = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(resumed.returncode, 2, resumed.stderr + resumed.stdout)
+        self.assertEqual(len(self.calls()), 1)
+        self.assertIn(str(reference), self.state()["stop_reason"])
+
     def test_normal_turns_resume_the_exact_session_and_record_usage(self) -> None:
         result = self.start("--max-turns", "3", "--model", "mock-model")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)

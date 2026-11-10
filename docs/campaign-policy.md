@@ -1,5 +1,7 @@
 # Campaign 每轮决策
 
+2026-11-10 更新：Policy 仍保持纯决策。Driver 的封存/接收顺序由 `TurnLifecycle` 承担，schema-v2 默认值由 `campaign_state` 统一。`campaign_handoff` 选择完整证据卡，`campaign_prompt` 按 mode/实际证据生成说明；`campaign_workflow` 冻结真实指令 package。新来源信息不改变候选比较身份，[运行与兼容说明](../skills/competition-optimize/references/unattended-campaign.md)。
+
 长期驱动将每轮的工作选择、上下文刷新和成功交付确认集中在
 [campaign_policy.py](../skills/competition-optimize/scripts/campaign_policy.py)。
 Driver 继续持有进程、锁、请求封存和持久化顺序；档案文件的读取、核验和接收

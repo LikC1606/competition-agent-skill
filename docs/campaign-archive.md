@@ -1,5 +1,7 @@
 # Campaign 档案接收
 
+2026-11-10 更新：Driver 通过 [`TurnLifecycle`](../skills/competition-optimize/scripts/turn_lifecycle.py) 统一安排 prepare/accept 的顺序，通过 `CodexInvocation` 解释 CLI 结果；`CampaignArchive` 仍独立接收合法追加，不依赖 receipt 成功。档案与 schema 兼容规则不变，详见 [本轮验证](refactor-implementation-2026-11-10.md)。
+
 [campaign_archive.py](../skills/competition-optimize/scripts/campaign_archive.py)
 将 Driver 对已确认前缀的读取、文件核验和轮末接收集中为 `CampaignArchive`。
 调用方继续持有现有资源锁，并先核验 worker 退出、token 和输出摘要。

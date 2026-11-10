@@ -88,10 +88,12 @@ def normalize(value: Any, raw: bytes, entry: dict[str, Any], identity: dict[str,
 
 
 def verify(value: dict[str, Any], entry: dict[str, Any], identity: dict[str, Any],
-           hash_path: Callable[[pathlib.Path], str]) -> None:
+           hash_path: Callable[[pathlib.Path], str], *,
+           resolve_path: Callable[[pathlib.Path], pathlib.Path] | None = None) -> None:
     validate(value, entry, identity)
-    roots = [root.resolve(strict=True) for root in _roots(entry, identity)]
+    resolve = resolve_path if resolve_path is not None else lambda path: path.resolve(strict=True)
+    roots = [resolve(root) for root in _roots(entry, identity)]
     for item in value["code_evidence"]:
-        path = pathlib.Path(item["path"]).resolve(strict=True)
+        path = resolve(pathlib.Path(item["path"]))
         if not path.is_file() or not _bound(path, roots) or hash_path(path) != item["sha256"]:
             raise ReviewFailure("Reviewed code evidence changed or left the evaluated snapshot")

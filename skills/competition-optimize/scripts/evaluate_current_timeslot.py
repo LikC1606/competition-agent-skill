@@ -12,7 +12,6 @@ import math
 import os
 import pathlib
 import platform
-import re
 import shutil
 import subprocess
 import time
@@ -20,25 +19,12 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any
 
+import timeslot_rules
+import timeslot_workloads
+from timeslot_workloads import SCENARIOS
 
-SEEDS = [1, 7, 17, 31, 101]
-FULL_SIZES = [400, 10000]
-SHORT_SIZES = [100, 400, 10000]
-SHORT_LENGTHS = [1, 10, 100]
-SCENARIOS = ["mixed", "sparse", "dense", "single", "bulk", "many-types", "dominant", "uneven", "fresh-id"]
 CSV_FIELDS = ["seed", "scenario", "N", "Q", "uniformity", "stability", "operation_ms", "init_ms"]
 COMPILER_FLAGS = ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic"]
-ALLOWED_DEREFERENCES = {
-    "before", "after", "lower", "upper", "left_before", "left_after", "right_before_a",
-    "right_after_a", "current", "left_upper", "left_previous", "left_next", "right_before",
-    "right_after", "at",
-}
-FORBIDDEN_PATTERNS = [
-    r"\b(float|double)\b",
-    r"\b(sqrt|pow|sin|cos|tan|log|exp|fmod)\s*\(",
-    r"\bmain\s*\(",
-    r"\b(cin|cout|printf|scanf|fopen|clock|chrono)\b",
-]
 CORRECTNESS_MARKERS = [
     "grid length", "count mismatch", "unexpected service id", "invalid change count",
 ]
@@ -69,9 +55,12 @@ def runtime_environment() -> dict[str, str]:
 
 
 def digest_contract(root: pathlib.Path, adapter_path: pathlib.Path, compiler_path: str,
-                    compiler_version: str, environment: dict[str, str], stage: str, timeout: int) -> str:
+                    compiler_version: str, environment: dict[str, str], stage: str, timeout: int,
+                    rule_compiler: dict[str, Any] | None = None) -> str:
     included = [
         adapter_path,
+        adapter_path.parent / "timeslot_workloads.py",
+        adapter_path.parent / "timeslot_rules.py",
         root / "solution.h",
         root / "tests" / "benchmark.cpp",
         root / "tests" / "short_sequence.cpp",
@@ -93,11 +82,8 @@ def digest_contract(root: pathlib.Path, adapter_path: pathlib.Path, compiler_pat
         "runtime_environment": environment,
         "flags": COMPILER_FLAGS,
         "timeout_seconds": timeout,
-        "seeds": SEEDS,
-        "full_sizes": FULL_SIZES,
-        "short_sizes": SHORT_SIZES,
-        "short_lengths": SHORT_LENGTHS,
-        "scenarios": SCENARIOS,
+        "workload": timeslot_workloads.seal(stage) if stage in {"smoke", "short", "full"} else None,
+        "rule_compiler": rule_compiler,
         "package_entries": ["Solution.cpp", "solution.h"],
     }
     digest.update(json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8"))
@@ -200,22 +186,9 @@ def classify_test_failure(stderr: str) -> str:
     return "runtime_failure"
 
 
-def audit_and_package(source: bytes, source_path: pathlib.Path, header_path: pathlib.Path,
-                      output_dir: pathlib.Path) -> dict[str, Any]:
-    try:
-        text = source.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise EvaluationFailure("rule_violation", "package_audit", "Submission source must be UTF-8") from exc
-    logic = re.sub(r"//[^\n]*|/\*[\s\S]*?\*/", "", text)
-    for match in re.finditer(r"[*/%]", logic):
-        following = re.match(r"\s*([A-Za-z_][A-Za-z_0-9]*)", logic[match.end():])
-        if match.group() != "*" or following is None or following.group(1) not in ALLOWED_DEREFERENCES:
-            excerpt = logic[max(0, match.start() - 30):match.end() + 30].replace("\n", " ")
-            raise EvaluationFailure("rule_violation", "package_audit", f"Forbidden arithmetic token near: {excerpt}")
-    for pattern in FORBIDDEN_PATTERNS:
-        if re.search(pattern, logic):
-            raise EvaluationFailure("rule_violation", "package_audit", f"Forbidden submission construct: {pattern}")
-
+def package_submission(source: bytes, source_path: pathlib.Path, header_path: pathlib.Path,
+                       output_dir: pathlib.Path) -> dict[str, Any]:
+    """Verify exact submission bytes, without claiming static or runtime validity."""
     archive_path = output_dir / "submission.zip"
     extracted = output_dir / "package-verified"
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -241,10 +214,12 @@ def audit_and_package(source: bytes, source_path: pathlib.Path, header_path: pat
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", required=True, type=pathlib.Path)
-    parser.add_argument("--stage", required=True, choices=["smoke", "short", "full", "package"])
+    parser.add_argument("--stage", required=True, choices=["smoke", "short", "full", "rules", "package"])
     parser.add_argument("--output-dir", required=True, type=pathlib.Path)
     parser.add_argument("--competition-root", type=pathlib.Path, default=os.environ.get("COMPETITION_ROOT"))
     parser.add_argument("--compiler", default=os.environ.get("CXX", "g++"))
+    parser.add_argument("--rule-compiler", default=os.environ.get("CLANGXX", "clang++"),
+                        help="Clang C++ compiler for the rules stage; unavailable checks fail explicitly")
     parser.add_argument("--timeout", type=int, default=60,
                         help="timeout in seconds per compile or test process")
     return parser
@@ -275,7 +250,9 @@ def main() -> int:
         return 2
 
     result: dict[str, Any] = {
-        "schema_version": 2, "stage": args.stage, "status": "failed", "correct": None,
+        "schema_version": 3, "stage": args.stage, "status": "failed", "correct": None,
+        "validity_scope": {"rules": "static_rule_subset", "package": "package_bytes"}.get(args.stage, "fixed_workload_correctness"),
+        "unchecked_rules": ["static_rules", "all_other_official_rules", "official_score_and_hidden_test_performance"],
         "started_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "runtime_environment": runtime_environment(),
         "candidate": str(args.candidate.expanduser().resolve()), "candidate_hash": None,
@@ -285,6 +262,13 @@ def main() -> int:
     phase = "setup"
     started_clock = time.perf_counter()
     rows: list[dict[str, Any]] = []
+    if args.stage in {"smoke", "short", "full"}:
+        contract = timeslot_workloads.seal(args.stage)
+        result["workload_hash"] = contract["workload_hash"]
+        result["evaluation"] = {"workload_protocol": contract["workload_protocol"],
+                                "expected_cases": contract["expected_cases"], "completed_cases": 0}
+    elif args.stage == "package":
+        result["unchecked_rules"].append("algorithm_correctness")
     try:
         candidate_path = args.candidate.expanduser().resolve(strict=True)
         if not candidate_path.is_file():
@@ -312,7 +296,7 @@ def main() -> int:
         result["artifacts"].append(str(snapshot.relative_to(output_dir)))
 
         compiler, version = "not-used", "not-used"
-        if args.stage != "package":
+        if args.stage in {"smoke", "short", "full"}:
             compiler = shutil.which(args.compiler)
             if compiler is None and pathlib.Path(args.compiler).is_file():
                 compiler = str(pathlib.Path(args.compiler).resolve())
@@ -330,16 +314,27 @@ def main() -> int:
             result["compiler"] = {"command": compiler, "version": version, "flags": COMPILER_FLAGS}
         else:
             result["compiler"] = {"command": None, "version": None, "flags": []}
+        rule_compiler = timeslot_rules.compiler_identity(args.rule_compiler, args.timeout) if args.stage == "rules" else None
         adapter_path = pathlib.Path(__file__).resolve()
         environment = result["runtime_environment"]
         result["evaluator_hash"] = digest_contract(root, adapter_path, compiler, version,
-                                                    environment, args.stage, args.timeout)
+                                                    environment, args.stage, args.timeout, rule_compiler)
 
         if args.stage == "package":
-            phase = "package_audit"
-            result["metrics"]["package"] = audit_and_package(source, candidate_path, root / "solution.h", output_dir)
+            phase = "package_verify"
+            result["metrics"]["package"] = package_submission(source, candidate_path, root / "solution.h", output_dir)
             result["artifacts"].extend(["submission.zip", "package-verified/Solution.cpp", "package-verified/solution.h"])
-            result["correct"] = True
+        elif args.stage == "rules":
+            phase = "rule_check"
+            checked = timeslot_rules.check_rules(snapshot, root, rule_compiler, args.timeout)
+            result["rule_check"] = checked
+            result["unchecked_rules"] = checked["unchecked_rules"]
+            (output_dir / "rule-check.json").write_text(json.dumps(checked, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            result["artifacts"].append("rule-check.json")
+            if checked["status"] == "unavailable":
+                raise EvaluationFailure("rule_check_unavailable", phase, checked["error"])
+            if checked["status"] == "violation":
+                raise EvaluationFailure("rule_violation", phase, f"Found {len(checked['violations'])} static rule findings; see rule-check.json")
         else:
             phase = "compile"
             harness = "tests/short_sequence.cpp" if args.stage in ["smoke", "short"] else "tests/benchmark.cpp"
@@ -356,51 +351,26 @@ def main() -> int:
                                          "\n".join(detail[-12:]) or "Compiler returned non-zero")
             result["artifacts"].append(binary.name)
 
-            if args.stage == "smoke":
-                phase = "correctness_test"
-                stdout_path, stderr_path = output_dir / "smoke.stdout.txt", output_dir / "smoke.stderr.txt"
-                result["artifacts"].extend(["smoke.stdout.txt", "smoke.stderr.txt"])
-                tested = run_process([str(binary), "17", "100", "1"], output_dir, args.timeout,
-                                     stdout_path, stderr_path, phase)
+            phase = "benchmark" if args.stage == "full" else "correctness_test"
+            for n, q, seed in timeslot_workloads.invocations(args.stage):
+                stem = ("smoke" if args.stage == "smoke" else f"full-n{n}-seed{seed}" if args.stage == "full"
+                        else f"short-n{n}-q{q}-seed{seed}")
+                result["artifacts"].extend([f"{stem}.stdout.txt", f"{stem}.stderr.txt"])
+                arguments = [str(seed), str(n)] + ([] if args.stage == "full" else [str(q)])
+                tested = run_process([str(binary), *arguments], output_dir, args.timeout,
+                                     output_dir / f"{stem}.stdout.txt", output_dir / f"{stem}.stderr.txt", phase)
                 if tested.returncode != 0:
                     detail = tested.stderr.strip().splitlines()
-                    kind = classify_test_failure(tested.stderr)
-                    raise EvaluationFailure(kind, phase,
-                                             "\n".join(detail[-12:]) or f"Process exited {tested.returncode}")
-                rows = parse_rows(tested.stdout, len(SCENARIOS), {"seed": 17, "N": 100, "Q": 1})
-            elif args.stage == "short":
-                phase = "correctness_test"
-                for n in SHORT_SIZES:
-                    for length in SHORT_LENGTHS:
-                        for seed in SEEDS:
-                            stem = f"short-n{n}-q{length}-seed{seed}"
-                            result["artifacts"].extend([f"{stem}.stdout.txt", f"{stem}.stderr.txt"])
-                            tested = run_process([str(binary), str(seed), str(n), str(length)], output_dir, args.timeout,
-                                                 output_dir / f"{stem}.stdout.txt", output_dir / f"{stem}.stderr.txt", phase)
-                            if tested.returncode != 0:
-                                detail = tested.stderr.strip().splitlines()
-                                kind = classify_test_failure(tested.stderr)
-                                raise EvaluationFailure(kind, phase,
-                                                         f"N={n}, Q={length}, seed={seed}: " +
-                                                         ("\n".join(detail[-12:]) or f"Process exited {tested.returncode}"))
-                            rows.extend(parse_rows(tested.stdout, len(SCENARIOS),
-                                                   {"seed": seed, "N": n, "Q": length}))
-            else:
-                phase = "benchmark"
-                for n in FULL_SIZES:
-                    for seed in SEEDS:
-                        stem = f"full-n{n}-seed{seed}"
-                        result["artifacts"].extend([f"{stem}.stdout.txt", f"{stem}.stderr.txt"])
-                        tested = run_process([str(binary), str(seed), str(n)], output_dir, args.timeout,
-                                             output_dir / f"{stem}.stdout.txt", output_dir / f"{stem}.stderr.txt", phase)
-                        if tested.returncode != 0:
-                            detail = tested.stderr.strip().splitlines()
-                            kind = classify_test_failure(tested.stderr)
-                            raise EvaluationFailure(kind, phase,
-                                                     f"N={n}, seed={seed}: " +
-                                                     ("\n".join(detail[-12:]) or f"Process exited {tested.returncode}"))
-                        rows.extend(parse_rows(tested.stdout, len(SCENARIOS),
-                                               {"seed": seed, "N": n, "Q": 1000}))
+                    raise EvaluationFailure(classify_test_failure(tested.stderr), phase,
+                                             f"N={n}, Q={q}, seed={seed}: " +
+                                             ("\n".join(detail[-12:]) or f"Process exited {tested.returncode}"))
+                rows.extend(parse_rows(tested.stdout, len(SCENARIOS), {"seed": seed, "N": n, "Q": q}))
+
+            result["evaluation"]["completed_cases"] = len(rows)
+            try:
+                timeslot_workloads.validate_result(result, [(row["N"], row["Q"], row["seed"], row["scenario"]) for row in rows])
+            except timeslot_workloads.WorkloadFailure as exc:
+                raise EvaluationFailure("invalid_result", "workload_verify", str(exc)) from exc
 
             rows_path = output_dir / "metrics.csv"
             with rows_path.open("w", newline="", encoding="utf-8") as stream:
@@ -414,14 +384,16 @@ def main() -> int:
             }
             result["correct"] = True
 
+        if args.stage == "rules":
+            rule_compiler = timeslot_rules.compiler_identity(args.rule_compiler, args.timeout)
         after_hash = digest_contract(root, adapter_path, compiler, version,
-                                     environment, args.stage, args.timeout)
+                                     environment, args.stage, args.timeout, rule_compiler)
         if after_hash != result["evaluator_hash"]:
             raise EvaluationFailure("contract_changed", phase, "Evaluator inputs changed while this run was executing")
         result["status"] = "success"
     except EvaluationFailure as exc:
         result["error"] = {"type": exc.kind, "phase": exc.phase, "message": str(exc)}
-        if exc.kind in ["correctness_failure", "compilation_failure", "rule_violation", "package_failure", "runtime_failure"]:
+        if exc.kind in ["correctness_failure", "compilation_failure", "runtime_failure"]:
             result["correct"] = False
         if exc.kind == "timeout" and exc.phase in ["compile", "correctness_test", "benchmark"]:
             result["correct"] = False
@@ -432,6 +404,8 @@ def main() -> int:
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
         result["error"] = {"type": "infrastructure_failure", "phase": phase, "message": str(exc)}
 
+    if "evaluation" in result:
+        result["evaluation"]["completed_cases"] = len(rows)
     if result["status"] != "success" and rows:
         rows_path = output_dir / "metrics.csv"
         with rows_path.open("w", newline="", encoding="utf-8") as stream:
@@ -455,6 +429,11 @@ def main() -> int:
         "stage": result["stage"],
         "status": result["status"],
         "correct": result["correct"],
+        "validity_scope": result["validity_scope"],
+        "unchecked_rules": result["unchecked_rules"],
+        "rule_check": result.get("rule_check"),
+        "workload_hash": result.get("workload_hash"),
+        "evaluation": result.get("evaluation"),
         "candidate_hash": result["candidate_hash"],
         "evaluator_hash": result["evaluator_hash"],
         "metrics_summary": summary,
