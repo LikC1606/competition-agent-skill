@@ -37,6 +37,8 @@ At initial formulation, after consequential new evidence, or when progress becom
 
 Actively use [competition research](references/competition-research.md) to find strong applicable methods and evaluation pitfalls before investing in a formulation, and revisit it when a specific unresolved mechanism warrants another search. Do not wait for supplied URLs. Reuse relevant sources already read and move to implementation once the mechanism and prerequisites are understood.
 
+For Kaggle-specific discovery, original posts/comments and matched notebook versions, use the optional [source reader](references/kaggle-sources.md). It saves source snapshots and visible reading limits for the existing research notes and proposal basis; it does not verify transfer or produce a candidate score.
+
 When studying a strong solution, reconstruct why its representation, construction, internal pricing, maintenance and compute allocation work together. Identify missing capabilities and coupled components before transplantation. Read [strategy-design.md](references/strategy-design.md) and, when useful, its [source patterns](references/source-patterns.md). A coherent structural hypothesis can justify a prototype before measured gain exists; promotion still requires results.
 
 For entries that run an LLM or agent, use [the evidence-to-mechanism guide](references/llm-agent-competitions.md#choose-the-layer-from-evidence) to distinguish supervision, answer selection, inference limits and interaction failures before choosing another training variant. Fixed generated answers can support [vote replay](references/inference-vote-replay.md); its report informs a proposal, not candidate promotion.

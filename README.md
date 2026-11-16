@@ -11,6 +11,7 @@
 | 能力 | 已实现的范围 | 使用入口 |
 | --- | --- | --- |
 | 策略与迭代 | 按缺口分流研究／评测修复／诊断／实现，将强方案转为能力改进，并按结果选择后继 | [技能入口](skills/competition-optimize/SKILL.md)、[决策路由](skills/competition-optimize/references/decision-loop.md)、[策略设计](skills/competition-optimize/references/strategy-design.md) |
+| Kaggle 资料读取 | 比赛范围发现与翻页、榜单关联、方案帖与评论、指定 notebook 版本、本地快照；主要读取链路与 API token 认证已在线验证 | [只读来源工具](skills/competition-optimize/references/kaggle-sources.md) |
 | 候选证据 | 提案/结果关联、未决机会、诊断、条件经验、互补案例、资源权衡、配对复测 | [迭代档案](skills/competition-optimize/references/iteration-trace.md) |
 | 无人值守 | 每轮按需上下文、完整证据卡、指令快照、进程恢复、档案接收与检查点 | [启动与恢复](skills/competition-optimize/references/unattended-campaign.md) |
 | 固定时隙 C++ | 固定 workload 完整性、Clang AST 已声明规则子集、ZIP 字节核验 | [timeslot adapter](skills/competition-optimize/references/fixed-timeslot.md) |
@@ -78,6 +79,10 @@ git rev-parse HEAD
 
 ## 文档与证据
 
+- [后续改进方案](docs/competition-improvement-plan-2026-11-16.md)与[实施记录](docs/competition-improvement-implementation-2026-11-16.md)：五个方向的具体增量、已实现工具与案例、相关检查和在线接入边界。
+- [专业比赛 Skills 与 Agents 研究报告](docs/competition-skills-agents-research-report-2026-11-16.md)：围绕五个方向分析实际机制、理论依据、评测边界、成本及相对当前 skill 的采用顺序。
+- [专业比赛 Skills 与 Agents 收集](docs/competition-skills-agents-2026-11-16.md)：按五个优化方向核对专业工具、可复用机制、源码版本和接入边界。
+- [下载与本地源码精读](docs/competition-local-source-reading-2026-11-16.md)：本地固定版本入口、实际调用链、可迁移机制及源码复读后的结论修订。
 - [本轮方案](docs/refactor-plan-2026-11-10.md)、[源码和一手资料依据](docs/refactor-evidence-2026-11-10.md)、[实施与验证](docs/refactor-implementation-2026-11-10.md)。
 - 当前模块设计：[候选证据](docs/candidate-evidence.md)、[档案恢复](docs/campaign-archive.md)、[纯策略](docs/campaign-policy.md)。
 - 历史设计和经验：[MVP](docs/mvp-plan.md)、[实际使用复盘](docs/execution-first-revision.md)、[源码研究](docs/source-study-20261022.md)。旧默认额度不适用于当前技能。

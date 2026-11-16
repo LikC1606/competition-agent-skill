@@ -114,6 +114,8 @@ Replace the example path and hypothesis with this task's verified snapshot and e
 
 For a user-inspired proposal, include the short original idea or its message/note reference and the interpreted mechanism in `basis`; this text is retained in both `brief` pending details and `trace`. Keep `feedback_from` bound to actual development candidate IDs, including a baseline when needed, rather than inventing a result ID for a user message. Extra arbitrary proposal fields are not retained by the helper. After execution, connect the measured outcome back to the tested idea in `--feedback`. Follow [user-idea handling](score-search.md#turn-user-ideas-into-experiments) when deciding priority or handling new input.
 
+For a source-supported proposal, put the pinned URL, saved source path/hash, applicable passage and transfer argument in `basis`; use the task's existing `research.md` for longer context. The [dispatch example](competition-research.md#worked-example-source-evidence-to-a-dispatch-proposal) uses this path without adding proposal fields. A source snapshot or hand calculation is supporting evidence, not a new adapter result or an invented `feedback_from` candidate.
+
 For modeling, the parent record should include predictions as `--source` and a compact immutable training-code/recipe directory as `--configuration`; `code_targets` names a file inside that directory. Evaluated predictions are outputs, not code targets. For an algorithm, the target can name the archived source or an applicable configuration file. The proposal command verifies parent artifact/result bytes and binds the targets to the executable snapshots. Unrelated files, changed parent bytes, missing produced-output recipes, unknown IDs and confirmation feedback are rejected.
 
 ```powershell
@@ -205,6 +207,19 @@ When a report changes a new construction or diagnostic, add `"learning_from": ["
 The archive carries `learning_from` through pending details, the executed successor, exact trace and matched trial handoff. Trace additionally returns the original cited reports as `learning_evidence`; matched trial cards retain them and the existing delivery seal detects changed or truncated reports. A cross-contract card omits report prose and supplies revalidation pointers. If bounded context omits details, retrieve the exact trace rather than guessing the lesson.
 
 Learning remains the Agent's interpretation. Hashes bind evidence identities, not semantic truth or causal explanations. Inspect the cited code/results, revise conditions when new evidence disagrees, and let actual evaluation decide improvement. This optional path adds no model call, ranking gate, method blacklist, forced trial count or stopping rule.
+
+### Worked Follow-through: Readiness Dispatch
+
+Continue the [source-supported proposal](competition-research.md#worked-example-source-evidence-to-a-dispatch-proposal) and [JSSP hand example](strategy-design.md#worked-example-jssp-dispatch) only with actual executed artifacts. The branches below describe how to interpret possible outcomes; no such runs or scores are asserted here.
+
+| Executed evidence | Existing record and next action |
+| --- | --- |
+| The successor still ranks only duration, or adds only the common offset | In `implementation_review`, describe the actual selection path and missing readiness/state components with citations inside that successor. Keep its actual result; the absent mechanism has not failed a performance test. Decide whether completing it remains useful. |
+| Readiness affects selection, but the schedule is invalid or execution fails | Retain the failed result and code; use an eligible review to locate the defect, then repair. This is not valid scored evidence for `learning`. |
+| State maintenance, ranking and legal updates are implemented, but complete development makespan regresses | Judge fidelity separately from prediction status. If recording `learning`, cite the valid measured successor and relevant matched controls, retain the observed failure conditions and limits, and choose a supported next mechanism rather than sweeping the common bias. |
+| A complete successor improves matched development results | Preserve actual gains, regressions and costs. Decide promotion separately; any conditional lesson cites this executed evidence, not the source author's system score. |
+
+For example, if actual evidence shows that earlier starts still postpone critical-path work, a learning report can retain that observed condition and propose inspecting the remaining-path information before choosing another dispatch rule. A later proposal that uses this conclusion names its current report head in `learning_from` and explains the application or counterexample in `basis`; it still needs its own concrete change, predicted observation and comparison. Do not create that empirical lesson from the hand example alone. If only stochastic ordering remains consequentially unresolved, reuse existing observations or the frozen paired measurement path; do not select a lucky repeat. None of these records establishes a permanent method blacklist or a causal contribution for every idea in a batch.
 
 When a proposed action cannot be run, preserve it as pending or close it with a concrete stop:
 
