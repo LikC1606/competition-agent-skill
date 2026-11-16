@@ -141,6 +141,8 @@ Break the baseline down by score component and representative case group. For ea
 
 For supported CSV predictions, [paired development error analysis](data-model.md#diagnose-development-errors) can expose concentrated loss and slice regressions using saved predictions. Use its observations to propose a falsifiable mechanism, then evaluate any change on the full declared objective. A slice metric, majority of case wins, or loss concentration is diagnostic evidence; none changes the official aggregation or establishes that the errors can be fixed. Use the corresponding workload/episode diagnostics for algorithm and simulation tasks when available.
 
+For LLM entries, inspect generated-answer coverage, selection errors, output validity and exhausted budgets using [the LLM/agent guide](llm-agent-competitions.md#choose-the-layer-from-evidence). [Fixed-answer vote replay](inference-vote-replay.md) compares the declared cached sample budget with irreversible-lead stopping. It does not measure a new candidate, generate a missing correct answer or estimate new engine/batching performance. Use its report to justify a concrete policy implementation and matched real evaluation; keep diagnostic exact-match statistics separate from the official objective.
+
 Keep only decision-relevant hypotheses in the existing proposal/notes or `research.md`; do not duplicate a proposal to populate another queue. Useful fields are:
 
 | Field | What it must make clear |

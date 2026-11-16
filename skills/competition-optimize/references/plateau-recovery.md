@@ -12,6 +12,8 @@ Use an applicable bound, stronger reference or independently scored feasible sol
 
 Ask what capability would reach the better solution: a different representation, coupled decision, usable data signal or complete training/policy change. Low scores, time spent in a function, or an unexplained residual alone do not identify that capability. For sequential tasks, test the whole relevant horizon; an improvement in one update may damage later states.
 
+For LLM/agent entries, separate missing correct generations, correct samples lost by the selector, parsing/timeouts, and failures after a valid intermediate action. These suggest different layers in [the mechanism guide](llm-agent-competitions.md#choose-the-layer-from-evidence). [Vote replay](inference-vote-replay.md) can expose selection gaps and redundant sample slots within a recorded pool; that pool's retrospective coverage is neither an executable score nor evidence of unsampled capability. A new generation or interaction policy still needs a complete executed comparison.
+
 ## Test a Different Mechanism
 
 Compare the next refinement with a complete alternative aimed at the remaining limitation or structural opportunity. Choose the parent from matched historical best versions and relevant simpler baselines, not automatically the latest or largest implementation. Allow a standalone prototype behind the same task interface instead of inheriting every old heuristic, cache and fallback. When learning from a stronger solution, reconstruct the construction, cost model and maintenance dependencies before transplanting a module. Implement the coupled components needed to test the new representation; keep the incumbent available.
