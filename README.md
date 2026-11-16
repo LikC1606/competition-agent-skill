@@ -14,7 +14,7 @@
 | 固定时隙 C++ | 固定 workload 完整性、Clang AST 已声明规则子集、ZIP 字节核验 | [timeslot adapter](skills/competition-optimize/references/fixed-timeslot.md) |
 | 预测文件 | 无权标量回归/二分类 CSV 评分、比较、错误分析和已有预测组合诊断 | [预测工具](skills/competition-optimize/references/data-model.md) |
 | 数值表格训练 | 实际 fold 训练、OOF、group/time 检查、冻结模型、独立确认和提交 CSV | [训练 adapter](skills/competition-optimize/references/tabular-training.md) |
-| LLM 与 Agent 方法指南 | 数据合成与蒸馏、后训练、推理预算、轨迹重放和职责分离；执行需题目 adapter | [专项指南](skills/competition-optimize/references/llm-agent-competitions.md) |
+| LLM 与 Agent | 数据与训练、推理和交互机制指南；已生成答案的投票/早停离线诊断，真实推理需题目 adapter | [专项指南](skills/competition-optimize/references/llm-agent-competitions.md)、[投票重放](skills/competition-optimize/references/inference-vote-replay.md) |
 | 其它题型 | 共用档案与驱动；仍需对应的题目评测器 | [Adapter 合同](skills/competition-optimize/references/adapter-contract.md) |
 
 不设置默认总轮数、总时间或费用上限；遵守比赛约束、实际资源和用户当前限制。默认实施有依据的机制改动，专门参数搜索需要明确请求。确认集不参与开发决策；正式提交/上传需要明确授权。
@@ -35,6 +35,15 @@
 /absolute/path/to/tabular-env/bin/python examples/tabular_training_pilot.py \
   --output-dir /absolute/path/to/new-pilot-directory
 ```
+
+固定答案投票与早停的可运行示例：
+
+```sh
+/usr/bin/python3 examples/inference_vote_replay.py \
+  --output-dir "${TMPDIR:-/data/lzh/default-storage/tmp}/inference-vote-demo"
+```
+
+该示例生成合成答案缓存和诊断报告，目录须尚不存在；不调用模型，不代表真实比赛提分或实测运行时间节省。
 
 ## 无人值守启动
 

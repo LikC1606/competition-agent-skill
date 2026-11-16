@@ -21,6 +21,8 @@ At initial formulation, after consequential new evidence, or when progress becom
 
 When studying a strong solution, reconstruct why its representation, construction, internal pricing, maintenance and compute allocation work together. Identify missing capabilities and coupled components before transplantation. Read [strategy-design.md](references/strategy-design.md) and, when useful, its [source patterns](references/source-patterns.md). A coherent structural hypothesis can justify a prototype before measured gain exists; promotion still requires results.
 
+For entries that run an LLM or agent, use [the evidence-to-mechanism guide](references/llm-agent-competitions.md#choose-the-layer-from-evidence) to distinguish supervision, answer selection, inference limits and interaction failures before choosing another training variant. Fixed generated answers can support [vote replay](references/inference-vote-replay.md); its report informs a proposal, not candidate promotion.
+
 Accept user ideas in their intended form. Distinguish discussion, a suggestion, an explicit test/priority request and a hard requirement. In active optimization, turn a feasible idea into an implementation decision; honor explicit test priorities within the rules. Retain its origin and distinguish the tested interpretation from the original idea. See [user-idea handling](references/score-search.md#turn-user-ideas-into-experiments).
 
 Repeat this loop until an actual stopping condition applies:

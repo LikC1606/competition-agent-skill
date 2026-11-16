@@ -66,6 +66,8 @@ The archive's `iteration-trace` is an optimization proposal-to-result chain. For
 
 On a fixed set of recorded generations, replay can compare supported vote rules, sample subsets and eligible output-prefix stopping rules without regenerating everything. Label this as cached-trajectory evidence, with the assumptions and omitted costs. A truncated prefix must still produce a valid answer under the parser. Confirmation evidence remains isolated from this policy search.
 
+The supplied [fixed-answer vote replay tool](inference-vote-replay.md) implements a narrow diagnostic: plurality voting and irreversible-lead stopping on an ordered development cache, with failures consuming sample slots. It reports exact-match correctness, recorded-pool coverage and selected sample counts; optional cached costs are not new runtime measurements. It does not implement within-generation truncation, model generation or interactive replay.
+
 Changing quantization, model weights, prompts, engine, batching or a tool action can alter the generated path or runtime. Adaptive routing also changes workload and cache contention. Old trajectories cannot establish those counterfactual outputs, exact timing or new interactive outcomes. Run the affected candidate on the real adapter, with matched full fidelity before promotion. An offline replay is neither generally O(1) nor an exact submission simulator.
 
 ## Multi-Turn Agents and Final Delivery
