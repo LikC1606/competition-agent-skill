@@ -4,7 +4,7 @@ Read this when selecting or revising solution routes and their experiments. Opti
 
 ## Efficient Proposal and Quality Gate
 
-Use one short reconnaissance pass before implementation. Read the task contract and current candidate identity, recover the independent task formulation, map the score-affecting path, inspect profiles or error slices if already available, and retrieve only relevant matched trials. Reuse hashes and summaries instead of rereading unchanged logs. The pass ends when it supports choosing a concrete mechanism or a specific diagnostic would change that choice. A task-derived construction or representation need not first appear as a measured code bottleneck.
+Use one short reconnaissance pass before implementation. Read the task contract and current candidate identity, recover the independent task formulation, map the score-affecting path, inspect profiles or error slices if already available, and retrieve only relevant matched trials. Reuse hashes and summaries instead of rereading unchanged logs. Route a systematic evaluation defect to [evaluation repair](local-evaluation.md#route-an-evaluation-problem), and a choice-changing knowledge gap to [targeted research](competition-research.md), before treating another code variant as the answer. The pass ends when it supports a concrete mechanism or consequential diagnostic. A task-derived construction or representation need not first appear as a measured code bottleneck.
 
 Choose the next proposal by four practical questions: does it address a task-derived opportunity or observed limitation, is there a coherent mechanism with applicable prerequisites, is it feasible with available resources, and would its result change promotion or the next proposal? Prefer a complete change with meaningful headroom. Prior measured gain is not an entry requirement for a novel mechanism. Stop expanding the route list or polishing an explanation once these questions are answered and implement within the requested scope.
 
@@ -31,6 +31,8 @@ Produce one short actionable proposal using the existing decision card or notes:
 | Optimization mechanism | Concrete replacement or change, coupled components, expected effect on the declared objective and resources |
 | Test and cost | Observable prediction, validity checks, matched comparison, rejection condition and implementation/evaluation cost |
 | Novelty and decision | Fingerprint/parent, archive entries it differs from, route choice (exploit/explore), and what result would trigger the next switch |
+
+In this same proposal, connect the basis to the failure or opportunity, the changed capability, its predicted local effect and a plausible counterexample/failure. Task-derived reasoning, an inspected source or development evidence can supply that basis; all three are not mandatory, and a new mechanism need not already have a measured gain. "The public score went up" describes an observation, not why the change should work. If the only change is a nearby constant with no capability or behavior explanation, classify it as parameter refinement and follow the explicit tuning rule below.
 
 Treat the diagnosis as a hypothesis when evidence does not establish its cause. Compare the proposal with the nearest credible feasible alternative when that changes the choice. Implement the chosen proposal now. The proposal is an execution decision, not another report to finish before coding.
 
@@ -121,7 +123,7 @@ Compare a few routes from task structure, baseline behavior and relevant sources
 
 Compare the next proposed variant with the strongest affordable alternative route. Prefer the action with credible potential to change the best solution or resolve a consequential uncertainty; do not assign numerical expected gains without a basis. A tiny test can reveal a large opportunity, and a large rewrite can still be low value. Record the chosen route and why its nearest alternative was deferred; a short sentence at a decision boundary is enough.
 
-Typical structural changes are algorithm/representation/encoding/neighborhood replacements; model/feature/pipeline changes; different permitted data or training objectives; and changes to observations or planning in a policy. Thresholds, weights, seeds, and neighboring hyperparameters are usually refinements of an existing route. The classification explains the search, not a mandatory schema or a ban on a useful cheap tweak.
+Typical structural changes are algorithm/representation/encoding/neighborhood replacements; model/feature/pipeline changes; different permitted data or training objectives; and changes to observations or planning in a policy. Thresholds, weights, seeds, and neighboring hyperparameters are usually refinements of an existing route. Choose settings needed to implement an explained mechanism; an isolated value change or a renamed setting does not establish a new one. The classification explains the search rather than prescribing a new schema or requiring every change to replace the whole algorithm.
 
 A cache, a target-window filter or an extra cleanup pass inside the same optimizer usually tests a component refinement. Name it accurately. When repeated local refinements fail, implement a complete alternative method that addresses the limiting mechanism rather than renaming another local patch. Output equality with the incumbent is a useful check for an intentionally equivalent speedup; it must not exclude valid different solutions in a score-seeking route comparison.
 
@@ -131,9 +133,9 @@ Repeated refinements with negligible objective gains, improvements within noise,
 
 ## Turn Research into Testable Mechanisms
 
-Search from the task family, objective, ideal solution structure, scale and constraints, adding the incumbent's representation or a concrete bottleneck when relevant. Searching only the current implementation's vocabulary can hide other formulations. Prefer relevant original writeups, task documentation and corresponding source versions. Use [strategy learning](strategy-design.md#read-a-strong-solution-as-a-system) to reconstruct the design before extracting a module or constant; check the evaluator when a reported objective or validity claim matters. For implementation requests, move to a complete prototype once the mechanism and prerequisites are understood. For learning requests, deliver the reasoning and its implications before proposing tests.
+Use [competition research](competition-research.md) for question-driven Search → Read → Pivot, actively seeking relevant high-scoring solutions, especially Kaggle Discussions/Code, and their original evidence. Search from task structure as well as a concrete limitation; use [strategy learning](strategy-design.md#read-a-strong-solution-as-a-system) to reconstruct the design and prerequisites before extracting a mechanism. For implementation requests, move to a complete prototype once these are understood. For learning requests, deliver the reasoning and its implications before proposing tests.
 
-Convert useful sources into the hypothesis queue below. Record URL/version, license where reuse matters, prerequisites, and a cheap transfer test. Separate author-reported outcomes, inspected implementation, and local measurements. Historical wins, stars, or votes do not establish transfer. Read only the relevant section of [the task-family guide](task-playbooks.md) for concrete experiment options.
+Keep source chains, versions, applicable assumptions and useful negative results in existing `research.md` or notes. Put the inspected mechanism and transfer argument in the proposal's `basis`, and define its expected observation and local validation; copying winner constants is not a mechanism. Separate author-reported outcomes, inspected implementation and local measurements. Use matched local evidence to judge transfer; historical wins, votes and repeated public leaderboard gains cannot establish it. Read only the relevant section of [the task-family guide](task-playbooks.md) for concrete experiment options.
 
 ## Diagnose Before Choosing a Trial
 
@@ -288,7 +290,7 @@ Unchanged candidates repeated under a declared measurement protocol consume time
 
 ## Keep Search and Confirmation Separate
 
-Freeze the development metric, evaluation split, case weights and final confirmation protocol before candidate search. Choose a split appropriate to deployment: group or time splits when samples are dependent, fresh instances for combinatorial tasks, and matched repeated seeds for stochastic simulations.
+Establish [local evaluation quality](local-evaluation.md), then freeze the development metric, evaluation split, case weights and final confirmation protocol before candidate search. Choose a split appropriate to deployment: group or time splits when samples are dependent, fresh instances for combinatorial tasks, and matched repeated seeds for stochastic simulations. If a genuine protocol defect requires revision, preserve the old identity and re-evaluate affected comparisons; do not select a new protocol to flatter a candidate or mimic public rankings.
 
 Keep repetitions of one candidate distinct from independent complete agent runs when assessing the skill itself.
 
@@ -298,7 +300,7 @@ Record a `shortlist.json` before reading confirmation scores: finalist IDs and a
 
 Report the best development result separately when confirmation is unavailable or disagrees. Full-data retraining produces final artifacts, not a new unbiased validation score.
 
-Public leaderboard results can diagnose a mismatch with local validation, but repeated submissions can overfit the public set. Keep platform feedback and local evidence in separate records and respect submission authorization and quota.
+Public leaderboard results can diagnose a mismatch with local validation, but repeated submissions can overfit the public set. Before an authorized submission, retain the mechanism hypothesis, expected effect and local result. Do not select constants, seeds, features, prompts, blend weights or validation splits by repeated public-score probing. Investigate a mismatch through the scorer, pipeline, failures, leakage and justified distribution hypotheses; public gains alone cannot promote a locally unsupported change. Keep platform feedback and local evidence in separate records and respect submission authorization and quota.
 
 ## Promotion and Stop Decisions
 

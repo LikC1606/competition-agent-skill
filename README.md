@@ -2,13 +2,15 @@
 
 用于比赛解法的持续改进：从规则和强方案推导机制，实际修改代码或训练流水线，用匹配的评测比较，再把反馈接到下一项实现。技能入口是 [`competition-optimize`](skills/competition-optimize/SKILL.md)。
 
+主流程按当前缺口选择定向研究、评测修复、有效诊断或完整机制实现。资料检索产出可迁移的能力差距；本地评测分清机制探针、代表性比较和独立确认；公榜分歧触发诊断；失败结果决定修实现、换机制还是补测。完整设计见[围绕五个方向的比赛工作流](docs/competition-workflow-design.md)，分支细节见[资料检索](skills/competition-optimize/references/competition-research.md)与[本地评测设计](skills/competition-optimize/references/local-evaluation.md)。
+
 本轮按 [2026-11-10 重构方案](docs/refactor-plan-2026-11-10.md)实施，变更和验证见 [实施记录](docs/refactor-implementation-2026-11-10.md)。代码测试和集成演示不等于真实比赛提分；跨任务、多次运行的效果对照仍需独立实验。
 
 ## 当前能力
 
 | 能力 | 已实现的范围 | 使用入口 |
 | --- | --- | --- |
-| 策略与迭代 | 读题、理解强方案、提出机制、实际实现与评测、复核反馈和后继 | [技能入口](skills/competition-optimize/SKILL.md)、[策略设计](skills/competition-optimize/references/strategy-design.md) |
+| 策略与迭代 | 按缺口分流研究／评测修复／诊断／实现，将强方案转为能力改进，并按结果选择后继 | [技能入口](skills/competition-optimize/SKILL.md)、[决策路由](skills/competition-optimize/references/decision-loop.md)、[策略设计](skills/competition-optimize/references/strategy-design.md) |
 | 候选证据 | 提案/结果关联、未决机会、诊断、条件经验、互补案例、资源权衡、配对复测 | [迭代档案](skills/competition-optimize/references/iteration-trace.md) |
 | 无人值守 | 每轮按需上下文、完整证据卡、指令快照、进程恢复、档案接收与检查点 | [启动与恢复](skills/competition-optimize/references/unattended-campaign.md) |
 | 固定时隙 C++ | 固定 workload 完整性、Clang AST 已声明规则子集、ZIP 字节核验 | [timeslot adapter](skills/competition-optimize/references/fixed-timeslot.md) |
@@ -25,7 +27,7 @@
 
 > 使用本仓库的 competition-optimize，继续改进这份解法。先恢复未完成试验，按现有开发协议运行真实候选，再据结果执行下一项改动。我补充的想法是……
 
-如仅研究方案思路，明确说“只分析，不改代码”。如果当前没有可信评测器，先用已知正反例建立它。工具详情按题型和当前决策加载，不需要每轮读完整历史。
+如仅研究方案思路，明确说“只分析，不改代码”。如果当前没有可信评测器，先核对官方计分和目标分布，用已知正反例验证边界，再建立能区分机制的本地开发评测。工具详情按题型和当前决策加载，不需要每轮读完整历史。
 
 仓库脚本可直接运行，无须安装 skill。普通脚本使用 Python 3.10+；本次验证使用 `/usr/bin/python3` 3.12。数值训练需要独立的[可选依赖环境](skills/competition-optimize/references/tabular-training.md#setup-and-candidate-interface)。C++ 执行需要比赛 harness 和编译器，静态规则检查另需 Clang。
 

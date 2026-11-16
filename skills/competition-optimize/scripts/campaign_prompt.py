@@ -25,17 +25,25 @@ def prompt_for_turn(state: dict[str, Any], campaign: pathlib.Path, number: int,
         f"Operate an unattended competition optimization campaign. Read {instruction} and the fixed task "
         f"contract {campaign / 'task.md'}. The development archive is {state['archive']}. "
         f"Use {archive} brief/trace to retrieve evidence and propose/record for durable experiments. "
-        "Choose a useful mechanism from the task and matched history, inspect its source, implement it, "
-        "run the task adapter and archive the actual source/recipe and result. Research, renamed routes "
-        "or changed prediction bytes alone are not a new implementation. Compare only matching contracts; "
+        "Recover pending work and honor repair/frozen measurement obligations first. In ordinary search, "
+        "check whether scoring, information boundaries and workload coverage support the decision. Repair "
+        "a specific evaluation defect; investigate public/local disagreement without fitting public ranks. "
+        "If a missing capability or premise changes the route, use targeted competition discussions, strong "
+        "solutions and matching code. Stop research when the mechanism and prerequisites are understood. "
+        "Connect basis, capability change, predicted local effect and useful comparison; implement the complete "
+        "mechanism, run the adapter and archive actual source/recipe and results. If a concrete prerequisite "
+        "prevents meaningful execution, persist the finding and affected decision in existing notes and cite "
+        "the next action. Research, renamed routes or changed prediction bytes are not a new implementation "
+        "and do not reset stagnation. Compare only matching contracts; "
         "confirmation outcomes must not guide development. Preserve hard rules and actual user/resource limits. "
         "No default campaign turn/candidate allowance applies. A failed run does not disprove a method. "
-        "Recover pending work before repeating experiments; the latest candidate need not be the best parent. "
+        "The latest candidate need not be the best parent. "
         "Independent construction and intentional diagnostics are available through the skill's decision loop. "
         "Wait for local child jobs before returning; they cannot outlive this invocation. "
         "Do not submit, upload, publish or change access. Do not modify driver-owned state, task, sealed "
         "requests, instruction snapshots, exit records or the completion verifier. "
-        "After a useful archived step, promptly return the required JSON receipt with a concrete next_action. "
+        "After a useful archived step or grounded prerequisite finding, return the required JSON receipt "
+        "with a concrete next_action. "
         "This is a checkpoint batch; the driver executes its follow-up. Agent complete/blocked claims "
         "are advisory. A plateau calls for a fresh strategy and executable successor."
     ]
@@ -48,12 +56,15 @@ def prompt_for_turn(state: dict[str, Any], campaign: pathlib.Path, number: int,
                      "Only an explicit task-level objective change can select another primary contract.")
     if mode == "rethink":
         parts.append("This is a fresh-context strategy review. Re-derive the remaining capability gap from "
-                     "the objective and actual failures; examine a materially different representation, "
-                     "construction or combination and execute an informative trial this turn.")
+                     "the objective and actual failures, including strong applicable alternatives. Choose "
+                     "the missing research/evaluation premise or a complete mechanism; execute once its "
+                     "prerequisites are understood. More generic route lists are not progress.")
     elif mode == "execute":
         parts.append("Recent turns produced no distinct executed implementation. Build the smallest informative "
-                     "runnable successor from concrete code and feedback. Diagnose a missing dependency or a "
-                     "feasible local alternative instead of collecting generic approaches again.")
+                     "runnable successor from concrete code and feedback, including its necessary coupled parts. "
+                     "A specific research/evaluation "
+                     "prerequisite may come first; cite the inspected finding and what it changes. Once "
+                     "resolved, implement rather than repeat generic research.")
     elif mode == "repair":
         parts.append("Inspect execution_recovery's actual error/phase, source and logs. Repair candidate, data, "
                      "environment or missing measurement evidence while preserving the evaluator. A fresh review "
@@ -104,7 +115,9 @@ def prompt_for_turn(state: dict[str, Any], campaign: pathlib.Path, number: int,
          "targets; execute or explicitly stop a proposal. Cross-contract references require revalidation."),
         ((context.get("trial_history") or {}).get("selection"),
          "trial_history reconnects the proposed change and expected observation with actual code/results. "
-         "Use failures and unresolved mechanisms to change the next construction, not as universal blacklists."),
+         "Absent predicted behavior calls for implementation/dependency review; behavior without gain calls "
+         "for revisiting transfer; unclear ranking calls for useful matched evidence. Do not turn failures "
+         "into universal blacklists."),
         ((brief.get("scoped_learning") or {}).get("selection"),
          "scoped_learning is optional conditional interpretation. Check conditions, limitations and cited "
          "evidence; use learning_from when it changes a proposal and explicit revises when evidence changes it."),
