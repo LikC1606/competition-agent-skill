@@ -58,6 +58,23 @@ Before translating a nontrivial strategy into code, manually walk a small repres
 
 For concrete source-backed patterns and their limits, see [strategy-generation patterns](source-patterns.md). These examples are implementation leads, not rules to copy wholesale.
 
+## Worked Example: JSSP Dispatch
+
+Assume a parent dispatch rule in a job-shop scheduling task selects the unfinished job with the shortest next-operation duration. Inspected HeurAgenix [base code](https://github.com/microsoft/HeurAgenix/blob/e84bfb19e785ae2d670af6e3ab68890c71c536ea/src/problems/jssp/heuristics/basic_heuristics/shortest_processing_time_first_c374.py#L23) does this; its [readiness variant](https://github.com/microsoft/HeurAgenix/blob/e84bfb19e785ae2d670af6e3ab68890c71c536ea/src/problems/jssp/heuristics/evolved_heuristics/shortest_processing_time_first_d471.py#L53) instead computes `r_j = max(machine_end[next_machine(j)], job_end[j])`. This is a source-backed reasoning example, not a claim that this parent is our current entry or that the variant improves a contest score. The [research example](competition-research.md#worked-example-source-evidence-to-a-dispatch-proposal) shows how to cite it in a proposal.
+
+Consider a valid partial state where both next operations use an idle machine M with end time 0, and A's predecessor on another machine has already been placed through time 100:
+
+| Job | Next duration | Job end time | Feasible next start `r_j` |
+| --- | --- | --- | --- |
+| A | 1 | 100 | 100 |
+| B | 10 | 0 | 0 |
+
+Duration ranking selects A; readiness ranking selects B. The changed capability is to use available machine/job state during construction, potentially avoiding an append decision that reserves M behind a late-ready job. Complete the mechanism by maintaining those end times and operation indices, reading them in the actual ranking loop, and applying the selected job through the legal schedule-update operation. A new feature that never reaches selection, or stale state after an update, does not test this mechanism. Choosing an earlier start can still delay a critical operation or worsen downstream contention; full-schedule makespan and legal resource use remain the task evaluator's questions.
+
+The same inspected variant subtracts `c = bias_weight / (job_diversity + 1)` from every candidate's `r_j` at that state. With a common finite `c`, exact arithmetic and unchanged tie-breaking, `argmin_j(r_j - c) = argmin_j(r_j)`. This offset cannot provide the claimed job-specific trajectory preference. Sweeping it does not test a new dispatch capability; relative to the duration parent, the actual change is the readiness term. This algebraic observation is not a measured performance result.
+
+Use a hand walkthrough or existing trace to settle the decision difference, and source inspection to check that information reaches the returned action. If implemented, retain complete legal schedules, objective results and costs under a matched protocol. A stronger source system's score cannot establish this component's contribution, and a low score from an unconnected component cannot reject the intended mechanism. Record what actually happened through the existing [review and learning chain](iteration-trace.md#worked-follow-through-readiness-dispatch), without assigning a shared batch gain to every idea used during that batch.
+
 ## Worked Example: Dynamic Circular Layout
 
 In the Huawei fixed-timeslot task, updates change category quotas on a ring. Uniformity U rewards spacing, stability V charges additional changes relative to the layout at the current API call's entry, and quality accumulates over an update trajectory. These facts support the following reasoning independently of an existing swap optimizer:

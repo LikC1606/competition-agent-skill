@@ -54,6 +54,25 @@ Use the specific defect to choose work; a blanket demand for more folds, seeds o
 
 Only the affected comparison is blocked. Independent source research, code inspection or prototyping may continue. Reuse valid caches and controls; evaluate anew only dependencies invalidated by the correction. Respect sealed task and measurement contracts: a revision must not silently change driver-owned files or fill an old frozen plan with a new protocol. Persist the diagnosis, reused/invalidated evidence and next action in existing notes/card; no separate quality certificate is required.
 
+## Worked Example: Future New Entities with Delayed Labels
+
+Suppose the official task predicts future events for entities absent from fitting data, and labels arrive after their event times. An existing random row split mixes entities and uses labels that were unavailable at the prediction origin. This is a hypothetical protocol defect; no scores are assumed. If the actual task instead predicts future behavior of known entities, derive its boundary from that scenario rather than imposing this example's entity holdout.
+
+At a fold origin of April 1, a training event on March 25 whose label arrives April 3 cannot train the April 1 model. A development row with a new entity ID still violates the protocol if its features use future aggregates. For this example, require every training event and label to be available strictly before the first validation event, with any additional gap justified by the task horizon. Derive explicit `train_ids`/`validation_ids` for each origin, disjoint entity groups, and `expected_oof_ids` excluding declared temporal warmup rows. A fold label alone cannot reconstruct all training prefixes.
+
+For supported numeric regression/binary tasks, use [the existing trainer](tabular-training.md#freeze-the-fold-protocol-before-comparing-candidates) with `split.kind=group_time`, `group_column`, event/availability columns and the justified gap. Keep learned preprocessing inside the estimator pipeline; each fold fits only its training rows and predicts its held-out rows. Check upstream feature construction against the same availability boundary. [Partition auditing](validation-split.md#evidence-and-limits) checks declarations separately from actual fitting. The repository's [training pilot](../../../examples/tabular_training_pilot.py) demonstrates fitting, OOF and frozen delivery; its dataset does not establish this task's group/time semantics.
+
+Record the official task basis, offending dependency and correction before examining revised rankings. Preserve the old evaluation identity and scope each consequence:
+
+| Evidence | After correcting this split/information defect |
+| --- | --- |
+| Old OOF, models and their rankings | Keep as historical evidence under the old protocol; they cannot justify promotion under the corrected one. Refit affected candidates needed for the current choice under a common new identity. |
+| Target encoders, learned selectors or cached features using forbidden rows/information | Rebuild the affected dependency and descendants; changing only the final scoring call cannot remove fitting leakage. |
+| Unchanged raw data, permitted deterministic features, source findings and unaffected correctness checks | Reuse while their inputs and assumptions still match. Do not rerun all history solely because a new split exists. |
+| Pure scorer/output-alignment defect, with fitting boundaries otherwise valid | Reuse verified predictions and rescore/re-align when that repairs the actual defect; refitting is not automatically required. |
+
+The timestamp comparison can establish an information violation without training. A mechanism probe can then check that fitting receives the permitted rows. Representative development comparisons under the repaired protocol support ranking; more seeds on the old protocol cannot supply that evidence. Freeze finalists and their rule before a separate later confirmation with the task's required entity boundary.
+
 ## Keep Public Feedback from Becoming the Objective
 
 Public leaderboard scores describe a reused visible portion of evaluation, often with unknown sampling variation. Repeatedly choosing prompts, seeds, blend weights or preprocessing by tiny public deltas adapts to that set even without direct access to labels. A small public gain alone cannot establish a generalizable improvement or validate a mechanism.
@@ -63,3 +82,17 @@ Before an authorized submission, retain the candidate's task/source basis, predi
 Return to the main loop with either an independently justified task/data/implementation reason to repair evaluation, or a mechanism addressing a falsifiable transfer hypothesis. Record the revision's reason before examining its new rankings, preserve the old identity and affected results, and reassess invalidated comparisons. Without such evidence, retain uncertainty and continue locally grounded work. Do not choose new folds or scoring weights merely to reproduce leaderboard rankings. Keep platform feedback separate from local measurements; submission limits do not authorize submissions.
 
 The development set also receives adaptive feedback over many iterations. Freeze finalist artifacts and the selection rule before independent confirmation; if confirmation errors guide another edit, they become development evidence. Broader justified development coverage can improve diagnosis, but cannot turn repeatedly inspected cases into fresh confirmation. See [search/confirmation separation](score-search.md#keep-search-and-confirmation-separate).
+
+### Worked Example: Public Up, Local Down
+
+Suppose an authorized submission improves the public score while the same candidate regresses in the matched local comparison. Keep both observations and the current local selection basis while investigating:
+
+| Finding | Action and effect on selection |
+| --- | --- |
+| The local scorer, output ID alignment or executed inference path is wrong | Fix the responsible layer, retain the old identity and establish the necessary parent/candidate comparisons under the corrected boundary; do not update only the candidate's favorable score. |
+| Official facts independently support a different test population or information boundary | Record that basis before seeing revised rankings, then repair the affected protocol or propose a mechanism for the supported gap. Do not choose folds by how well they reproduce the public ordering. |
+| Only this public delta is known; its cause remains unresolved | Retain uncertainty and continue locally grounded work. The delta alone does not establish promotion or justify another sequence of public-score tuning. |
+
+A historical private-board rank helps discover a source; it does not validate the current candidate's public delta. Repeatedly taking the best local development result also adapts to that set, so moving all selection locally does not create independent confirmation.
+
+If a frozen finalist's confirmation errors reveal failures on late-arriving entities and those errors guide a feature or selector edit, the revised method has used that confirmation feedback for development. Preserve the original confirmation records and note the exposure; do not relabel the new method's evaluation on the same cases as independent. Follow the actual delivery rule, obtain fresh independent evidence when required and feasible, or report that confirmation is unavailable. The example imposes no new submission count, significance threshold or default extra training campaign.
