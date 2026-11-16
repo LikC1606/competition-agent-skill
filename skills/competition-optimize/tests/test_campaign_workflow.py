@@ -62,6 +62,7 @@ class CampaignWorkflowTests(unittest.TestCase):
         self.assertEqual(upgraded["inflight"], legacy["inflight"])
         self.assertIsNone(upgraded["instruction_snapshot"])
         self.assertIsNone(upgraded["workflow_provenance"])
+        self.assertIsNone(upgraded["objective_anchor"])
         _, _, provenance = freeze_workflow(self.campaign, self.skill, upgraded)
         self.assertIn("not reconstructed", provenance["legacy_instructions"])
         save_state(self.campaign, upgraded)

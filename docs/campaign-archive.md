@@ -12,6 +12,10 @@
 它回放完整档案，核验所有 candidate 的 result、artifact 和已记录 metadata，
 返回 `ArchiveHead(snapshot, evidence)`。指定 `expected` 时整个文件必须匹配。
 
+`verified_prefix(expected)` 用于有在途请求时核对显式主评测锚点。只回放并核验已确认
+前缀及其 candidate 文件，允许未接收的尾部继续追加；该尾部仍由 `receive` 处理。
+新锚点必须来自已确认记录，不改变或重新生成原封存请求。
+
 `confirmed(expected)` 是准备交接包的只读作用域。进入和正常退出时检查完整档案
 仍等于原快照，作用域内返回 `CampaignEvidence`，只回放记录及其历史关系。
 handoff 仍按需核验引用的文件。作用域内只构造复制的状态、计划和材料；退出成功

@@ -116,6 +116,18 @@ class CampaignArchive:
             raise CampaignError("Candidate archive changed while verifying evidence")
         return ArchiveHead(snapshot, CampaignEvidence(records))
 
+    def verified_prefix(self, expected: ArchivePrefix) -> ArchiveHead:
+        """Verify accepted evidence while an in-flight turn may append a suffix.
+
+        New configuration may refer only to this confirmed prefix. Unaccepted
+        suffix bytes remain exclusively the responsibility of receive().
+        """
+        self._require_prefix(expected)
+        records = self._prefix_records(expected["size"])
+        self._verify_candidates(records)
+        self._require_prefix(expected)
+        return ArchiveHead(dict(expected), CampaignEvidence(records))
+
     @contextmanager
     def confirmed(self, expected: ArchivePrefix) -> Iterator[CampaignEvidence]:
         """Check the whole file before and after preparing a read-only handoff.

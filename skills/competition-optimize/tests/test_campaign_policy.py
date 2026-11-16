@@ -21,6 +21,7 @@ class CampaignPolicyTests(unittest.TestCase):
     setUp = search_fixtures.CampaignSearchTests.setUp
     record = search_fixtures.CampaignSearchTests.record
     records = search_fixtures.CampaignSearchTests.records
+    propose = search_fixtures.CampaignSearchTests.propose
 
     @staticmethod
     def memory(**updates) -> dict:
@@ -101,6 +102,36 @@ class CampaignPolicyTests(unittest.TestCase):
                 self.assertEqual(planned.updates["session_turns"], 0)
                 self.assertEqual(planned.review_requests, {})
                 self.assertNotIn("repeat_review_checkpoints", planned.updates)
+
+    def test_pinned_objective_survives_policy_accept_and_prepared_handoff(self) -> None:
+        self.record("primary", 100)
+        for number in range(4):
+            self.record(f"regression-{number}", 90 - number)
+        self.propose("primary-pending", "primary")
+        before = self.records()
+        memory = self.memory(objective_anchor="primary", archive=str(self.path),
+                             archive_snapshot={"sha256": "a" * 64, "size": 1})
+        self.record("smoke-base", 1000, comparison={"stage": "smoke"})
+        self.record("smoke-next", 999, comparison={"stage": "smoke"})
+        view = search.CampaignEvidence(self.records())
+        planned = policy.CampaignPolicy().prepare(memory, view)
+        handoff = search.prepare_handoff(memory, planned, view, "t" * 64)
+
+        self.assertEqual(planned.context_refresh_reason, "objective_stagnation")
+        self.assertEqual(planned.updates["objective_progress"]["best_candidate"], "primary")
+        self.assertEqual(handoff.packet["development_brief"]["pending_proposals"], ["primary-pending"])
+        self.assertEqual(handoff.packet["objective_progress"]["objective_anchor"], "primary")
+        turn = {"number": 2, "mode": planned.updates["next_mode"], **handoff.delivery}
+        accepted = policy.CampaignPolicy().accept(
+            {**memory, **planned.updates}, turn, self.outcome(before, self.records(), self.receipt()))
+        self.assertEqual(accepted["objective_progress"], planned.updates["objective_progress"])
+
+        self.record("smoke-failed", None, valid=False, status="rejected", comparison={"stage": "smoke"})
+        failed = policy.CampaignPolicy().prepare(
+            {**memory, **planned.updates, **accepted}, search.CampaignEvidence(self.records()))
+        self.assertEqual(failed.updates["next_mode"], "repair")
+        self.assertEqual(failed.updates["objective_progress"]["best_candidate"], "primary")
+        self.assertEqual(failed.updates["execution_health"]["anchor_candidate"], "smoke-failed")
 
     def test_review_confirmation_recomputes_continuity_without_acknowledging_new_evidence(self) -> None:
         for number in range(4):

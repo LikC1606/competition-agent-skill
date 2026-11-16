@@ -24,6 +24,7 @@ def complete_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("context_refreshes", 0)
     state.setdefault("strategy_review_checkpoints", {})
     state.setdefault("objective_progress", None)
+    state.setdefault("objective_anchor", None)
     state.setdefault("execution_health", None)
     state.setdefault("failure_review_window", DEFAULT_FAILURE_REVIEW_WINDOW)
     state.setdefault("execution_review_checkpoint", None)

@@ -8,6 +8,8 @@ Read the sealed contract and the compact card first. Check the contract bytes ag
 
 When a candidate archive is available, [retrieve `brief`](iteration-trace.md#retrieve-evidence-for-the-next-implementation) for matched best versions, recent failures, code locations and pending proposals in one read. Reuse the existing card's budget/contract facts; do not also reconstruct all candidate summaries. Choose a credible parent from the retrieved evidence rather than assuming the latest experiment won, inspect its relevant code, and continue the implementation loop.
 
+When a main development contract is declared, keep best, pending proposals and strategy decisions scoped to it while appending auxiliary smoke or screening evidence. Retrieve `brief --anchor BASELINE_ID` using a candidate under that contract. In an unattended campaign, `--objective-anchor BASELINE_ID` persists this choice through policy and handoff; only an explicit objective change selects another contract. Stage names do not establish priority.
+
 [`inspect_run_resume.py`](../scripts/inspect_run_resume.py) performs the byte/syntax checks for any adapter's JSON-object events. For the first inspection, omit `--checkpoint`; it reads from the start and can save a new checkpoint file:
 
 ```powershell

@@ -1,6 +1,6 @@
 # Replay Fixed Inference Votes
 
-Use `scripts/replay_inference_votes.py` when ordered, already generated development answers can resolve a selection or stopping question. It compares fixed-budget plurality voting with stopping when the leader cannot be caught by any remaining votes. This is a read-only cache analysis, not a generation engine, interactive simulator or official evaluator.
+Use `scripts/replay_inference_votes.py` when ordered, already generated development answers can resolve a selection or stopping question. It compares fixed-budget plurality voting with the earliest stopping point that preserves its first-seen tie winner for every possible remaining suffix. This is a read-only cache analysis, not a generation engine, interactive simulator or official evaluator.
 
 ## Prepare the Development Cache
 
@@ -26,13 +26,17 @@ python <skill-dir>/scripts/replay_inference_votes.py \
 
 The full-budget policy selects the most frequent valid answer. Final ties use the answer first seen in the supplied order; no valid answer yields null. Invalid/failed samples cast no vote but consume their slots.
 
-After each slot, early stopping requires:
+After each slot, select the current leader with that same first-seen tie rule. Let its count be `L` and the remaining slot count be `r`. Stop as soon as all of these hold:
 
 ```text
-leader_count > runner_count + remaining_slots
+L >  rival_count + r   for every rival first seen before the leader
+L >= rival_count + r   for every rival first seen after the leader
+L >= r                for any answer not yet observed
 ```
 
-The runner count is zero when only one answer has been observed. Even if all remaining slots vote for the strongest rival, they cannot tie the leader, so the full-budget answer is preserved. A majority of the votes seen so far is insufficient. With several distinct answers, an irreversible plurality can occur without an absolute majority of the full budget. This conservative rule does not stop on a tie that might later be broken by the fixed tie rule.
+These conditions are sufficient because even all remaining slots assigned to one rival cannot displace the leader. They are necessary because a failing condition gives a suffix that makes an earlier rival tie or another rival win outright. A newly observed answer is always later than the leader, so it loses a tie. With no valid votes, continue to the sample limit; failures consume slots and therefore reduce `r`.
+
+For a budget of 5, the prefix `A,B,A,C` stops at slot 4: any final answer leaves A ahead or tied with a later rival. For a budget of 4, `A,B,B` must continue: a final A ties B and wins because A appeared earlier. The rule includes every stop allowed by the previous strict condition `leader_count > runner_count + remaining_slots` and also uses safe ties. It depends only on the observed prefix, not the cached suffix or target. The report identifies it as `stop_rule: "earliest_safe_plurality_first_seen"`; the configuration hash therefore differs from the earlier strict rule.
 
 The tool consumes recorded slots through that stopping point, including failures. It compares exactly one full-budget policy with this rule, not a tuned family of stopping thresholds. Complexity depends on the number of recorded samples and distinct answers.
 
@@ -41,6 +45,8 @@ The tool consumes recorded slots through that stopping point, including failures
 The report includes per-case answers, correctness, failure counts, used slots and optional cached costs, plus input bytes, declared generation identities, configuration and analyzer hashes. Exact-match accuracy is an unweighted development statistic; task weights, semantic correctness and other official scoring terms remain the task adapter's responsibility.
 
 `cases_with_correct_sample` is retrospective coverage of the first N cached slots. A correct sample that loses the vote suggests a selection question; no correct sample may motivate investigation of generation, supervision, parsing or labels. Neither observation proves the cause or permits a selector to consult hidden targets. Inspect the relevant failures before choosing the mechanism.
+
+For a selector restricted to these fixed candidates, `cases_with_correct_sample / case_count` is its retrospective unweighted exact-match accuracy upper bound. Subtract `full_budget.exact_match_accuracy` for the corresponding selection headroom. This assumes an oracle could identify the correct candidate; it is neither an achieved selector score nor an estimate of recoverable gain. More samples can increase coverage while reducing plurality accuracy when wrong answers recur.
 
 `cached_sample_seconds` only sums supplied costs for selected slots, and remains null if any contributing cost is unknown. It does not estimate concurrent wall time, cache contention, engine changes or the cost of reallocating saved work. `skipped_sample_slots` is a counterfactual count on this cache; the analysis does not recover compute already spent producing it.
 
