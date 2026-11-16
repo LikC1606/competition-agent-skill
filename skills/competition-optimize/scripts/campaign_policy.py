@@ -84,7 +84,7 @@ class CampaignPolicy:
 
     def prepare(self, memory: Mapping[str, Any], evidence: CampaignEvidence) -> TurnPlan:
         """Stage a new turn; neither review nor exposure is acknowledged here."""
-        facts = evidence.signals(memory["comparison_review_checkpoint"])
+        facts = evidence.signals(memory["comparison_review_checkpoint"], objective_anchor=memory.get("objective_anchor"))
         work = self._work(memory, facts)
         reason = work.reason
         if not reason:
@@ -115,7 +115,8 @@ class CampaignPolicy:
         but cannot acknowledge any card or review from their sealed request.
         Time is supplied by the driver; this method performs no I/O.
         """
-        facts = outcome.evidence.signals(memory["comparison_review_checkpoint"])
+        facts = outcome.evidence.signals(memory["comparison_review_checkpoint"],
+                                         objective_anchor=memory.get("objective_anchor"))
         updates = {key: facts[key] for key in
                    ("objective_progress", "execution_health", "comparison_continuity")}
         idle = 0 if outcome.archive_delta["executed_implementations"] > 0 else memory["turns_without_implementation"] + 1
@@ -151,7 +152,7 @@ class CampaignPolicy:
         if "comparison" in reviews:
             updates["comparison_review_checkpoint"] = dict(reviews["comparison"])
             # Acknowledging the review changes the signal used by the preview.
-            facts = outcome.evidence.signals(reviews["comparison"])
+            facts = outcome.evidence.signals(reviews["comparison"], objective_anchor=memory.get("objective_anchor"))
             updates["comparison_continuity"] = facts["comparison_continuity"]
         if "repeat" in reviews:
             review = reviews["repeat"]

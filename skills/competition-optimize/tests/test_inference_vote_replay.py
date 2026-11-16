@@ -63,6 +63,26 @@ class InferenceVoteReplayTests(unittest.TestCase):
         self.assertEqual(report["full_budget"]["correct_count"], 0)
         self.assertEqual(report["cases_with_correct_sample"], 1)
 
+    def test_tie_aware_stopping_accounts_for_earlier_and_unseen_answers(self):
+        for answers, expected_answer, expected_used in [
+            (["A", "B", "A", "C", "B"], "A", 4),
+            (["A", "B", "B", "A"], "A", 4),
+            (["A", "A", "B", "B"], "A", 2),
+        ]:
+            with self.subTest(answers=answers):
+                outcome = replay.replay_case(samples(answers))
+                self.assertEqual(outcome["answer"], expected_answer)
+                self.assertEqual(outcome["samples_used"], expected_used)
+
+    def test_tie_aware_stop_consumes_failures_before_an_unseen_rival_can_only_tie(self):
+        rows = samples(["A", None, None, "B"])
+        rows[1]["status"] = "timeout"
+        rows[2]["status"] = "failed"
+        outcome = replay.replay_case(rows)
+        self.assertEqual(outcome["answer"], "A")
+        self.assertEqual(outcome["samples_used"], 3)
+        self.assertEqual(outcome["failure_counts"], {"timeout": 1, "failed": 1})
+
     def test_failures_consume_slots_and_all_failed_cases_stay_in_accuracy(self):
         failed = samples([None] * 5)
         failed[1]["status"] = "timeout"
@@ -74,8 +94,8 @@ class InferenceVoteReplayTests(unittest.TestCase):
         self.assertEqual(report["full_budget"]["no_answer_count"], 1)
         self.assertEqual(report["full_budget"]["exact_match_accuracy"], .5)
         self.assertEqual(sum(report["full_budget"]["failure_counts"].values()), 8)
-        # The fourth, failed slot makes B's lead irreversible; it is still consumed.
-        self.assertEqual(report["cases"][1]["early_stop"]["samples_used"], 4)
+        # After one failure and two B votes, a new answer can only tie and loses.
+        self.assertEqual(report["cases"][1]["early_stop"]["samples_used"], 3)
 
     def test_targets_do_not_select_answers_and_budget_does_not_use_later_samples(self):
         data = trace([("q", "A", samples(["B", "B", "B", "A", "A"]))])
@@ -94,14 +114,24 @@ class InferenceVoteReplayTests(unittest.TestCase):
         self.assertIsNone(report["full_budget"]["cached_sample_seconds"])
         self.assertEqual(report["early_stop"]["cached_sample_seconds"], 3)
 
-    def test_exhaustive_ordered_answer_pools_never_change_final_plurality(self):
-        # Independent full-vote oracle covers ties, multiple labels and failed slots.
+    def test_exhaustive_suffixes_find_the_earliest_safe_plurality_stop(self):
+        # Group independent full-vote oracle outcomes by prefix: a singleton set
+        # means every suffix preserves its winner, including unseen labels/failures.
         for count in range(1, 7):
-            for answers in itertools.product(("A", "B", "C", None), repeat=count):
+            pools = list(itertools.product(("A", "B", "C", None), repeat=count))
+            possible_winners = {}
+            for answers in pools:
                 valid = [answer for answer in answers if answer is not None]
                 expected = max(valid, key=valid.count) if valid else None
+                for used in range(1, count + 1):
+                    possible_winners.setdefault(answers[:used], set()).add(expected)
+            for answers in pools:
+                expected_used = next(used for used in range(1, count + 1)
+                                     if len(possible_winners[answers[:used]]) == 1)
+                expected = next(iter(possible_winners[answers]))
                 outcome = replay.replay_case(samples(answers))
                 self.assertEqual(outcome["answer"], expected, answers)
+                self.assertEqual(outcome["samples_used"], expected_used, answers)
 
     def test_trace_validation_rejects_stage_identity_duplicates_and_invalid_samples(self):
         good = trace([("q", "A", samples(["A"] * 3))])
@@ -151,6 +181,7 @@ class InferenceVoteReplayTests(unittest.TestCase):
             self.assertEqual(report["configuration_sha256"],
                              replay.evidence.sha256(replay.evidence.canonical(report["configuration"])))
             self.assertEqual(report["selection_scope"], "cached_inference_votes_only")
+            self.assertEqual(report["configuration"]["stop_rule"], "earliest_safe_plurality_first_seen")
             self.assertTrue({"candidate_hash", "valid", "score"}.isdisjoint(report))
             self.assertEqual(cache.read_bytes(), raw)
             saved = output.read_bytes()

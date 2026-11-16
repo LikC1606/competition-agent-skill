@@ -361,6 +361,55 @@ class CampaignSearchTests(unittest.TestCase):
         self.assertEqual(progress["comparable_implementations"], 1)
         self.assertEqual(progress["improvement_candidates"], [])
 
+    def test_explicit_objective_keeps_primary_progress_and_pending_after_auxiliary_runs(self) -> None:
+        self.record("primary-best", 100)
+        self.record("primary-next", 90)
+        self.propose("primary-pending", "primary-best")
+        primary = search.objective_progress(self.records(), objective_anchor="primary-best")
+        self.record("smoke-best", 999, comparison={"stage": "smoke"})
+        self.record("smoke-next", 998, comparison={"stage": "smoke"})
+        self.propose("smoke-pending", "smoke-best")
+        records = self.records()
+        view = search.CampaignEvidence(records)
+        signals = view.signals(objective_anchor="primary-best")
+        packet = self.packet(progress=signals["objective_progress"], _view=view)
+
+        self.assertEqual(signals["objective_progress"], primary)
+        self.assertEqual(view.signals()["objective_progress"]["best_candidate"], "smoke-best")
+        self.assertEqual(signals["comparison_continuity"]["paired_contracts"], 2)
+        self.assertEqual(packet["development_brief"]["best_development"], "primary-best")
+        self.assertEqual(packet["development_brief"]["pending_proposals"], ["primary-pending"])
+        self.assertNotIn("smoke-pending", packet["development_brief"]["pending_proposals"])
+        self.record("primary-improvement", 110)
+        advanced = search.objective_progress(self.records(), objective_anchor="primary-best")
+        self.assertEqual(advanced["anchor_candidate"], "primary-improvement")
+        self.assertEqual(advanced["best_candidate"], "primary-improvement")
+        self.assertEqual(advanced["objective_anchor"], "primary-best")
+
+    def test_pinned_objective_keeps_repeat_conflict_after_other_contract(self) -> None:
+        self.record("leader", 100)
+        self.record("challenger", 60)
+        self.record("leader-repeat", 10, reuse="leader")
+        self.record("smoke", 1000, comparison={"stage": "smoke"})
+        view = search.CampaignEvidence(self.records())
+        self.assertIsNone(view.signals()["repeat_conflict"])
+        pinned = view.signals(objective_anchor="leader")
+        self.assertEqual(pinned["repeat_conflict"]["witness_candidate"], "leader-repeat")
+        packet = self.packet(progress=pinned["objective_progress"], _view=view)
+        self.assertTrue(search.delivered_repeat_conflict(packet))
+
+    def test_explicit_objective_requires_a_scored_development_implementation(self) -> None:
+        self.record("primary", 10)
+        self.record("confirmation", 100, role="confirmation")
+        self.record("diagnostic", 100, role="diagnostic", parent="primary", status="rejected",
+                    feedback="Intentional diagnostic, not a contender")
+        self.record("unscored", None, result_score=False)
+        self.record("invalid", 100, valid=False, status="rejected")
+        self.record("manual", 100, executed=False)
+        for candidate_id in ("missing", "confirmation", "diagnostic", "unscored", "invalid", "manual"):
+            with self.subTest(candidate=candidate_id), self.assertRaises(archive.ArchiveFailure):
+                search.CampaignEvidence(self.records()).signals(objective_anchor=candidate_id)
+
     def test_paired_smoke_cannot_hide_four_contracts_without_other_implementations(self) -> None:
         self.record("smoke-baseline", comparison={"stage": "smoke"})
         self.record("smoke-candidate", comparison={"stage": "smoke"})

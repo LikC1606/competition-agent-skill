@@ -207,6 +207,8 @@ if scenario not in {"no_progress", "repeat_plan", "repeat_plan_interrupt", "repe
             4 if scenario == "comparison_pairing" and number == 5 else number)}
     if scenario == "repeat_plan_stop_foreign":
         outcome["evaluation"] = {"config_hash": "other-evaluation"}
+    if scenario == "objective_smoke":
+        outcome["stage"] = "smoke"
     if failed:
         outcome["error"] = {"type": "runtime_failure", "phase": "candidate_execution", "message": measured.stderr}
     elif scenario != "unscored_forever":
@@ -414,6 +416,63 @@ class AutonomousCampaignTests(unittest.TestCase):
                 arguments += ["--feedback", "Unresolved representation could support an informative successor"]
             entries.append(driver.archive_tools.record_candidate(driver.archive_tools.parser().parse_args(arguments)))
         return entries
+
+    def test_explicit_objective_persists_and_can_be_changed_or_cleared_on_resume(self) -> None:
+        self.seed_open_branches(1)
+        self.environment["FAKE_SCENARIO"] = "objective_smoke"
+        result = self.start("--objective-anchor", "seed-best", "--max-turns", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["objective_anchor"], "seed-best")
+        self.assertEqual(self.state()["objective_progress"]["best_candidate"], "seed-best")
+        context = json.loads((self.campaign / "turns/000001/context.json").read_text())
+        self.assertEqual(context["objective_progress"]["objective_anchor"], "seed-best")
+        self.assertIn("--anchor seed-best", (self.campaign / "turns/000001/prompt.txt").read_text())
+
+        result = self.call("resume", "--campaign", str(self.campaign),
+                           "--objective-anchor", "candidate-1", "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.state()["objective_anchor"], "candidate-1")
+        self.assertEqual(self.state()["objective_progress"]["best_candidate"], "candidate-2")
+        context = json.loads((self.campaign / "turns/000002/context.json").read_text())
+        self.assertEqual(context["objective_progress"]["comparison"]["stage"], "smoke")
+
+        result = self.call("resume", "--campaign", str(self.campaign),
+                           "--clear-objective-anchor", "--max-turns", "3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.state()["objective_anchor"])
+        self.assertIsNone(self.state()["objective_progress"]["objective_anchor"])
+        self.assertEqual(len(self.calls()), 3)
+
+    def test_invalid_objective_anchor_is_rejected_before_agent_launch(self) -> None:
+        self.seed_open_branches(1)
+        result = self.start("--objective-anchor", "missing-candidate", "--max-turns", "1")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("Objective anchor", result.stderr)
+        self.assertFalse(self.campaign.exists())
+        args = driver.parser().parse_args([
+            "resume", "--campaign", str(self.campaign), "--objective-anchor", "seed-best",
+            "--clear-objective-anchor"])
+        with self.assertRaises(runtime.CampaignError):
+            driver.limit_overrides(args)
+
+    def test_invalid_objective_override_keeps_sealed_inflight_without_relaunch(self) -> None:
+        self.seed_open_branches(1)
+        args = driver.parser().parse_args(self.start_args("--objective-anchor", "seed-best"))
+        driver.new_campaign(args)
+        state = driver.read_state(self.campaign)
+        driver.prepare_turn(self.campaign, state)
+        sealed = deepcopy(state["inflight"])
+        with self.archive.open("ab") as stream:
+            stream.write(b'{"event":"unfinished')
+        suffix = self.archive.read_bytes()
+        with mock.patch.object(driver, "await_turn", side_effect=AssertionError("must not relaunch")):
+            outcome = driver.run_campaign(self.campaign, {"objective_anchor": "missing-candidate"})
+        self.assertEqual(outcome["status"], "blocked")
+        self.assertIn("Objective anchor", outcome["stop_reason"])
+        self.assertEqual(outcome["objective_anchor"], "seed-best")
+        self.assertEqual(outcome["inflight"], sealed)
+        self.assertEqual(self.archive.read_bytes(), suffix)
+        self.assertEqual(self.calls(), [])
 
     def seed_repeat_conflict(self, *, seed_failure: bool = False) -> None:
         runs = self.workspace / "seed-repeat-runs"

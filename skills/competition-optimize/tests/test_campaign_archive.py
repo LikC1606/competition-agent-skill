@@ -86,6 +86,18 @@ class CampaignArchiveTests(unittest.TestCase):
                     path.write_bytes(original)
         self.assertEqual(len(self.store.verified().evidence.records), 2)
 
+    def test_verified_prefix_ignores_unaccepted_suffix_and_checks_confirmed_files(self) -> None:
+        self.append_broken_suffix()
+        unchanged = self.path.read_bytes()
+        verified = self.store.verified_prefix(self.head.snapshot)
+        self.assertEqual(verified.snapshot, self.head.snapshot)
+        self.assertEqual(verified.evidence.records, self.head.evidence.records)
+        self.assertEqual(self.path.read_bytes(), unchanged)
+        Path(self.control["artifact_paths"]["source"]).write_text("changed confirmed source\n")
+        with self.assertRaises(archive.ArchiveFailure):
+            self.store.verified_prefix(self.head.snapshot)
+        self.assertEqual(self.path.read_bytes(), unchanged)
+
     def test_verified_compares_archived_metadata_with_result_file(self) -> None:
         records = copy.deepcopy(self.head.evidence.records)
         records[0]["result"]["execution_status"] = "failed"

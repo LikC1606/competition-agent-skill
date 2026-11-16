@@ -91,20 +91,35 @@ def summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def winner_is_locked(counts: Counter[str], remaining: int) -> bool:
+    """Whether every remaining suffix preserves the first-seen plurality winner."""
+    if not counts:
+        return remaining == 0
+    leader = max(counts, key=counts.get)
+    leader_count = counts[leader]
+    # An unseen answer loses a tie because it must first appear after the leader.
+    if remaining > leader_count:
+        return False
+    earlier_than_leader = True
+    for answer, count in counts.items():
+        if answer == leader:
+            earlier_than_leader = False
+            continue
+        rival_max = count + remaining
+        if rival_max > leader_count or (earlier_than_leader and rival_max == leader_count):
+            return False
+    return True
+
+
 def replay_case(samples: list[dict[str, Any]]) -> dict[str, Any]:
     counts: Counter[str] = Counter()
     used = len(samples)
     for index, sample in enumerate(samples, 1):
         if sample["status"] == "completed":
             counts[sample["answer"]] += 1
-        leaders = counts.most_common(2)
-        if leaders:
-            leader_count = leaders[0][1]
-            runner_count = leaders[1][1] if len(leaders) > 1 else 0
-            remaining = len(samples) - index
-            if leader_count > runner_count + remaining:
-                used = index
-                break
+        if winner_is_locked(counts, len(samples) - index):
+            used = index
+            break
     return {**summarize_samples(samples[:used]),
             "stop_reason": "irreversible_lead" if used < len(samples) else "sample_limit"}
 
@@ -155,7 +170,7 @@ def analyze(args: argparse.Namespace) -> dict[str, Any]:
     if path.read_bytes() != raw:
         raise ReplayFailure("Trace bytes changed during replay")
     configuration = {"max_samples": args.max_samples, "vote_rule": "plurality_first_seen",
-                     "stop_rule": "leader_count_gt_runner_count_plus_remaining_slots",
+                     "stop_rule": "earliest_safe_plurality_first_seen",
                      "failed_samples": "consume_slot_without_vote"}
     analyzer_files = {p.name: evidence.sha256(p.read_bytes()) for p in
                       [pathlib.Path(__file__), pathlib.Path(evidence.__file__)]}

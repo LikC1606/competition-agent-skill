@@ -211,9 +211,15 @@ def run_campaign(campaign: pathlib.Path, overrides: dict[str, Any] | None = None
     try:
         state["manager_generation"] = generation or uuid.uuid4().hex
         check_control_files(state)
+        verified = None
         if not state["inflight"]:
-            CampaignArchive(pathlib.Path(state["archive"])).verified(state["archive_snapshot"])
+            verified = CampaignArchive(pathlib.Path(state["archive"])).verified(state["archive_snapshot"])
+        elif overrides and "objective_anchor" in overrides:
+            verified = CampaignArchive(pathlib.Path(state["archive"])).verified_prefix(state["archive_snapshot"])
         if overrides:
+            if "objective_anchor" in overrides:
+                state["objective_progress"] = verified.evidence.signals(
+                    objective_anchor=overrides["objective_anchor"])["objective_progress"]
             state.update(overrides)
         if state["status"] in TERMINAL:
             if state["status"] == "stopped_by_user":
@@ -282,7 +288,7 @@ def new_campaign(args: argparse.Namespace) -> pathlib.Path:
     archive = args.archive.expanduser().resolve()
     head = CampaignArchive(archive).verified()
     evidence, snapshot = head.evidence, head.snapshot
-    signals = evidence.signals()
+    signals = evidence.signals(objective_anchor=args.objective_anchor)
     protected = {}
     checker = None
     if args.completion_check:
@@ -308,6 +314,7 @@ def new_campaign(args: argparse.Namespace) -> pathlib.Path:
         "stagnation_window": args.stagnation_window, "session_checkpoints": args.session_checkpoints,
 
         "objective_progress": signals["objective_progress"],
+        "objective_anchor": args.objective_anchor,
         "execution_health": signals["execution_health"],
         "failure_review_window": args.failure_review_window,
         "comparison_continuity": signals["comparison_continuity"],
@@ -422,7 +429,7 @@ def launch_background(campaign: pathlib.Path, overrides: dict[str, Any]) -> dict
 def public_status(campaign: pathlib.Path, state: dict[str, Any]) -> dict[str, Any]:
     value = {key: state[key] for key in (
         "status", "turn_number", "session_id", "turns_without_implementation",
-        "last_summary", "next_action", "stop_reason", "next_mode", "progress",
+        "last_summary", "next_action", "stop_reason", "next_mode", "progress", "objective_anchor",
         "usage", "agent_seconds", "retry_at", "last_error", "objective_progress",
         "stagnation_window", "session_checkpoints", "session_turns", "context_refreshes",
         "context_refresh_reason", "execution_health", "failure_review_window",
@@ -467,6 +474,10 @@ def add_limits(command: argparse.ArgumentParser, clear: bool = False) -> None:
 
 
 def add_search_policy(command: argparse.ArgumentParser, defaults: bool = False) -> None:
+    command.add_argument("--objective-anchor", help="candidate ID identifying the primary development comparison contract")
+    if not defaults:
+        command.add_argument("--clear-objective-anchor", action="store_true",
+                             help="restore comparison selection from the latest development record")
     command.add_argument("--stagnation-window", type=int,
                          default=DEFAULT_STAGNATION_WINDOW if defaults else None,
                          help="new comparable implementations without a historical best before strategy review")
@@ -538,6 +549,12 @@ def limit_overrides(args: argparse.Namespace) -> dict[str, Any]:
             if value < minimum:
                 raise CampaignError(f"{key} must be at least {minimum}")
             result[key] = value
+    anchor = getattr(args, "objective_anchor", None)
+    clear_anchor = getattr(args, "clear_objective_anchor", False)
+    if anchor is not None and (not anchor.strip() or clear_anchor):
+        raise CampaignError("objective-anchor must be nonempty and cannot be combined with its clear flag")
+    if anchor is not None or clear_anchor:
+        result["objective_anchor"] = None if clear_anchor else anchor
     return result
 
 

@@ -39,6 +39,13 @@ def prompt_for_turn(state: dict[str, Any], campaign: pathlib.Path, number: int,
         "This is a checkpoint batch; the driver executes its follow-up. Agent complete/blocked claims "
         "are advisory. A plateau calls for a fresh strategy and executable successor."
     ]
+    objective_anchor = (context.get("objective_progress") or {}).get("objective_anchor")
+    if objective_anchor is not None:
+        parts.append(f"The primary development comparison is identified by candidate {objective_anchor}. "
+                     "Use objective_progress and its matched development_brief for best, pending work and strategy "
+                     "decisions. Auxiliary evaluations do not change this objective; preserve their evidence. "
+                     f"Pass --anchor {objective_anchor} when retrieving a separate archive brief. "
+                     "Only an explicit task-level objective change can select another primary contract.")
     if mode == "rethink":
         parts.append("This is a fresh-context strategy review. Re-derive the remaining capability gap from "
                      "the objective and actual failures; examine a materially different representation, "
@@ -68,7 +75,9 @@ def prompt_for_turn(state: dict[str, Any], campaign: pathlib.Path, number: int,
         parts.append("Inspect comparison_recovery's isolated target, reference and changed fields. Measure a "
                      "trusted reference and candidate under an existing legal common development contract. "
                      "A genuine new result may reuse archived code with a reuse reason. Healthy smoke runs "
-                     "do not resolve missing full comparisons; never rank across contracts.")
+                     "do not resolve missing full comparisons; never rank across contracts. Review delivery "
+                     "does not establish resolution. If this comparison no longer affects the current decision, "
+                     "record the deferral reason and continue the useful successor instead of filling every old gap.")
     if state["recovery_needed"]:
         parts.append(f"The preceding invocation was interrupted or its evidence was not accepted. Inspect "
                      f"{campaign / 'turns'} and quarantined suffixes. Recover already-produced artifacts "

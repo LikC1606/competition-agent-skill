@@ -41,6 +41,7 @@ class CampaignEvidence:
         self.records = records
         self._provided_comparisons = comparisons
         self._continuities: dict[int, dict[str, Any]] = {}
+        self._objectives: dict[str | None, tuple[dict[str, Any], dict[str, Any] | None]] = {}
 
     @cached_property
     def _comparisons(self) -> archive_tools.ComparisonEvidence:
@@ -99,14 +100,24 @@ class CampaignEvidence:
             "proposals": len(proposals), "pending_proposals": len(proposals - closed),
         }
 
-    def signals(self, checkpoint: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def signals(self, checkpoint: Mapping[str, Any] | None = None, *,
+                objective_anchor: str | None = None) -> dict[str, Any]:
         position = checkpoint["distinct_observations"] if checkpoint else 0
         if position not in self._continuities:
             self._continuities[position] = comparison_continuity(self.records, checkpoint, evidence=self._comparisons)
+        if objective_anchor not in self._objectives:
+            progress = (self._progress if objective_anchor is None else
+                        objective_progress(self.records, evidence=self._comparisons,
+                                           objective_anchor=objective_anchor))
+            anchor = progress["anchor_candidate"]
+            conflict = (self._repeat_conflict if objective_anchor is None else
+                        self._comparisons.for_candidate(anchor).ranking_conflict() if anchor else None)
+            self._objectives[objective_anchor] = progress, conflict
+        progress, conflict = self._objectives[objective_anchor]
         return {
-            "objective_progress": self._progress, "execution_health": self._health,
+            "objective_progress": progress, "execution_health": self._health,
             "comparison_continuity": self._continuities[position],
-            "measurement_plan": self._measurement_plan, "repeat_conflict": self._repeat_conflict,
+            "measurement_plan": self._measurement_plan, "repeat_conflict": conflict,
             "measurement_comparisons": self._measurement_comparisons,
             "measurement_signatures": self._measurement_signatures,
         }
@@ -139,11 +150,22 @@ def observed_implementation(entry: dict[str, Any]) -> bool:
 
 
 def objective_progress(records: list[dict[str, Any]], *,
-                       evidence: archive_tools.ComparisonEvidence | None = None) -> dict[str, Any]:
+                       evidence: archive_tools.ComparisonEvidence | None = None,
+                       objective_anchor: str | None = None) -> dict[str, Any]:
+    context = None
+    if objective_anchor is not None:
+        reference = next((entry for entry in records if entry["event"] == "candidate" and
+                          entry["candidate_id"] == objective_anchor), None)
+        if reference is None or not observed_implementation(reference):
+            raise archive_tools.ArchiveFailure(
+                "invalid_objective_anchor", "Objective anchor must name a valid scored development implementation")
+        context = reference["comparison"]
     anchor = next((entry for entry in reversed(records)
-                   if entry["event"] == "candidate" and entry["role"] == "development"), None)
+                   if entry["event"] == "candidate" and entry["role"] == "development" and
+                   (context is None or entry["comparison"] == context)), None)
     if anchor is None:
         return {"comparison_key": None, "comparison": None, "anchor_candidate": None,
+                "objective_anchor": objective_anchor,
                 "best_candidate": None, "best_value": None, "comparable_implementations": 0,
                 "implementations_since_best": 0, "latest_eligible": False,
                 "nonimproving_candidates": [], "improvement_candidates": []}
@@ -160,6 +182,7 @@ def objective_progress(records: list[dict[str, Any]], *,
             best, best_position = entry, position
     return {"comparison_key": archive_tools.sha256(archive_tools.canonical(context)),
             "comparison": context, "anchor_candidate": anchor["candidate_id"],
+            "objective_anchor": objective_anchor,
             "best_candidate": best["candidate_id"] if best else None,
             "best_value": best["objective"]["value"] if best else None,
             "comparable_implementations": len(measured),
@@ -539,7 +562,7 @@ def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: Campaig
     Only complete cards remaining in the final packet are offered for later
     acknowledgment. Persisting or rendering a packet does not acknowledge it.
     """
-    facts = view.signals(memory["comparison_review_checkpoint"])
+    facts = view.signals(memory["comparison_review_checkpoint"], objective_anchor=memory.get("objective_anchor"))
     key = facts["objective_progress"]["comparison_key"]
     packet = handoff_packet(
         pathlib.Path(memory["archive"]), view.records, memory["archive_snapshot"], task_sha256,

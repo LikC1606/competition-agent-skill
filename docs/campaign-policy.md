@@ -37,6 +37,11 @@ review 后，先按新的 checkpoint 派生 continuity，再选择后续工作�
 `next_mode` 是下一步预览，不创建新轮次、不确认新 review，也不增加轮换计数。
 Agent 的 complete/blocked receipt 仍是后续规划输入；停止和完成验证由 Driver 负责。
 
+`--objective-anchor ID` 可用一个已计分的开发实现指定主比较合同。Policy 的主排名、
+停滞、重复冲突与交接待办保持在该合同；新增辅助评测仍参与执行健康及比较缺口诊断。
+同合同的新实现继续推进进展，不会锁定指定候选为最佳。显式 resume 可以更换或清除锚点，
+未设置时沿用最新 development 记录选合同的旧行为；不会按 stage 名称推断主次。
+
 ## Handoff Interface
 
 [campaign_search.py](../skills/competition-optimize/scripts/campaign_search.py) 的
@@ -54,7 +59,7 @@ Policy 请求 review；Handoff 判断所需材料是否实际交付；Policy 在
 合法新增事件和计数变化；启动及无在途轮次恢复通过 `verified` 核验全量文件。
 CLI 失败与合法档案接收独立，文件隔离规则见[档案接收说明](campaign-archive.md)。
 
-`CampaignEvidence(records)` 借用一个已核验档案前缀。`signals(checkpoint)` 和
+`CampaignEvidence(records)` 借用一个已核验档案前缀。`signals(checkpoint, objective_anchor=ID)` 和
 `counts` 不读文件，共用比较投影和派生结果；checkpoint 改变时按该 checkpoint
 返回 continuity。交接核验共用该视图内的
 [`EvidenceReads`](../skills/competition-optimize/scripts/evidence_files.py)。比较投影
