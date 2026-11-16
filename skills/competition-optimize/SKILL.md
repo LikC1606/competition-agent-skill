@@ -72,5 +72,6 @@ When relocating archived evidence, use the explicit mapping and byte checks in [
 - Fixed-timeslot C++: [fixed-timeslot.md](references/fixed-timeslot.md), including workload completeness, static-rule coverage and packaging boundaries.
 - Scalar regression/binary CSV scoring: the required section of [data-model.md](references/data-model.md). Prediction scoring alone does not establish training or leakage provenance.
 - Numeric tabular fitting, fold/OOF evidence and frozen model delivery: [tabular-training.md](references/tabular-training.md). Its supported workflow is narrower than general Kaggle automation.
+- LLM training, generation and multi-turn agents: [llm-agent-competitions.md](references/llm-agent-competitions.md) for conditional mechanisms, task-specific adapter requirements and trajectory replay limits. This is guidance; executable evaluation remains task-specific.
 - Group/time partition checks: [validation-split.md](references/validation-split.md); audit declarations and actual fitting separately.
 - Other task families: [task-playbooks.md](references/task-playbooks.md); establish a task-specific objective, interface and validity path before costly search.

@@ -25,6 +25,12 @@ Build a cheap sanity baseline and, when resources allow, a credible model from a
 
 Use the simplest complete pipeline that tests the proposal. Inspect the current pipeline, learning behavior and historical comparisons to identify missing signal, representation limits or wasted work; implement the next supported mechanism without a default hyperparameter/seed sweep. Final retraining on all permitted labeled data must keep the selected pipeline fixed and satisfy inference limits; preserve the earlier validation evidence rather than claiming a new full-data validation score.
 
+## LLM Generation and Agent Competitions
+
+When the submitted system trains or runs a language model, use the relevant section of [the LLM/agent playbook](llm-agent-competitions.md). It connects validation and scoring behavior, synthetic data and teacher distillation, post-training, inference budgets, trajectory replay and deterministic agent components to the existing implementation/evaluation loop. An LLM writing a conventional contest algorithm does not by itself require this playbook.
+
+Choose a mechanism from observed failures and the task's constraints. Preserve model/tokenizer/template and data lineage, compare the complete system under the actual inference limit, and distinguish cached-trajectory diagnostics from a new executed policy. The bundled numeric training and CSV prediction tools do not supply an LLM trainer, weight merger or interactive evaluator.
+
 ## Algorithms and Combinatorial Optimization
 
 Distinguish constructing a solution, improving it offline, making online decisions, and accelerating an exact solver. Inspect input scale, allowed operations, and the scorer. On tiny instances, a slow exact or exhaustive reference can expose quality gaps even when it cannot serve as the submitted algorithm.

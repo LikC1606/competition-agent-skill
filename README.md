@@ -14,6 +14,7 @@
 | 固定时隙 C++ | 固定 workload 完整性、Clang AST 已声明规则子集、ZIP 字节核验 | [timeslot adapter](skills/competition-optimize/references/fixed-timeslot.md) |
 | 预测文件 | 无权标量回归/二分类 CSV 评分、比较、错误分析和已有预测组合诊断 | [预测工具](skills/competition-optimize/references/data-model.md) |
 | 数值表格训练 | 实际 fold 训练、OOF、group/time 检查、冻结模型、独立确认和提交 CSV | [训练 adapter](skills/competition-optimize/references/tabular-training.md) |
+| LLM 与 Agent 方法指南 | 数据合成与蒸馏、后训练、推理预算、轨迹重放和职责分离；执行需题目 adapter | [专项指南](skills/competition-optimize/references/llm-agent-competitions.md) |
 | 其它题型 | 共用档案与驱动；仍需对应的题目评测器 | [Adapter 合同](skills/competition-optimize/references/adapter-contract.md) |
 
 不设置默认总轮数、总时间或费用上限；遵守比赛约束、实际资源和用户当前限制。默认实施有依据的机制改动，专门参数搜索需要明确请求。确认集不参与开发决策；正式提交/上传需要明确授权。
