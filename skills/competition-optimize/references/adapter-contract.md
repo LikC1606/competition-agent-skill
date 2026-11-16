@@ -22,6 +22,8 @@ Compare official rules, scorer source where available, and actual output on refe
 
 For relative or rank-based objectives whose reference changes, preserve raw measurements and the reference version. Freeze that reference for comparisons or recompute all compared candidates under the same reference. Do not present a local reference ranking as the unknown official ranking. Smoke-test the scoring boundary as well as candidate execution, including missing cases, non-finite metrics, and timeout/failed outputs.
 
+Establish [local evaluation quality](local-evaluation.md) separately from identity and execution checks: the workload must represent decision-relevant test conditions, respect independent groups and information availability, and expose the mechanisms being compared. Preserve unknown distribution assumptions. A stable evaluator hash does not certify any of these properties; a public leaderboard correlation alone cannot validate them.
+
 ## Result Record
 
 Each invocation should produce an immutable machine-readable result with information equivalent to:

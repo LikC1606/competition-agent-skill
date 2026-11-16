@@ -24,6 +24,8 @@ For online prediction or planning, separate predicting the next event, estimatin
 
 ## Read a Strong Solution as a System
 
+When finding or checking sources, use [competition research](competition-research.md) for question-driven search, full-source reading and following corrections to matching code. Then reconstruct the design below before selecting a transplant.
+
 Start from the supplied writeup and its corresponding source/version when available. Read for the design chain: **task fact → simplifying assumption → representation → candidate construction → internal objective/pricing → maintenance and compute allocation**. Follow the score-affecting path far enough to understand interactions; avoid both exhaustive unrelated code reading and stopping at the first recognizable module.
 
 Explain the central design in plain language: what choice becomes possible, why it addresses the objective, which approximation makes it affordable, and where it can fail. Distinguish the strategy from its implementation tricks and fitted constants. For each mechanism that matters to the comparison, identify:
