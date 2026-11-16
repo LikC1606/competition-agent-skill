@@ -38,6 +38,22 @@ Keep raw responses, readable originals and code snapshots under the current task
 
 Distinguish author-reported outcomes, inspected implementation and local measurements. Preserve useful negative results, caveats, corrections and discrepancies between a writeup and its code. A complete system's score does not identify which component caused its advantage. Record a gap as unresolved rather than silently choosing the more favorable account.
 
+### Ground Decision-Changing Claims
+
+Before a source-specific statement enters a proposal's `basis`, inspect the supporting passage in the saved version. Retain its section, notebook cell or function/line locator and enough of the passage to recover the reasoning in the existing notes. A whole-notebook URL, title, hash or search hit does not establish that a particular feature or algorithm appears there. Check the relevant code path when attributing implementation behavior; an author's discussion and executable code can differ.
+
+Keep these evidence types explicit where they affect the decision:
+
+| Evidence | What it supports |
+| --- | --- |
+| Author's statement in an inspected passage | What the author reports, with its metric, split and stated conditions |
+| Inspected implementation in the matched version | What that code actually constructs or executes; its local contribution remains unmeasured |
+| Agent's task-based deduction | A proposed mechanism inferred from task facts or code; label the inference and assumptions rather than attributing it to the source |
+
+For example, a housing notebook's skew/log preprocessing does not establish that it constructs total floor area or elapsed building age. If those features are absent from the inspected version, a useful aggregate-feature hypothesis can still proceed as task-derived reasoning after the [equivalence check](strategy-design.md#check-equivalence-before-execution). Do not invent a source attribution to justify it. A mismatched or inaccessible version leaves the specific attribution unresolved; narrow the claim or obtain the relevant original only if it changes the next action.
+
+When an error is discovered after a proposal is sealed, preserve the original and append the correction to existing task notes, outcome feedback or a successor's `basis`. Reassess the mechanism if the correction removes its premise. A citation correction alone does not invalidate unchanged training artifacts or require another fit; record exactly which interpretation or dependency changed. These are semantic checks performed by the agent, not guarantees supplied by archive hash validation.
+
 ## Convert a Finding into a Mechanism
 
 Use [strategy learning](strategy-design.md#read-a-strong-solution-as-a-system) to reconstruct task facts → information used → representation/objective → construction/selection → coupled components. Compare with actual incumbent code: what can the strong design do that this implementation cannot, and why? Extract that transferable capability and its assumptions; copied winner constants alone do not explain a change. A high-scoring full system does not imply that an isolated transplanted component will work.

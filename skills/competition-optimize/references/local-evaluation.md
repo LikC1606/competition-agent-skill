@@ -83,6 +83,20 @@ Return to the main loop with either an independently justified task/data/impleme
 
 The development set also receives adaptive feedback over many iterations. Freeze finalist artifacts and the selection rule before independent confirmation; if confirmation errors guide another edit, they become development evidence. Broader justified development coverage can improve diagnosis, but cannot turn repeatedly inspected cases into fresh confirmation. See [search/confirmation separation](score-search.md#keep-search-and-confirmation-separate).
 
+### Track Feedback Already Used for Selection
+
+When establishing or recovering a task, retain a short account in existing task notes of which labels, scores, residuals, public feedback or confirmation results have influenced choices, and which evidence remains untouched. Recover known exposure from actual history; leave unknown history explicit. Update this account when its status changes, not as a new per-trial form. Archive counts and hashes can help recover history but cannot certify what the agent or researcher has already seen.
+
+| Available evidence | Legitimate interpretation and action |
+| --- | --- |
+| Fixed-fold OOF repeatedly used to choose models or features | Matched development evidence; fold-local fitting prevents that form of training leakage, but does not remove adaptive selection optimism |
+| New folds, seeds or a holdout drawn from already-used development rows | Another development comparison; changing the partition or seed does not make those rows fresh independent confirmation |
+| Historical confirmation inspected by an earlier run or researcher | Preserve its historical scope and record known exposure. Keep its feedback out of subsequent development; do not claim new independent confirmation on the same cases |
+| Genuinely untouched units under the task's intended sampling boundary | Can support independent confirmation of artifacts and a decision rule frozen before observing that feedback |
+| No independent evidence available within the permitted resources | Continue justified development if authorized, label selection and gains as development-only, and report the unresolved generalization question |
+
+Use existing per-fold/regime losses or cached predictions to inspect concentrated gains and regressions when that can change the next action. Neither repeated OOF improvements nor the absence of public submissions establishes generalization. More seeds, nested CV, fresh data collection or another training campaign are not automatic requirements: choose additional evidence only for a consequential unresolved decision and within actual constraints. Correct a split for a task-based information defect, preserving identities and affected controls; do not redesign it to favor the current candidate or call repartitioning an exposure reset.
+
 ### Worked Example: Public Up, Local Down
 
 Suppose an authorized submission improves the public score while the same candidate regresses in the matched local comparison. Keep both observations and the current local selection basis while investigating:

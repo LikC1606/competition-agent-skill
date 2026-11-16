@@ -108,3 +108,21 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B -m unittest discover \
 凭据自动加载接入后，`quick_validate.py` 检查通过（`Skill is valid!`）。本地 Markdown 链接、章节锚点与空白检查结果见线上验证总汇总；线上验证覆盖范围与限制见上表及原始快照。
 
 本轮没有安装全局 skill，没有启动上游 agent、比赛训练或提交，也没有承诺提分效果。非表格和远程训练 adapter 仍由下一场真实任务决定。
+
+## 后续补充：实施前判断与反馈边界
+
+用户确认以陌生比赛的自主完整流程作为成熟度目标，并要求补充评审发现的三个缺口。本次接入 `SKILL.md`、相应参考指南和 `campaign_prompt.py` 的每轮提示，复用现有 `basis`、任务笔记与后继反馈：
+
+| 缺口 | 补充行为 |
+| --- | --- |
+| 保存了来源，但具体主张可能误引 | 回到保存版本的具体段落、cell 或函数；区分作者陈述、源码行为和 agent 推导。误引修正追加到现有记录，保留密封历史 |
+| 有机制名称，但理论理由可能不成立 | 实施前化简决策规则，检查实际流水线与表达能力；说明正则化、预处理或优化造成的真实差异。线性和差特征不自动增加线性表达能力，也不自动意味着拟合结果相同 |
+| 固定 OOF 被反复用于选择，却被当成独立证据 | 恢复并维护已用于选择的反馈边界；重切已用开发数据不能恢复独立性。无独立确认时保持开发范围的结论，按决策需要使用已有逐折/分组产物 |
+
+详细指导分别位于[逐项来源依据](../skills/competition-optimize/references/competition-research.md#ground-decision-changing-claims)、[实施前等价性检查](../skills/competition-optimize/references/strategy-design.md#check-equivalence-before-execution)和[反馈使用边界](../skills/competition-optimize/references/local-evaluation.md#track-feedback-already-used-for-selection)。这些语义判断由 agent 执行；档案 hash 检查继续只证明相应字节与关联身份，不保证解释正确。不新增强制表单、自动语义判定器或默认追加训练。
+
+软件侧通过 10 项现有检查：提示渲染 4 项、工作流快照 4 项、真实 driver 调用假 agent 的密封/恢复集成 2 项；另通过 skill 结构检查与本地链接/章节锚点检查。未新增仅匹配文案的测试。
+
+另用 DeepSeek 对已知失败案例做隔离判断检查：输入为真实提案、固定 notebook 全文、父实现和字段说明，加上一份明确标记的构造交接建议；没有新增训练、读取确认数据或提交比赛。CLI 会话完成资料读取，但在 240 秒窗口内未交出产物；一次性非流式请求在约 100 秒后返回 HTTP 502；流式请求取得响应，但 3,500 个输出 token 均用于推理，以 `response.incomplete` 结束，没有最终答案。请求和返回的模型 alias 均为 `deepseek-flash`，未据此推断底层版本。这三次均未形成完整行为结果，不能记为通过，也不能据此声称跨比赛自主能力已验证。
+
+[本次验证汇总](/data/lzh/workspace/outputs/competition-skill-implementation/20261116/autonomy-checks-20261116T130738Z/validation-summary.json)保留软件结果、各次未完成原因与输入身份。失败记录继续保留；本次交付仅将软件检查记为通过。新规则进入仓库主入口、参考指南和提示生成代码；已经密封的历史提案、回合 prompt 与运行快照不改写。运行器在后继检查点重新封存资源，已加载的 Python 模块随 manager 生命周期更新；本次没有重启正在运行的比赛 campaign。

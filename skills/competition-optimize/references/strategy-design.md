@@ -44,6 +44,21 @@ Choose the smallest implementation that preserves the proposed mechanism's depen
 
 Name the observation that could distinguish the new capability from the incumbent. Use a trace or small mechanism experiment when it answers that question; then use matched full-objective evaluation for promotion and independent confirmation at delivery. Reuse trustworthy evidence. Add ablations only when component attribution would change the next decision. More tests refine the evidence for the proposed candidates; they cannot discover a representation that was never proposed.
 
+## Check Equivalence Before Execution
+
+Before implementing a claimed new capability, simplify its decision rule and compare it with what the actual parent pipeline can already express. Use algebra, a hand example or an existing trace to settle a concrete question; no separate report or preliminary training run is required. Record the relevant deduction in the proposal's existing `basis` and predicted observation.
+
+| Proposed change | Check before spending execution cost |
+| --- | --- |
+| A common offset before `argmin`, or a strictly increasing transform before the same ranking | Under the applicable arithmetic and tie rules, does the selected action change at all? |
+| A new linear combination of existing numeric inputs | Does it expand the model's function class, or instead change regularization, preprocessing or optimization? |
+| A new feature, selector or state variable | Does it reach the actual output, and is its information available at fitting and inference time? |
+| A nonlinear transform or a feature supplied to a depth-limited tree | Identify the function or partition that becomes easier to represent, and a case where that matters |
+
+For example, with the same numeric inputs available to a linear predictor, appending `z = aᵀx` adds no linear expressivity: `βᵀx + γz = (β + γa)ᵀx`. Raw area sums or year differences therefore cannot be justified as information that a linear model was unable to combine. A Ridge fit may still change because the added coordinates alter its penalty; scaling, missing-value treatment or a nonlinear transform of the aggregate may also change the effective pipeline. A shallow tree can threshold an aggregate in one split where separate component thresholds require more structure. Inspect the actual order of these operations before choosing the explanation. Equal expressivity does not imply equal fitted predictions or performance.
+
+If the claimed mechanism is equivalent or disconnected, remove that claim and revise or defer the proposal. If a different credible mechanism survives, state it and its counterexample rather than requiring a new model family. Theory establishes a behavior or limitation under its assumptions; it does not guarantee a score gain. Conversely, a better score does not prove the original explanation. Check [source attribution](competition-research.md#ground-decision-changing-claims) separately.
+
 ## Generate Routes That Can Actually Disagree
 
 When the task or history does not yet distinguish solution families, write a few compact, complete strategy hypotheses before committing code. Make them differ in representation, construction, optimization target, information use or coordination variable; changing a coefficient or operator name does not create a new route. At least one route should deliberately test the strongest structurally different idea, and a stalled search may need a route generated without the incumbent or its memory. Choose among routes by their plausible movement toward the target and applicable evidence, not by familiarity or proposal confidence alone. Do not force a fixed number of routes when the mechanism is already clear.
