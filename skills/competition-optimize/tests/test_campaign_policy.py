@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import importlib
+import json
+from dataclasses import replace
 import sys
 import unittest
 from pathlib import Path
@@ -14,6 +16,7 @@ search = importlib.import_module("campaign_search")
 policy = importlib.import_module("campaign_policy")
 search_fixtures = importlib.import_module("test_campaign_search")
 measurement_fixtures = importlib.import_module("test_measurement_plans")
+from campaign_state import complete_state
 
 
 class CampaignPolicyTests(unittest.TestCase):
@@ -83,6 +86,168 @@ class CampaignPolicyTests(unittest.TestCase):
         self.assertTrue(planned.fresh_context)
         self.assertEqual(accepted["frontier_exposures"][key], {"previous-delivery": 2, identity: 7})
         self.assertEqual((memory, turn, records, outcome.receipt, outcome.archive_delta), original)
+
+    @staticmethod
+    def research_report():
+        return {"status": "open", "route": "source", "question": "Is group history deployable?",
+                "alternatives": ["Known entities", "Unseen entities"],
+                "missing_evidence": "Read official inference conditions.",
+                "answer_actions": [{"observation": "Entities are unseen", "action": "Use feature-only structure."}],
+                "evidence": []}
+
+    def test_question_and_pure_correction_survive_recovery_without_new_candidate(self) -> None:
+        self.record("baseline", 100)
+        records = self.records()
+        original_archive = self.path.read_bytes()
+        evidence = search.CampaignEvidence(records)
+        progress = evidence.signals()["objective_progress"]
+        correction = {"key": "history-transfer", "claim": "Gain is limited to the tested overlap.",
+                      "conditions": "This recorded development split.", "limitations": "Test overlap is unknown.",
+                      "reopen_when": "Official inference rules establish availability.", "evidence": [str(self.path)]}
+        receipt = {**self.receipt("Try another setting"), "research_state": self.research_report(),
+                   "corrections": [correction]}
+        memory = self.memory(archive=str(self.path), archive_snapshot={"sha256": "a" * 64, "size": 1})
+        turn = {"number": 7, "mode": "work", "context": {"objective_progress": progress}}
+        outcome = replace(self.outcome(records, records, receipt), receipt_path="/saved/turns/000007/message.json")
+        accepted = policy.CampaignPolicy().accept(memory, turn, outcome)
+        self.assertEqual(accepted["turns_without_implementation"], 1)
+        self.assertEqual(accepted["next_mode"], "research")
+        restored = complete_state(json.loads(json.dumps({**memory, **accepted})))
+        planned = policy.CampaignPolicy().prepare(restored, evidence)
+        self.assertEqual(planned.updates["next_action"], receipt["next_action"])
+        handoff = search.prepare_handoff(restored, planned, evidence, "t" * 64)
+        decision = handoff.packet["decision_context"]
+        self.assertEqual(decision["research_state"]["report"], receipt["research_state"])
+        self.assertEqual(decision["corrections"][0]["report"], correction)
+        self.assertEqual(decision["corrections"][0]["receipt_path"], outcome.receipt_path)
+        self.assertEqual(self.path.read_bytes(), original_archive)
+        # Omission retains the state; explicit null resolves its routing effect.
+        omitted = policy.CampaignPolicy().accept(restored, turn, self.outcome(records, records, self.receipt()))
+        self.assertNotIn("research_state", omitted)
+        cleared = policy.CampaignPolicy().accept(restored, turn, self.outcome(
+            records, records, {**self.receipt(), "research_state": None}))
+        self.assertIsNone(cleared["research_state"])
+
+    def test_research_cannot_override_repairs_frozen_measurement_or_another_contract(self) -> None:
+        fixture = self.measurement_fixture()
+        fixture.plan()
+        evidence = search.CampaignEvidence(archive.read_records(fixture.path))
+        key = evidence.signals()["objective_progress"]["comparison_key"]
+        research = {"report": self.research_report(), "comparison_key": key, "turn": 1,
+                    "receipt_path": "/saved/receipt.json", "assessment_kind": "agent_report"}
+        planned = policy.CampaignPolicy().prepare(self.memory(research_state=research), evidence)
+        self.assertEqual(planned.updates["next_mode"], "measure")
+        self.record("baseline", 100)
+        evidence = search.CampaignEvidence(self.records())
+        self.assertEqual(policy.CampaignPolicy().prepare(
+            self.memory(research_state=research), evidence).updates["next_mode"], "work")
+        research["comparison_key"] = evidence.signals()["objective_progress"]["comparison_key"]
+        self.record("broken", None, valid=False, status="rejected", parent="baseline")
+        self.assertEqual(policy.CampaignPolicy().prepare(
+            self.memory(research_state=research), search.CampaignEvidence(self.records())).updates["next_mode"], "repair")
+
+    def test_failed_receipt_does_not_acknowledge_or_erase_research(self) -> None:
+        self.record("baseline", 100)
+        records = self.records()
+        evidence = search.CampaignEvidence(records)
+        research = {"report": self.research_report(),
+                    "comparison_key": evidence.signals()["objective_progress"]["comparison_key"]}
+        memory = self.memory(research_state=research)
+        original = copy.deepcopy(memory)
+        updates = policy.CampaignPolicy().accept(memory, {"number": 2, "mode": "research"},
+                                               self.outcome(records, records, None))
+        self.assertNotIn("research_state", updates)
+        self.assertNotIn("research_corrections", updates)
+        self.assertEqual(memory, original)
+
+    def test_initial_research_correction_round_trips_before_any_candidate_exists(self) -> None:
+        records = []
+        evidence = search.CampaignEvidence(records)
+        memory = self.memory(archive=str(self.path), archive_snapshot={"sha256": "a" * 64, "size": 0})
+        correction = {"key": "discovery-result", "claim": "The inspected cache has metadata leads.",
+                      "conditions": "This exact query and page.", "limitations": "Bodies have not been read.",
+                      "reopen_when": "A source read establishes the mechanism.", "evidence": ["saved/source.json"]}
+        receipt = {**self.receipt(), "research_state": self.research_report(), "corrections": [correction]}
+        outcome = replace(self.outcome(records, records, receipt), receipt_path="/saved/000001/message.json")
+        updates = policy.CampaignPolicy().accept(memory, {"number": 1, "mode": "work"}, outcome)
+        restored = complete_state(json.loads(json.dumps({**memory, **updates})))
+        plan = policy.CampaignPolicy().prepare(restored, evidence)
+        handoff = search.prepare_handoff(restored, plan, evidence, "t" * 64)
+        self.assertIsNone(handoff.packet["objective_progress"]["comparison_key"])
+        self.assertEqual(handoff.packet["decision_context"]["corrections"][0]["report"], correction)
+        self.assertEqual(handoff.packet["decision_context"]["research_state"]["report"], receipt["research_state"])
+        self.assertEqual(plan.updates["next_mode"], "research")
+
+    def test_small_checkpoint_survives_rotation_without_expanding_to_the_evidence_backlog(self) -> None:
+        self.record("baseline", 100)
+        records = self.records()
+        evidence = search.CampaignEvidence(records)
+        report = {**self.research_report(),
+                  "missing_evidence": "Inference inputs, cost measurements and a matched mechanism control."}
+        memory = self.memory(archive=str(self.path), archive_snapshot={"sha256": "a" * 64, "size": 1},
+                             session_turns=2)
+        action = "Read the permitted inference inputs."
+        outcome = self.outcome(records, records, {**self.receipt(action), "research_state": report})
+        memory.update(policy.CampaignPolicy().accept(memory, {"number": 3, "mode": "research"}, outcome))
+        restored = complete_state(json.loads(json.dumps(memory)))
+        plan = policy.CampaignPolicy().prepare(restored, evidence)
+        self.assertTrue(plan.fresh_context)
+        self.assertEqual(plan.updates["next_mode"], "research")
+        self.assertEqual(action, plan.updates["next_action"])
+        self.assertNotIn("cost measurements", plan.updates["next_action"])
+        packet = search.prepare_handoff(restored, plan, evidence, "t" * 64).packet
+        self.assertEqual(packet["decision_context"]["research_state"]["report"], report)
+        self.assertEqual(restored["turns_without_implementation"], 1)
+        # Completing this check does not resolve the broader question or count as execution.
+        successor = {**report, "evidence": ["rules/inputs.md"]}
+        next_action = "Inspect the saved cost record."
+        next_updates = policy.CampaignPolicy().accept(restored, {"number": 4, "mode": "research"},
+            self.outcome(records, records, {**self.receipt(next_action), "research_state": successor}))
+        next_plan = policy.CampaignPolicy().prepare({**restored, **next_updates}, evidence)
+        self.assertEqual(next_action, next_plan.updates["next_action"])
+        self.assertEqual(next_updates["research_state"]["report"]["status"], "open")
+        self.assertEqual(next_updates["turns_without_implementation"], 2)
+
+    def test_withdrawal_replaces_old_premise_across_json_recovery_and_can_be_revised(self) -> None:
+        self.record("baseline", 100)
+        records = self.records()
+        evidence = search.CampaignEvidence(records)
+        old = {"key": "population", "claim": "The source count is the training size.",
+               "conditions": "Assumed populations match.", "limitations": "Not checked.",
+               "reopen_when": "Original metadata is inspected.", "evidence": ["old/note.md"]}
+        memory = self.memory(archive=str(self.path), archive_snapshot={"sha256": "a" * 64, "size": 1})
+        origin = replace(self.outcome(records, records, {**self.receipt(), "corrections": [old]}),
+                         receipt_path="/saved/000001/message.json")
+        memory.update(policy.CampaignPolicy().accept(memory, {"number": 1, "mode": "work"}, origin))
+        old_state = copy.deepcopy(memory)
+        withdrawal = {"key": "population", "status": "withdrawn", "reason": "The populations differ.",
+                      "evidence": ["source.json#/quantities/0"]}
+        outcome = replace(self.outcome(records, records, {**self.receipt(), "corrections": [withdrawal]}),
+                          receipt_path="/saved/000002/message.json")
+        updates = policy.CampaignPolicy().accept(memory, {"number": 2, "mode": "research"}, outcome)
+        self.assertEqual(memory, old_state)
+        restored = complete_state(json.loads(json.dumps({**memory, **updates})))
+        plan = policy.CampaignPolicy().prepare(restored, evidence)
+        packet = search.prepare_handoff(restored, plan, evidence, "t" * 64).packet
+        rows = packet["decision_context"]["corrections"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["report"], withdrawal)
+        self.assertEqual(rows[0]["supersedes_receipt_path"], origin.receipt_path)
+        self.assertNotIn(old["claim"], json.dumps(packet["decision_context"]))
+        self.assertEqual(restored["turns_without_implementation"], 2)
+        failed = policy.CampaignPolicy().accept(restored, {"number": 3, "mode": "research"},
+                                               self.outcome(records, records, None))
+        self.assertNotIn("research_corrections", failed)
+        revised = {**old, "claim": "Training size is established by the dataset manifest.",
+                   "conditions": "Only the identified dataset.", "evidence": ["dataset/manifest.json"]}
+        revised_outcome = replace(self.outcome(records, records, {**self.receipt(), "corrections": [revised]}),
+                                  receipt_path="/saved/000004/message.json")
+        newer = policy.CampaignPolicy().accept(restored, {"number": 4, "mode": "research"}, revised_outcome)
+        key = evidence.signals()["objective_progress"]["comparison_key"]
+        row = newer["research_corrections"][key]["population"]
+        self.assertEqual(row["report"], revised)
+        self.assertEqual(row["supersedes_receipt_path"], outcome.receipt_path)
+        self.assertEqual(self.records(), records)
 
     def test_pending_measurement_keeps_its_work_across_context_rotation(self) -> None:
         fixture = self.measurement_fixture()

@@ -47,6 +47,9 @@ class PredictionBatchTests(unittest.TestCase):
     def test_batch_matches_individual_scores_hashes_contracts_and_comparisons_for_all_metrics(self) -> None:
         for metric in evaluator.METRIC_DIRECTIONS:
             with self.subTest(metric=metric):
+                if metric == "accuracy":
+                    self.baseline.write_text("id,prediction\n001,0\n1,0\na,0\nb,0\n")
+                    self.candidate.write_text("id,prediction\n001,0\n1,1\na,0\nb,1\n")
                 report, output = self.run_batch("--metric", metric)
                 self.assertEqual(report["status"], "success")
                 singles = {}

@@ -10,8 +10,11 @@ Use the bundled scripts for unweighted, scalar regression or binary classificati
 | `mae` | Minimize | Finite numeric targets and predictions; mean absolute residual |
 | `binary_log_loss` | Minimize | Labels 0/1 and probabilities in [0, 1]; natural-log loss, clipped at epsilon and 1 minus epsilon |
 | `roc_auc` | Maximize | Labels 0/1 with both classes present and finite ranking scores; ties contribute one half |
+| `accuracy` | Maximize | Binary labels and hard decisions encoded as 0/1; correct count divided by all aligned rows |
 
 Check the contest's scorer before choosing an argument. Weighted, per-group, per-fold, multi-target, multiclass, custom aggregation, and transformed metrics require a task-specific implementation. Pooled OOF ROC-AUC is not generally equal to mean fold ROC-AUC. Log-loss epsilon defaults to `1e-15`; set `--log-loss-epsilon` to the official value when applicable, including its numerical conventions.
+
+`accuracy` rejects probabilities rather than guessing a threshold. Apply the predeclared decision rule first; the tabular adapter seals that threshold and applies it after averaging frozen fold probabilities.
 
 The default `--score-kind proxy` labels the measurement provisional. Use `--score-kind official_metric` only after verifying that the exact formula, label encoding, weights, clipping, and aggregation match the contest. The flag records that declaration; it does not check official rules or make the result a platform score.
 
@@ -42,6 +45,8 @@ A metric change that also changes the model's training objective belongs in the 
 
 ## Inputs and Evaluation
 
+Run prediction scoring and diagnostics with the task's numeric Python environment; [setup](tabular-training.md#setup-and-candidate-interface) uses the existing `requirements-tabular.txt`. RMSE/MAE aggregation and ROC integration use sklearn; accuracy averages cached correctness with NumPy. Binary log loss uses SciPy's stable Bernoulli terms so the declared clipping epsilon remains effective even below sklearn's dtype clipping floor. `prediction_core.calculate_metric` accepts lists, tuples and one-dimensional NumPy arrays. Repeated draws reuse `prepare_metric` row losses and AUC score groups, with the same domain checks and per-draw finite-range regression scaling. Archive reads and score-only comparison without recomputation remain standard-library operations.
+
 Provide a local truth CSV such as `id,target` and a candidate prediction CSV such as `id,prediction`. Column names can be set with `--id-column`, `--target-column`, and `--prediction-column`. Each file must contain unique, non-empty IDs and finite numeric values. IDs are compared as exact strings, preserving leading zeros; row order can differ. Extra named columns are allowed but do not change scoring weights or aggregation. Missing/extra IDs, duplicate columns or IDs, malformed rows, and invalid metric domains fail the evaluation.
 
 Seal the truth bytes, split ID, columns, metric, score kind, clipping parameters, and stage. Fit training and preprocessing under the task's fold protocol and save their provenance separately. Use `development` for iterative comparison and `confirmation` for the frozen shortlist on a separate split. These stage names describe intended use; they do not verify that a dataset was previously unseen.
@@ -56,7 +61,7 @@ python <skill-dir>/scripts/evaluate_predictions.py `
   --output-dir <new-evaluation-directory>
 ```
 
-The output directory's parent must exist. A successful run saves `predictions.csv` as the exact candidate snapshot and `result.json` with metric direction/value, validity scope, expected/completed cases, and candidate/evaluator/score-model/split/configuration hashes. It reads the truth file without copying it into the run. Keep truth bytes fixed when reusing evidence; use the saved prediction snapshot when reproducing an evaluation. Inputs are UTF-8 CSV, optionally with a BOM; the scripts use Python's standard library and do not train models or execute candidate code.
+The output directory's parent must exist. A successful run saves `predictions.csv` as the exact candidate snapshot and `result.json` with metric direction/value, validity scope, expected/completed cases, and candidate/evaluator/score-model/split/configuration hashes. The evaluator hash and runtime record include NumPy, SciPy and sklearn versions. It reads the truth file without copying it into the run. Keep truth bytes fixed when reusing evidence; use the saved prediction snapshot when reproducing an evaluation. Inputs are UTF-8 CSV, optionally with a BOM; scoring does not train models or execute candidate code. A library/backend update creates a new evaluator identity; preserve old results and use the matching saved scorer or a new evaluation for comparisons.
 
 `valid: true` covers prediction format, ID coverage, finite values, and the metric domain only. The result lists training leakage, training provenance, resource limits, and competition rules as unchecked. The skill must establish those checks separately before promoting a competition entry. A failed run exits with code 2 and records a null score when a new output directory was created; an existing directory is never overwritten.
 
@@ -159,6 +164,7 @@ Add `--summary-only` when aggregate evidence, slices and representative top case
 | RMSE | Absolute residual; regressions ranked by squared-error increase at a common scale | Fraction of total squared error for that candidate |
 | MAE | Absolute residual | Fraction of total absolute error for that candidate |
 | Binary log loss | Per-row loss using the evaluation's clipping epsilon | Fraction of total clipped log loss for that candidate |
+| Accuracy | Zero-one error from hard 0/1 decisions | Fraction of incorrect rows (lower is better) |
 | ROC-AUC | No independent row loss, error share, or case preference | Group AUC only when both classes are present; otherwise null with a reason |
 
 For RMSE, `scaled_squared_error_improvement` equals the baseline squared residual minus the candidate squared residual, divided by `squared_error_scale` squared. The shared scale is the largest residual across both candidates, with zero improvements when it is zero. This ranks score-relevant regressions without squaring large numbers; the field is null for other metrics. `error_improvement` and the case-tie threshold still use absolute residual units for regression.

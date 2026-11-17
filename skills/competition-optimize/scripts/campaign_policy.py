@@ -8,6 +8,7 @@ on the same frozen measurement plan.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -32,6 +33,7 @@ class TurnOutcome:
     archive_delta: Mapping[str, int]
     receipt: Mapping[str, Any] | None
     now: float
+    receipt_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,17 @@ class CampaignPolicy:
             return _Work("rethink", (
                 "Compare the historical best with recent nonimproving implementations and other archived branches; "
                 "reassess the remaining capability gap and execute an informative successor"), "objective_stagnation")
+        research = memory.get("research_state")
+        if (research and research["comparison_key"] == progress["comparison_key"]
+                and research["report"]["status"] == "open"):
+            report = research["report"]
+            # The receipt's next_action already names the next checkpoint.
+            # Keep the wider question in handoff instead of expanding that
+            # action back into the entire evidence backlog on every turn.
+            action = action.strip() or f"Resolve {report['question']} via {report['route']}: {report['missing_evidence']}"
+            if memory["next_mode"] == "rethink":
+                return _Work("rethink", action, "research_review")
+            return _Work("research", action)
         # Repair and measurement are derived from current evidence, not durable
         # requests that survive after a failed invocation has resolved them.
         mode = memory["next_mode"] if memory["next_mode"] in {"execute", "rethink"} else "work"
@@ -162,6 +175,27 @@ class CampaignPolicy:
         updates.update(failures=0, retry_at=None, last_error="", recovery_needed=False,
                        last_summary=receipt["summary"], next_action=receipt["next_action"],
                        last_agent_status=receipt["status"], next_mode="work")
+        origin = {"turn": turn["number"], "receipt_path": outcome.receipt_path,
+                  "comparison_key": ((turn.get("context", {}).get("objective_progress") or {}).get("comparison_key")
+                                     or facts["objective_progress"]["comparison_key"]),
+                  "assessment_kind": "agent_report"}
+        if "research_state" in receipt:
+            updates["research_state"] = ({**origin, "report": copy.deepcopy(receipt["research_state"])}
+                                         if receipt["research_state"] is not None else None)
+        if receipt.get("corrections"):
+            corrections = copy.deepcopy(memory.get("research_corrections", {}))
+            # No candidate may exist during initial source research. JSON
+            # object keys must survive persistence even before a comparison.
+            current = corrections.setdefault(origin["comparison_key"] or "null", {})
+            for report in receipt["corrections"]:
+                previous = current.get(report["key"])
+                row = {**origin, "report": copy.deepcopy(report)}
+                if previous and previous.get("receipt_path"):
+                    row["supersedes_receipt_path"] = previous["receipt_path"]
+                # A withdrawal replaces the active claim with its reason; it
+                # remains visible so old prose cannot silently revive the key.
+                current[report["key"]] = row
+            updates["research_corrections"] = corrections
         resolutions = [entry for entry in outcome.appended_events
                        if entry["event"] in {"measurement_decision", "measurement_stop"}]
         if resolutions:

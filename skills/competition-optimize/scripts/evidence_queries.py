@@ -400,6 +400,8 @@ class EvidenceSnapshot:
                 card["result"]["resource_profile"] = result["resource_profile"]
             card["identity_checks"] = {"result_bytes": "checked" if result.get("result_path") else "not_recorded",
                                        "snapshot_bytes": "checked" if entry["artifact_paths"] else "not_recorded"}
+            if "training_execution" in result:
+                card["result"]["training_execution"] = result["training_execution"]
             card["objective_gain_vs_best"] = (directed_score(entry) - directed_score(best)
                                               if best is not None and candidate_id in measured_ids else None)
             if "implementation_review" in entry:

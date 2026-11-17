@@ -8,6 +8,10 @@ Use one short reconnaissance pass before implementation. Read the task contract 
 
 Choose the next proposal by four practical questions: does it address a task-derived opportunity or observed limitation, is there a coherent mechanism with applicable prerequisites, is it feasible with available resources, and would its result change promotion or the next proposal? Prefer a complete change with meaningful headroom. Prior measured gain is not an entry requirement for a novel mechanism. Stop expanding the route list or polishing an explanation once these questions are answered and implement within the requested scope.
 
+Before a diagnostic fit, check existing fold/member predictions and saved models against the source, recipe, data, split and seed needed for this question. Reuse matching artifacts and persist new predictions needed by a related follow-up; do not refit the same members merely to calculate another correlation, interval or error slice. Count diagnostic fits, failed/interrupted work and repeated measurements in actual cost even when they add no contender. Recheck an unchanged delivery only when a dependency changed, at resumption when identity is uncertain, or at a delivery boundary; periodic identical audits do not advance an open-ended campaign.
+
+An output-directory or packaging correction alone does not invalidate the fitted predictions: relocate/copy and rebind verified artifacts when their computational dependencies match. If execution really must be repeated, count it as another fit even when it has the same seed and is not final full-data retraining. Keep per-fit time, whole cross-validation time and total agent/runtime costs distinct.
+
 Before a full evaluation, run a quality gate appropriate to the adapter:
 
 - Candidate source/configuration is snapshotted and hashable; the evaluator, fixtures, split/workload and score model are unchanged.

@@ -33,6 +33,10 @@ class PredictionMetricTests(unittest.TestCase):
         self.assertAlmostEqual(evaluator.calculate_metric("binary_log_loss", [0, 1], [0, 1]), 0, places=12)
         self.assertAlmostEqual(evaluator.calculate_metric("binary_log_loss", [0, 1], [1, 0], 1e-4), -math.log(1e-4))
 
+    def test_log_loss_preserves_explicit_clipping_below_dtype_epsilon(self) -> None:
+        # sklearn.log_loss clips at dtype epsilon; this adapter promises the declared epsilon.
+        self.assertAlmostEqual(evaluator.calculate_metric("binary_log_loss", [1], [0], 1e-50), -math.log(1e-50))
+
     def test_auc_matches_independent_pairwise_oracle_with_ties(self) -> None:
         rng = random.Random(721)
         for _ in range(40):
@@ -107,6 +111,17 @@ class PredictionWorkflowTests(unittest.TestCase):
         result_path = output / "result.json"
         result_path.write_text(json.dumps(result), encoding="utf-8")
         return comparator.load_result(result_path)
+
+    def test_missing_numeric_dependencies_produce_a_failed_result_without_a_traceback(self) -> None:
+        output = self.root / "missing-dependencies"
+        completed = subprocess.run([
+            sys.executable, "-S", str(SCRIPT_DIR / "evaluate_predictions.py"),
+            *self.arguments(output)], capture_output=True, text=True, timeout=15)
+        self.assertEqual(completed.returncode, 2)
+        result = json.loads((output / "result.json").read_text())
+        self.assertEqual(result["error"]["type"], "missing_dependency")
+        self.assertIsNone(result["score"]["value"])
+        self.assertNotIn("Traceback", completed.stderr)
 
     def test_id_alignment_snapshot_and_comparison_choose_lower_rmse(self) -> None:
         self.predictions.write_text("id,prediction\na,11\nb,22\nc,28\n", encoding="utf-8")
@@ -288,8 +303,12 @@ class PredictionWorkflowTests(unittest.TestCase):
         for metric in evaluator.METRIC_DIRECTIONS:
             for stage in ["development", "confirmation"]:
                 self.predictions.write_text("id,prediction\n001,0.5\n1,0.5\na,0.5\nb,0.5\n", encoding="utf-8")
+                if metric == "accuracy":
+                    self.predictions.write_text("id,prediction\n001,0\n1,0\na,0\nb,0\n", encoding="utf-8")
                 baseline = self.evaluate("--metric", metric, "--stage", stage, "--log-loss-epsilon", "0.01")
                 self.predictions.write_text("id,prediction\nb,1\na,0\n1,0.8\n001,0.2\n", encoding="utf-8")
+                if metric == "accuracy":
+                    self.predictions.write_text("id,prediction\nb,1\na,0\n1,1\n001,0\n", encoding="utf-8")
                 candidate = self.evaluate("--metric", metric, "--stage", stage, "--log-loss-epsilon", "0.01")
                 paths = [Path(value["artifacts"][0]).parent / "result.json" for value in [baseline, candidate]]
                 for epsilon in [0, 1]:

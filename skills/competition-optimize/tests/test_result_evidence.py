@@ -142,6 +142,13 @@ class ResultEvidenceTests(unittest.TestCase):
             self.assertEqual(error.exception.kind, "result_override")
         self.assertEqual(archive.result_metadata(None), {})
 
+    def test_optional_execution_projection_preserves_raw_result_hash(self) -> None:
+        current = self.read({"status": "success", "valid": True,
+                             "training_execution": {"kind": "tabular_training_v1", "cost": {"fit_calls": 3}}})
+        legacy = ResultEvidence.read(self.root / "result.json", include_training_execution=False)
+        self.assertIn("training_execution", current.metadata)
+        self.assertEqual(legacy.metadata, {k: v for k, v in current.metadata.items() if k != "training_execution"})
+
     def test_result_interface_has_no_archive_or_campaign_import_dependency(self) -> None:
         code = ("import sys; sys.path.insert(0, sys.argv[1]); from result_evidence import ResultEvidence, ObservationClaims; "
                 "e = ResultEvidence.read(None); assert e.resolve(ObservationClaims(valid=True)).valid; "

@@ -34,19 +34,21 @@ class BootstrapTests(unittest.TestCase):
             expected = [evaluator.calculate_metric(metric, truth, [values[index] for index in indexes])
                         for values in [baseline, candidate]]
             self.assertEqual(row["case_count"], len(indexes))
-            self.assertEqual(row["baseline_score"], expected[0])
-            self.assertEqual(row["candidate_score"], expected[1])
-            improvement = (expected[1] - expected[0] if metric == "roc_auc" else expected[0] - expected[1])
-            self.assertEqual(row["objective_improvement"], improvement)
+            self.assertTrue(math.isclose(row["baseline_score"], expected[0], rel_tol=1e-14, abs_tol=0))
+            self.assertTrue(math.isclose(row["candidate_score"], expected[1], rel_tol=1e-14, abs_tol=0))
+            improvement = (expected[1] - expected[0] if evaluator.METRIC_DIRECTIONS[metric] == "maximize"
+                           else expected[0] - expected[1])
+            self.assertTrue(math.isclose(row["objective_improvement"], improvement, rel_tol=1e-14, abs_tol=0))
         self.assertEqual(draws, expected_draws)
 
-    def test_cached_metrics_match_full_resampling_for_all_metrics_and_unequal_groups(self) -> None:
+    def test_paired_metrics_match_full_resampling_for_all_metrics_and_unequal_groups(self) -> None:
         labels = [0, 1, 1, 0, 1, 0, 0]
         baseline, candidate = [0, 1, 0.5, 0.5, 0, 1, 0.25], [0.7, 0.7, 0.5, 0.2, 1, 0, 0.7]
         for metric in evaluator.METRIC_DIRECTIONS:
+            before, after = ([int(p >= 0.5) for p in values] for values in [baseline, candidate]) if metric == "accuracy" else (baseline, candidate)
             for units in [[[index] for index in range(7)], [[0], [1, 2, 3, 4], [5, 6]]]:
                 with self.subTest(metric=metric, units=units):
-                    self.assert_matches_resampled_metric(metric, labels, baseline, candidate, units)
+                    self.assert_matches_resampled_metric(metric, labels, before, after, units)
 
     def test_regression_rescales_each_draw_when_extreme_rows_are_absent(self) -> None:
         labels, baseline, candidate = [0] * 4, [1e308, 1e-300, 2e-300, 3e-300], [5e307, 0, 1e-300, 2e-300]
@@ -57,12 +59,12 @@ class BootstrapTests(unittest.TestCase):
                                               200, 8301, 1e-15, 10000)
                 self.assertTrue(any(0 < row["baseline_score"] < 1e-299 for row in rows))
 
-    def test_cached_auc_handles_signed_zero_extreme_ranks_and_unselected_tie_end_rows(self) -> None:
+    def test_auc_handles_signed_zero_extreme_ranks_and_unselected_tied_rows(self) -> None:
         labels = [0, 1, 1, 0, 0, 1]
         baseline, candidate = [-1e308, -0.0, 0.0, 1e308, 0.0, 1e308], [1e308, 0, 0, -1e308, 0, 0]
         self.assert_matches_resampled_metric("roc_auc", labels, baseline, candidate, [[0, 1], [2], [3, 4, 5]])
 
-    def test_invalid_full_inputs_are_rejected_before_cached_sampling(self) -> None:
+    def test_invalid_full_inputs_are_rejected_before_sampling(self) -> None:
         cases = [("rmse", [0, 0], [1]), ("mae", [0, 0], [0, math.nan]),
                  ("rmse", [1e308, 0], [-1e308, 0]), ("binary_log_loss", [0, 1], [0, 2]),
                  ("roc_auc", [0, 0.5], [0, 1]), ("unknown", [0, 1], [0, 1])]
@@ -134,7 +136,7 @@ class BootstrapTests(unittest.TestCase):
                 return sum(1 if predictions[pos] > predictions[neg] else
                            0.5 if predictions[pos] == predictions[neg] else 0
                            for pos in positives for neg in negatives) / (len(positives) * len(negatives))
-            self.assertEqual(row["objective_improvement"], auc(candidate) - auc(baseline))
+            self.assertAlmostEqual(row["objective_improvement"], auc(candidate) - auc(baseline), places=14)
 
     def test_insufficient_valid_auc_draws_do_not_produce_a_confidence_interval(self) -> None:
         rows, _ = estimator.bootstrap("roc_auc", [0, 1], [0.5, 0.5], [0, 1], [[0], [1]], 200, 1, 1e-15, 1000)

@@ -96,9 +96,12 @@ class CampaignArchive:
             archive_tools.verify_result(entry)
             archive_tools.verify_artifacts(entry)
             result = entry["result"]
+            # Compare fields captured by that reader version. Older resident
+            # managers omitted execution receipts; result bytes remain hashed.
             if result.get("result_path") and archive_tools.result_metadata(
                     pathlib.Path(result["result_path"]), include_case_profile="case_profile" in result,
-                    include_resource_profile="resource_profile" in result) != result:
+                    include_resource_profile="resource_profile" in result,
+                    include_training_execution="training_execution" in result) != result:
                 raise CampaignError(f"Archived result metadata differs from its file: {entry['candidate_id']}")
 
     def verified(self, expected: ArchivePrefix | None = None) -> ArchiveHead:

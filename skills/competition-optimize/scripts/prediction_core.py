@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.metadata
 import io
 import json
 import math
 import pathlib
 import re
-from typing import Any
+from typing import Any, Callable
 
 
 METRIC_DIRECTIONS = {
@@ -20,6 +21,7 @@ METRIC_DIRECTIONS = {
     "mae": "minimize",
     "binary_log_loss": "minimize",
     "roc_auc": "maximize",
+    "accuracy": "maximize",
 }
 UNCHECKED_RULES = ["training_leakage", "training_provenance", "resource_limits", "competition_rules"]
 
@@ -37,6 +39,13 @@ def byte_hash(data: bytes) -> str:
 def object_hash(value: Any) -> str:
     return byte_hash(json.dumps(value, sort_keys=True, separators=(",", ":"),
                                 ensure_ascii=True, allow_nan=False).encode("utf-8"))
+
+
+def scorer_fingerprint(directory: pathlib.Path, backend: dict[str, str] | None = None) -> str:
+    """Read scorer identity without executing it; None retains legacy identities."""
+    sources = {name: byte_hash((directory / name).read_bytes())
+               for name in ["evaluate_predictions.py", "prediction_core.py"]}
+    return object_hash(sources if backend is None else {"sources": sources, "metric_backend": backend})
 
 
 def read_values(raw: bytes, id_column: str, value_column: str, source: str) -> dict[str, float]:
@@ -71,60 +80,104 @@ def read_values(raw: bytes, id_column: str, value_column: str, source: str) -> d
         raise PredictionFailure("invalid_csv", f"{source}: {exc}") from exc
 
 
-def calculate_metric(metric: str, labels: list[float], predictions: list[float],
-                     epsilon: float = 1e-15) -> float:
+def metric_backend() -> dict[str, str]:
+    """Bind numerical dependencies without loading them for archive-only reads."""
+    try:
+        return {name: importlib.metadata.version(name) for name in ("numpy", "scipy", "scikit-learn")}
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise PredictionFailure("missing_dependency", "Scoring requires the task's numeric environment; "
+                                "see scripts/requirements-tabular.txt") from exc
+
+
+def binary_log_losses(labels: list[float], predictions: list[float], epsilon: float):
+    """Use SciPy's Bernoulli terms with the declared, rather than dtype, clipping."""
+    import numpy as np
+    from scipy.special import xlogy, xlog1py
+
+    clipped = np.clip(np.asarray(predictions, dtype=float), epsilon, 1 - epsilon)
+    if np.any(clipped <= 0) or np.any(clipped >= 1):
+        raise PredictionFailure("invalid_config", "Epsilon is too small for finite log-loss clipping")
+    truth = np.asarray(labels, dtype=float)
+    return -(xlogy(truth, clipped) + xlog1py(1 - truth, -clipped))
+
+
+def prepare_metric(metric: str, labels: Any, predictions: Any,
+                   epsilon: float = 1e-15) -> Callable[..., float]:
+    """Validate once; return a scorer for all rows or repeated row indices.
+
+    Cache row losses and AUC score groups for paired/group bootstrap draws.
+    Numerical imports remain lazy so archive-only reads need no ML environment.
+    """
     if metric not in METRIC_DIRECTIONS:
         raise PredictionFailure("invalid_metric", f"Unsupported metric: {metric}")
-    if not labels or len(labels) != len(predictions):
-        raise PredictionFailure("invalid_score", "Labels and predictions must be non-empty and paired")
-    if any(not math.isfinite(value) for value in labels + predictions):
-        raise PredictionFailure("invalid_score", "Metric inputs must be finite")
     if not math.isfinite(epsilon) or not 0 < epsilon < 0.5:
         raise PredictionFailure("invalid_config", "Log-loss epsilon must be finite and between 0 and 0.5")
-    count = len(labels)
+    try:
+        import numpy as np
+        from sklearn import metrics
+    except ImportError as exc:
+        raise PredictionFailure("missing_dependency", "Scoring requires the task's numeric environment; "
+                                "see scripts/requirements-tabular.txt") from exc
+    try:
+        truth = np.asarray(labels, dtype=float)
+        predicted = np.asarray(predictions, dtype=float)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise PredictionFailure("invalid_score", "Metric inputs must be one-dimensional numeric sequences") from exc
+    if (truth.ndim != 1 or predicted.ndim != 1 or truth.size == 0
+            or truth.size != predicted.size):
+        raise PredictionFailure("invalid_score", "Labels and predictions must be non-empty, one-dimensional and paired")
+    if not np.all(np.isfinite(truth)) or not np.all(np.isfinite(predicted)):
+        raise PredictionFailure("invalid_score", "Metric inputs must be finite")
     if metric in {"rmse", "mae"}:
-        residuals = [abs(label - prediction) for label, prediction in zip(labels, predictions)]
-        if any(not math.isfinite(value) for value in residuals):
+        with np.errstate(over="ignore"):
+            losses = np.abs(truth - predicted)
+        if not np.all(np.isfinite(losses)):
             raise PredictionFailure("invalid_score", "Residual exceeds finite floating-point range")
-        scale = max(residuals)
-        # Scaling avoids overflowing when finite residuals are squared or summed.
-        score = 0.0 if scale == 0 else scale * (
-            math.sqrt(math.fsum((value / scale) ** 2 for value in residuals) / count)
-            if metric == "rmse" else math.fsum(value / scale for value in residuals) / count
-        )
     else:
-        if any(label not in (0.0, 1.0) for label in labels):
+        if not np.all((truth == 0) | (truth == 1)):
             raise PredictionFailure("invalid_domain", "Binary metrics require labels encoded as 0 or 1")
-        if metric == "binary_log_loss":
-            if any(not 0 <= value <= 1 for value in predictions):
+        if metric == "accuracy":
+            if not np.all((predicted == 0) | (predicted == 1)):
+                raise PredictionFailure("invalid_domain", "Binary accuracy requires hard predictions encoded as 0 or 1")
+            losses = truth == predicted
+        elif metric == "binary_log_loss":
+            if not np.all((predicted >= 0) & (predicted <= 1)):
                 raise PredictionFailure("invalid_domain", "Binary log loss requires probabilities in [0, 1]")
-            clipped = [min(1 - epsilon, max(epsilon, value)) for value in predictions]
-            if any(not 0 < value < 1 for value in clipped):
-                raise PredictionFailure("invalid_config", "Epsilon is too small for finite log-loss clipping")
-            score = math.fsum(-math.log(p) if label == 1 else -math.log1p(-p)
-                              for label, p in zip(labels, clipped)) / count
+            losses = binary_log_losses(truth, predicted, epsilon)
         else:
-            positive_count = sum(label == 1 for label in labels)
-            negative_count = count - positive_count
-            if not positive_count or not negative_count:
+            if not np.any(truth == 0) or not np.any(truth == 1):
                 raise PredictionFailure("invalid_domain", "ROC-AUC requires both positive and negative labels")
-            ordered = sorted(zip(predictions, labels))
-            negatives_before = 0
-            twice_favorable = 0
-            start = 0
-            while start < count:
-                end = start + 1
-                while end < count and ordered[end][0] == ordered[start][0]:
-                    end += 1
-                positives = sum(label == 1 for _, label in ordered[start:end])
-                negatives = end - start - positives
-                twice_favorable += positives * (2 * negatives_before + negatives)
-                negatives_before += negatives
-                start = end
-            score = twice_favorable / (2 * positive_count * negative_count)
-    if not math.isfinite(score):
-        raise PredictionFailure("invalid_score", "Computed score is not finite")
+            # Sort score groups once; draws change their class multiplicities.
+            groups, inverse = np.unique(predicted, return_inverse=True)
+
+    def score(indices=None) -> float:
+        selected = slice(None) if indices is None else np.asarray(indices)
+        if metric == "roc_auc":
+            counts = np.bincount(inverse[selected], minlength=len(groups))
+            positive = np.bincount(inverse[selected], weights=truth[selected], minlength=len(groups))
+            tps = np.r_[0.0, np.cumsum(positive[::-1])]
+            fps = np.r_[0.0, np.cumsum((counts - positive)[::-1])]
+            if tps[-1] == 0 or fps[-1] == 0:
+                raise PredictionFailure("invalid_domain", "ROC-AUC requires both positive and negative labels")
+            result = metrics.auc(fps / fps[-1], tps / tps[-1])
+        else:
+            values = losses[selected]
+            if metric in {"rmse", "mae"}:
+                # Scale each draw: tiny residuals survive when an extreme row is absent.
+                scale = values.max()
+                scorer = metrics.root_mean_squared_error if metric == "rmse" else metrics.mean_absolute_error
+                result = 0.0 if scale == 0 else scale * scorer(np.zeros(values.size), values / scale)
+            else:
+                result = values.mean()
+        if not math.isfinite(result):
+            raise PredictionFailure("invalid_score", "Computed score is not finite")
+        return float(result)
+
     return score
+
+
+def calculate_metric(metric: str, labels: Any, predictions: Any, epsilon: float = 1e-15) -> float:
+    return prepare_metric(metric, labels, predictions, epsilon)()
 
 
 class ComparisonFailure(Exception):
@@ -169,7 +222,7 @@ def load_result(path: pathlib.Path) -> dict[str, Any]:
     number = score.get("value")
     if type(number) not in {int, float} or not math.isfinite(number):
         raise ComparisonFailure("Score must be a finite JSON number")
-    if number < 0 or (metric == "roc_auc" and number > 1):
+    if number < 0 or (metric in {"roc_auc", "accuracy"} and number > 1):
         raise ComparisonFailure("Score is outside the metric domain")
     expected, completed = evaluation.get("expected_cases"), evaluation.get("completed_cases")
     if type(expected) is not int or type(completed) is not int or expected < 1 or completed != expected:

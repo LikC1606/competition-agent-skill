@@ -74,7 +74,7 @@ class ResultEvidence:
 
     @classmethod
     def read(cls, path: pathlib.Path | None, *, include_case_profile: bool = True,
-             include_resource_profile: bool = True) -> "ResultEvidence":
+             include_resource_profile: bool = True, include_training_execution: bool = True) -> "ResultEvidence":
         """Read one adapter result, preserving legacy field mappings and hashes."""
         if path is None:
             return cls({})
@@ -131,6 +131,10 @@ class ResultEvidence:
             metadata["metric_summary"] = value["metrics"].get("summary", {})
         if value.get("elapsed_seconds") is not None:
             metadata["elapsed_seconds"] = finite_number(value["elapsed_seconds"], "result.elapsed_seconds")
+        if include_training_execution and "training_execution" in value:
+            if not isinstance(value["training_execution"], dict):
+                raise ArchiveFailure("invalid_result", "training_execution must be an object")
+            metadata["training_execution"] = value["training_execution"]
         if include_case_profile and "case_profile" in value:
             try:
                 metadata["case_profile"] = candidate_profiles.describe(value["case_profile"])

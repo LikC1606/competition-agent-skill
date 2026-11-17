@@ -30,7 +30,7 @@
 
 如仅研究方案思路，明确说“只分析，不改代码”。如果当前没有可信评测器，先核对官方计分和目标分布，用已知正反例验证边界，再建立能区分机制的本地开发评测。工具详情按题型和当前决策加载，不需要每轮读完整历史。
 
-仓库脚本可直接运行，无须安装 skill。普通脚本使用 Python 3.10+；本次验证使用 `/usr/bin/python3` 3.12。数值训练需要独立的[可选依赖环境](skills/competition-optimize/references/tabular-training.md#setup-and-candidate-interface)。C++ 执行需要比赛 harness 和编译器，静态规则检查另需 Clang。
+仓库脚本可直接运行，无须安装 skill。普通脚本使用 Python 3.10+；本次验证使用 `/usr/bin/python3` 3.12。预测评分、数值诊断和表格训练复用任务的[数值依赖环境](skills/competition-optimize/references/tabular-training.md#setup-and-candidate-interface)，指标调用 NumPy/sklearn/SciPy；只读档案和无需复算的分数比较不依赖这些包。C++ 执行需要比赛 harness 和编译器，静态规则检查另需 Clang。
 
 真实训练的本地集成示例：
 

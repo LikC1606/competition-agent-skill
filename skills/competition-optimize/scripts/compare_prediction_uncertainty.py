@@ -11,11 +11,12 @@ import pathlib
 import platform
 import random
 import sys
-from typing import Any, Callable
+from typing import Any
 
 import evaluate_predictions as evaluator
 from compare_prediction_results import ComparisonFailure
 from prediction_evidence import EvidenceFailure, load_pair, read_categories
+from prediction_core import prepare_metric
 
 
 class UncertaintyFailure(Exception):
@@ -57,51 +58,6 @@ def summarize(replicates: list[dict], confidence: float, minimum_improvement: fl
     }
 
 
-def prepare_loss_score(metric: str, labels: list[float], predictions: list[float],
-                       epsilon: float) -> Callable[[list[int]], float]:
-    """Cache row losses, retaining per-draw scaling for finite-range regression."""
-    if metric in {"rmse", "mae"}:
-        residuals = [abs(label - value) for label, value in zip(labels, predictions)]
-
-        def score(indexes: list[int]) -> float:
-            selected = [residuals[index] for index in indexes]
-            scale = max(selected)
-            if scale == 0:
-                return 0.0
-            # A global scale can underflow small residuals when an extreme row is absent.
-            return scale * (math.sqrt(math.fsum((value / scale) ** 2 for value in selected) / len(selected))
-                            if metric == "rmse" else math.fsum(value / scale for value in selected) / len(selected))
-
-        return score
-    clipped = [min(1 - epsilon, max(epsilon, value)) for value in predictions]
-    losses = [-math.log(p) if label == 1 else -math.log1p(-p) for label, p in zip(labels, clipped)]
-    return lambda indexes: math.fsum(losses[index] for index in indexes) / len(indexes)
-
-
-def prepare_auc_order(labels: list[float], predictions: list[float]) -> list[tuple[int, bool, bool]]:
-    """Sort once; each row carries its class and whether its score tie ends here."""
-    order = sorted(range(len(labels)), key=predictions.__getitem__)
-    return [(index, labels[index] == 1,
-             position + 1 == len(order) or predictions[index] != predictions[order[position + 1]])
-            for position, index in enumerate(order)]
-
-
-def resampled_auc(order: list[tuple[int, bool, bool]], multiplicities: list[int],
-                  positive_count: int, negative_count: int) -> float:
-    """Compute the original pooled AUC using integer row multiplicities."""
-    positives = negatives = negatives_before = twice_favorable = 0
-    for index, positive, tie_end in order:
-        if positive:
-            positives += multiplicities[index]
-        else:
-            negatives += multiplicities[index]
-        if tie_end:
-            twice_favorable += positives * (2 * negatives_before + negatives)
-            negatives_before += negatives
-            positives = negatives = 0
-    return twice_favorable / (2 * positive_count * negative_count)
-
-
 def bootstrap(metric: str, labels: list[float], before: list[float], after: list[float], units: list[list[int]],
               repetitions: int, seed: int, epsilon: float, max_row_draws: int) -> tuple[list[dict], int]:
     if len(units) < 2 or any(not unit for unit in units):
@@ -112,13 +68,8 @@ def bootstrap(metric: str, labels: list[float], before: list[float], after: list
         raise UncertaintyFailure("Bootstrap samples must be 100-10000 and max-row-draws positive")
     if len(labels) * repetitions > max_row_draws:
         raise UncertaintyFailure("Expected bootstrap work exceeds --max-row-draws; budget more compute or fewer replicates")
-    # Check immutable inputs once, before sampling; each draw only changes multiplicity.
-    for predictions in [before, after]:
-        evaluator.calculate_metric(metric, labels, predictions, epsilon)
-    if metric == "roc_auc":
-        orders = [prepare_auc_order(labels, predictions) for predictions in [before, after]]
-    else:
-        scorers = [prepare_loss_score(metric, labels, predictions, epsilon) for predictions in [before, after]]
+    # Reject invalid full inputs before drawing, including rows a draw might omit.
+    scorers = [prepare_metric(metric, labels, predictions, epsilon) for predictions in [before, after]]
     rng = random.Random(seed)
     rows, row_draws = [], 0
     for iteration in range(repetitions):
@@ -128,22 +79,12 @@ def bootstrap(metric: str, labels: list[float], before: list[float], after: list
             raise UncertaintyFailure("Bootstrap exceeded --max-row-draws; reduce replicates or explicitly budget more compute")
         row_draws += count
         indexes = [index for unit in sampled_units for index in unit]
-        if metric == "roc_auc":
-            multiplicities = [0] * len(labels)
-            positive_count = 0
-            for index in indexes:
-                multiplicities[index] += 1
-                positive_count += labels[index] == 1
-            negative_count = count - positive_count
-            if not positive_count or not negative_count:
-                rows.append({"replicate": iteration + 1, "case_count": count, "status": "unavailable",
-                             "baseline_score": None, "candidate_score": None, "objective_improvement": None,
-                             "unavailable_reason": "roc_auc_requires_both_classes"})
-                continue
-            baseline_score, candidate_score = [resampled_auc(order, multiplicities, positive_count, negative_count)
-                                                for order in orders]
-        else:
-            baseline_score, candidate_score = [score(indexes) for score in scorers]
+        if metric == "roc_auc" and len({labels[index] for index in indexes}) < 2:
+            rows.append({"replicate": iteration + 1, "case_count": count, "status": "unavailable",
+                         "baseline_score": None, "candidate_score": None, "objective_improvement": None,
+                         "unavailable_reason": "roc_auc_requires_both_classes"})
+            continue
+        baseline_score, candidate_score = [scorer(indexes) for scorer in scorers]
         improvement = (candidate_score - baseline_score if evaluator.METRIC_DIRECTIONS[metric] == "maximize"
                        else baseline_score - candidate_score)
         rows.append({"replicate": iteration + 1, "case_count": count, "status": "success",
@@ -201,7 +142,8 @@ def assess(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any]
         "configuration": configuration, "config_hash": evaluator.object_hash(configuration),
         "estimator_hash": evaluator.object_hash({name: evaluator.byte_hash(pathlib.Path(__file__).with_name(name).read_bytes())
                                                  for name in ["compare_prediction_uncertainty.py", "prediction_evidence.py",
-                                                              "evaluate_predictions.py", "compare_prediction_results.py"]}),
+                                                              "evaluate_predictions.py", "prediction_core.py",
+                                                              "compare_prediction_results.py"]}),
         "inputs": {key: str(path) for key, path in pair.paths.items()}, "input_hashes": pair.input_hashes,
         "unchecked_rules": sorted(set(pair.comparison["unchecked_rules"]) | {
             "sampling_unit_independence", "distribution_shift", "training_variation", "multiple_comparisons"}),

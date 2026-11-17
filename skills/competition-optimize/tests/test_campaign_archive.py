@@ -107,6 +107,38 @@ class CampaignArchiveTests(unittest.TestCase):
             self.store.verified()
         self.assertEqual(self.path.read_bytes(), unchanged)
 
+    def result_with_training_execution(self, *, recorded: bool) -> Path:
+        """Mimic a result written by the new trainer and read by an older manager."""
+        records = copy.deepcopy(self.head.evidence.records)
+        path = Path(records[0]["result"]["result_path"])
+        result = json.loads(path.read_text())
+        result["training_execution"] = {"kind": "tabular_training_v1", "cost": {"fit_calls": 3}}
+        path.write_text(json.dumps(result) + "\n")
+        records[0]["result"] = archive.result_metadata(path, include_training_execution=recorded)
+        self.write(records)
+        return path
+
+    def test_legacy_manager_omitted_execution_field_remains_readable_without_upgrading_claims(self) -> None:
+        path = self.result_with_training_execution(recorded=False)
+        unchanged = self.path.read_bytes()
+        head = self.store.verified()
+        self.assertNotIn("training_execution", head.evidence.records[0]["result"])
+        self.assertIn("training_execution", archive.result_metadata(path))
+        self.assertEqual(self.path.read_bytes(), unchanged)
+        raw = path.read_bytes()
+        path.write_bytes(raw + b"\n")
+        with self.assertRaises(archive.ArchiveFailure):
+            self.store.verified()
+
+    def test_recorded_training_execution_still_requires_exact_metadata_match(self) -> None:
+        self.result_with_training_execution(recorded=True)
+        head = self.store.verified()
+        records = copy.deepcopy(head.evidence.records)
+        records[0]["result"]["training_execution"]["cost"]["fit_calls"] = 0
+        self.write(records)
+        with self.assertRaisesRegex(campaign_archive.CampaignError, "metadata differs"):
+            self.store.verified()
+
     def test_confirmed_does_not_verify_old_candidate_files(self) -> None:
         Path(self.control["artifact_paths"]["source"]).unlink()
         Path(self.control["result"]["result_path"]).unlink()

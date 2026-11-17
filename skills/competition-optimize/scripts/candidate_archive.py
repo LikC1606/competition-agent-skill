@@ -187,10 +187,12 @@ def validate_candidate(value: dict[str, Any]) -> None:
 
 
 def result_metadata(path: pathlib.Path | None, *, include_case_profile: bool = True,
-                    include_resource_profile: bool = True) -> dict[str, Any]:
+                    include_resource_profile: bool = True,
+                    include_training_execution: bool = True) -> dict[str, Any]:
     """Compatibility facade for the shared result-evidence Interface."""
     return ResultEvidence.read(path, include_case_profile=include_case_profile,
-                               include_resource_profile=include_resource_profile).metadata
+                               include_resource_profile=include_resource_profile,
+                               include_training_execution=include_training_execution).metadata
 
 
 def make_fingerprint(source: pathlib.Path | None, configuration: pathlib.Path | None,
@@ -560,6 +562,17 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
         cost = load_json(args.cost.encode("utf-8"), "--cost")
         if not isinstance(cost, dict):
             raise ArchiveFailure("invalid_candidate", "--cost must be a JSON object")
+    if "training_execution" in result:
+        from training_execution import verify_execution
+        try:
+            measured_cost = verify_execution(args.result, result["training_execution"], archive=archive,
+                                             proposal_id=args.proposal_id, configuration=args.configuration)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ArchiveFailure("invalid_training_execution", str(exc)) from exc
+        if "training_execution" in cost and cost["training_execution"] != measured_cost:
+            raise ArchiveFailure("cost_override", "Declared training cost contradicts the execution journal; "
+                                 "omit training_execution from --cost: it is read automatically from --result")
+        cost["training_execution"] = measured_cost
     record: dict[str, Any] = {
         "schema_version": 1,
         "event": "candidate",
@@ -826,7 +839,7 @@ def parser() -> argparse.ArgumentParser:
     record.add_argument("--objective-direction", choices=sorted(DIRECTIONS))
     record.add_argument("--objective-kind", choices=sorted(KINDS))
     record.add_argument("--objective-name")
-    record.add_argument("--cost", help="JSON object with measured resource costs")
+    record.add_argument("--cost", help="Optional extra measured costs; managed training cost is read from --result")
     record.add_argument("--feedback")
     record.add_argument("--failure")
     decide = sub.add_parser("decide", help="recommend exploit or explore from archive evidence")

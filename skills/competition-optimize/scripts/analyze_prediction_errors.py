@@ -34,8 +34,9 @@ def local_errors(metric: str, labels: list[float], predictions: list[float], eps
         return None
     if metric in {"rmse", "mae"}:
         return [abs(label - prediction) for label, prediction in zip(labels, predictions)]
-    clipped = [min(1 - epsilon, max(epsilon, value)) for value in predictions]
-    return [-math.log(p) if label == 1 else -math.log1p(-p) for label, p in zip(labels, clipped)]
+    if metric == "accuracy":
+        return [float(label != prediction) for label, prediction in zip(labels, predictions)]
+    return evaluator.binary_log_losses(labels, predictions, epsilon).tolist()
 
 
 def error_shares(errors: list[float], squared: bool) -> list[float]:
@@ -174,7 +175,7 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
                                    [after[index] for index in indexes], epsilon)
             slice_results.append({"column": column, "value": group, "case_count": len(indexes), **scores,
                                   "positive_count": sum(label == 1 for label in group_truth)
-                                  if metric in {"roc_auc", "binary_log_loss"} else None,
+                                  if metric in {"roc_auc", "binary_log_loss", "accuracy"} else None,
                                   "baseline_error_share": math.fsum(before_shares[i] for i in indexes)
                                   if before_shares is not None else None,
                                   "candidate_error_share": math.fsum(after_shares[i] for i in indexes)
@@ -226,8 +227,10 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
         "case_count": len(sample_ids), "case_preference_counts": counts,
         "squared_error_scale": squared_error_scale,
         "per_case_error_kind": None if metric == "roc_auc" else
+        "zero_one_error" if metric == "accuracy" else
         "clipped_log_loss" if metric == "binary_log_loss" else "absolute_error",
         "error_share_kind": None if metric == "roc_auc" else "squared_error" if metric == "rmse" else
+        "zero_one_error" if metric == "accuracy" else
         "clipped_log_loss" if metric == "binary_log_loss" else "absolute_error",
         "largest_candidate_errors": worst, "largest_regressions": regressions, "slices": slice_results,
         **({"blend_direction": blend_report} if check_blend else {}),

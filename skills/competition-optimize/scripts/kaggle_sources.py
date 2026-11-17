@@ -475,13 +475,28 @@ def discover(client, args):
         raise SourceError("Returned competition slug differs from the requested competition")
     if not comp_id:
         raise SourceError("Competition response has no numeric ID; search scope cannot be established")
-    found, errors = [], []
+    found, errors, quantities = [], [], []
+    def count(value, name, entity, unit, scope, location, method):
+        # Bind counts to the response population before callers summarize them.
+        # The last request is the successful web/tool response just decoded.
+        response = client.requests[-1]
+        quantities.append({"name": name, "value": value, "entity": entity, "unit": unit,
+                           "scope": {"competition": slug, **scope},
+                           "basis": {"response_file": response["response_file"],
+                                     "response_sha256": response["response_sha256"],
+                                     "location": location, "method": method}})
     forum_id = number(comp.get("forumId"))
     search_coverage = {"search_forum_id": forum_id, "search_page": args.search_page,
                        "returned_search_topics": 0, "server_search_count": None}
     try:
         board = client.web("competitions.LeaderboardService/GetLeaderboard", {"competitionId": comp_id})
-        for lead in board_writeups(board):
+        leads = board_writeups(board)
+        selected = "private" if board.get("privateLeaderboard") else "public"
+        field = selected + "Leaderboard"
+        if field in board:
+            count(len(board[field]), "returned_leaderboard_entries", "leaderboard_entry", "entries",
+                  {"board": selected, "population": "returned_response"}, "/" + field, "array_length")
+        for lead in leads:
             actual = url_competition(lead["url"])
             if actual and actual != slug:
                 errors.append({"operation": "leaderboard_identity", "url": lead["url"], "message": "Other competition excluded"})
@@ -501,6 +516,15 @@ def discover(client, args):
             raise SourceError("Forum search response has no supported topic array")
         topics = objects(data.get("topics", []))
         search_coverage.update(returned_search_topics=len(topics), server_search_count=number(data.get("count")))
+        scope = {"forum_id": forum_id, "query": args.question, "page": args.search_page,
+                 "population": "returned_response"}
+        if "topics" in data:
+            count(len(topics), "returned_search_topics", "forum_topic", "topics", scope,
+                  "parsed tool result /topics", "array_length")
+        if search_coverage["server_search_count"] is not None:
+            count(search_coverage["server_search_count"], "server_search_matches", "forum_topic", "topics",
+                  {**scope, "population": "server_reported_query_matches"},
+                  "parsed tool result /count", "server_reported")
         for doc in topics:
             url, parent = absolute(doc.get("topic_url")), absolute(doc.get("parent_url"))
             actual, parent_competition = url_competition(url), url_competition(parent)
@@ -519,7 +543,7 @@ def discover(client, args):
             "competition": url_competition(returned_url) or returned_slug, "competition_id": comp_id,
             "competition_identity_basis": "GetCompetition response to exact competitionName request",
             "question": args.question, "title": comp.get("title"), "body": "", "comments": [],
-            "sources": found, "errors": errors,
+            "sources": found, "errors": errors, "quantities": quantities,
             "coverage": {**search_coverage, "upstream_complete": None,
                          "note": "These are leads from the returned board and one search response, not full recall."}}
 
@@ -640,6 +664,8 @@ def parse_args(argv=None):
         cli.add_argument("--page-size", type=positive, default=20 if command == "discover" else 200,
                          help="Local search-lead display limit" if command == "discover" else "Requested comment/version page size")
         cli.add_argument("--refresh", action="store_true")
+        cli.add_argument("--format", choices=("json", "source"), default="json",
+                         help="json: status, paths, source summary and view; source: full normalized source at the JSON root")
         cli.add_argument("--timeout", type=positive, default=30)
         cli.add_argument("--retries", type=nonnegative, default=2, help="Additional attempts after transport failures; HTTP/tool errors are not retried")
         cli.add_argument("--tcp-mss", type=positive, help="Set TCP maximum segment size for this command's connections (platform dependent)")
@@ -663,11 +689,17 @@ def parse_args(argv=None):
 
 def main(argv=None):
     try:
-        result = run(parse_args(argv))
+        args = parse_args(argv)
+        result = run(args)
+        # A consumer that needs sources/coverage can request the normalized
+        # document directly, without recreating an envelope parser. Keep the
+        # default output and successful cache identity backward compatible.
+        output = (json.loads(Path(result["source_path"]).read_bytes())
+                  if args.format == "source" else result)
     except (SourceError, OSError, json.JSONDecodeError) as exc:
         print(json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False))
         return 1
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(json.dumps(output, ensure_ascii=False, indent=2))
     return 1 if result["status"] == "error" else 0
 
 

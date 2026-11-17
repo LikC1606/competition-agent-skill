@@ -28,6 +28,8 @@ Choose sources for the claim being checked:
 
 For Kaggle sources, use the optional [source reader](kaggle-sources.md) when it can resolve access, competition identity, unread comments or a specific notebook version. Preserve the returned reading range and failures: a preview, a cached empty result or a partial comment response cannot establish that the original contains no relevant correction. Use other available sources when needed; settled evidence does not require another tool call.
 
+Choose the access path from [the current invocation's actual tools](codex-tools.md), including available native search/browser tools and terminal readers. Batch independent discovery or source reads when supported, then follow the decision-changing source chain sequentially. Local cached notebooks are reusable evidence, not the boundary of discovery when a new question requires another source. If one access path fails, inspect the failure and try an authorized available alternative; keep the specific unresolved reading limit rather than declaring the whole research direction inaccessible.
+
 Continue only while a missing fact can change the mechanism, its legality, evaluation or necessary components. Stop when the evidence supports the requested explanation or a concrete next mechanism with understood prerequisites. If the remaining question is whether it works on this task, more reading cannot replace local evidence in an implementation task. For theory-only scope, state the predicted effect and unresolved transfer rather than launching that evaluation. No query/source count or fresh full search is required each iteration.
 
 ## Preserve the Source Chain
@@ -37,6 +39,10 @@ Use existing `research.md` or task notes for decision-relevant findings. Retain 
 Keep raw responses, readable originals and code snapshots under the current task's `<run>/research/`, with their actual paths and byte hashes. In `research.md`, record the question, decisive passage/location, snapshot/version, transfer conditions and unresolved point; keep the agent's interpretation separate from the source. Cite those paths and hashes in the existing `basis` rather than copying whole sources into the proposal or creating a candidate for a reading action. Hashes identify the material, not the truth of its interpretation.
 
 Distinguish author-reported outcomes, inspected implementation and local measurements. Preserve useful negative results, caveats, corrections and discrepancies between a writeup and its code. A complete system's score does not identify which component caused its advantage. Record a gap as unresolved rather than silently choosing the more favorable account.
+
+Before using numerical evidence in a decision, retain its entity, unit, population/split and exact source location beside the value. Use the reader's `quantities` bindings when supplied; otherwise inspect the original. A number in an old interpretation is not a new observation. If the population or relationship is missing, leave it unknown instead of combining unrelated counts or inventing a denominator.
+
+Extreme or rounded leaderboard scores and leakage-themed titles are reasons to inspect validity, not proof of contamination or the cause of a score cluster. Without the relevant body/code and information-flow evidence, keep that explanation conditional and do not declare the whole board or method invalid. A title can identify a useful lead while its causal claim remains unread.
 
 ### Ground Decision-Changing Claims
 
@@ -53,6 +59,8 @@ Keep these evidence types explicit where they affect the decision:
 For example, a housing notebook's skew/log preprocessing does not establish that it constructs total floor area or elapsed building age. If those features are absent from the inspected version, a useful aggregate-feature hypothesis can still proceed as task-derived reasoning after the [equivalence check](strategy-design.md#check-equivalence-before-execution). Do not invent a source attribution to justify it. A mismatched or inaccessible version leaves the specific attribution unresolved; narrow the claim or obtain the relevant original only if it changes the next action.
 
 When an error is discovered after a proposal is sealed, preserve the original and append the correction to existing task notes, outcome feedback or a successor's `basis`. Reassess the mechanism if the correction removes its premise. A citation correction alone does not invalidate unchanged training artifacts or require another fit; record exactly which interpretation or dependency changed. These are semantic checks performed by the agent, not guarantees supplied by archive hash validation.
+
+Keep the editable current interpretation consistent when making that correction: replace the unsupported assertion or mark it withdrawn at its location, rather than appending a contradictory conclusion. In campaign receipts, replace the same correction key with supported conditions, or withdraw it without inventing a replacement using `{key, status: "withdrawn", reason, evidence}`. The driver retains the withdrawal and its prior-receipt pointer across contexts; sealed notes and results stay unchanged. Recheck a remembered premise against its cited original before using it in another calculation.
 
 ## Convert a Finding into a Mechanism
 

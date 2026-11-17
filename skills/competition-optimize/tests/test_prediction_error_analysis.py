@@ -21,6 +21,16 @@ evaluator = importlib.import_module("evaluate_predictions")
 
 
 class PredictionErrorAnalysisTests(unittest.TestCase):
+    def test_accuracy_error_analysis_counts_corrected_and_broken_cases(self):
+        self.truth.write_text("id,target\n001,0\n1,0\na,1\nb,1\n")
+        self.baseline = self.evaluate("id,prediction\n001,0\n1,1\na,0\nb,1\n", "--metric", "accuracy")
+        self.candidate = self.evaluate("id,prediction\n001,1\n1,0\na,1\nb,1\n", "--metric", "accuracy")
+        report, _ = self.analyze("--slices", str(self.slices), "--slice-column", "regime")
+        self.assertEqual(report["case_preference_counts"], {"candidate": 2, "baseline": 1, "tie": 1})
+        self.assertEqual(report["per_case_error_kind"], "zero_one_error")
+        self.assertEqual(report["aggregate_comparison"]["objective_improvement"], 0.25)
+        self.assertEqual(sum(row["positive_count"] for row in report["slices"]), 2)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -261,8 +271,12 @@ class PredictionErrorAnalysisTests(unittest.TestCase):
         self.truth.write_text("id,target\n001,0\n1,1\na,0\nb,1\n", encoding="utf-8")
         for metric in evaluator.METRIC_DIRECTIONS:
             with self.subTest(metric=metric):
-                self.baseline = self.evaluate("id,prediction\n001,0.5\n1,0.5\na,0.5\nb,0.5\n", "--metric", metric)
-                self.candidate = self.evaluate("id,prediction\nb,0.1\na,0.9\n1,0.9\n001,0.1\n", "--metric", metric)
+                baseline = ("id,prediction\n001,0\n1,0\na,0\nb,0\n" if metric == "accuracy" else
+                            "id,prediction\n001,0.5\n1,0.5\na,0.5\nb,0.5\n")
+                candidate = ("id,prediction\nb,0\na,1\n1,1\n001,0\n" if metric == "accuracy" else
+                             "id,prediction\nb,0.1\na,0.9\n1,0.9\n001,0.1\n")
+                self.baseline = self.evaluate(baseline, "--metric", metric)
+                self.candidate = self.evaluate(candidate, "--metric", metric)
                 options = ("--slices", str(self.slices), "--slice-column", "regime",
                            "--slice-column", "device", "--top-k", "2")
                 full, _ = self.analyze(*options)

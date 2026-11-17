@@ -17,7 +17,7 @@ Linux, Python 3.10+ and an authenticated Codex CLI are required. Use the actual 
   --background
 ~~~
 
-The campaign directory must not exist before start. The command returns after a detached supervisor becomes ready. It continues after the launching terminal closes and restarts a crashed manager. Omit --background to run in the foreground. The default agent sandbox is workspace-write; campaign/archive paths are added as writable directories. The driver uses the saved CLI authentication and does not use approval-bypass flags.
+The campaign directory must not exist before start. The background command waits up to five seconds for the detached supervisor's current manager to initialize. It returns the current manager's status or, if initialization is still pending, `starting`; use `status` to observe that same launch. A successful command with `starting` confirms launch acceptance, not an executing agent. An initialization blocker returns `blocked` with a nonzero exit code. The supervisor continues after the launching terminal closes and restarts a crashed manager. Omit --background to run in the foreground. The default agent sandbox is workspace-write; campaign/archive paths are added as writable directories. The driver uses the saved CLI authentication and does not use approval-bypass flags.
 
 Before sealing a new checkpoint, the driver copies the actual `SKILL.md`, reference Markdown and supporting script/resource files into `campaign/workflow/<package-sha256>/`. The prompt points to that immutable copy, including its executable archive tools; linked resources such as `requirements-tabular.txt` are included. A manifest and protected file hashes detect modified snapshot bytes. Updating the installed skill can affect a future checkpoint without replacing earlier snapshot paths. Keep those snapshots with the campaign.
 
@@ -32,6 +32,47 @@ In default open-ended mode, **an agent cannot complete or block the campaign by 
 Progress is derived from the archive, rather than receipt prose. The driver validates candidate schema/lineage, result bytes, source/recipe snapshots and implementation identity. Search notes and proposals are not executed candidates. Repeated measurements, random prediction bytes and renamed routes cannot reset the count of turns without a new executed implementation. After two such turns the driver alternates fresh strategy review with an execution-focused continuation and applies backoff. Due repair or frozen-plan work retains its action priority while preserving a requested fresh context. This also keeps idle repair reviews active with periodic rotation disabled. This ensures continuation and exposes stagnation; it cannot guarantee that the model will discover a useful algorithm or improve a contest score.
 
 Ordinary work/rethink/execute prompts use the skill's [decision routing](decision-loop.md#route-the-current-decision): check comparison quality, resolve public/local contradictions, and choose targeted research, a diagnostic or a complete mechanism according to the missing premise. A concrete research/evaluation prerequisite can precede implementation; persist the inspected finding, affected decision and follow-up in existing notes/card and cite it in the receipt. It does not reset the unchanged implementation-progress accounting. Once the prerequisite is understood, execute rather than repeat generic research. Repair and frozen measurement instructions retain priority; protocol defects must be handled without changing a sealed plan in place. The runner verifies execution identity and continuity, not representativeness or the value of the proposed mechanism.
+
+### Carry a Research Question and Correct an Interpretation
+
+When the supplied `receipt.schema.json` exposes the optional fields below, use them to preserve a consequential decision across invocations. Older protected schemas and sealed requests remain unchanged; for those turns use existing notes and evidence pointers, emitting only fields their supplied schema permits.
+
+`research_state` holds one current question, its plausible explanations, the missing discriminating evidence and how answers change action. Routes are `source`, `diagnostic`, `evaluation` or `implement`; the last can request an informative prototype when transfer is the remaining question. Status is `open`, `resolved` or `deferred`. Omission retains the previous state; explicit `null` clears it. No question or search quota applies to settled implementation work.
+
+Use the receipt's existing `next_action` for the next small, observable result within that question. Policy preserves that action in research mode instead of replacing it with the entire missing-evidence backlog; the full question remains in handoff. Once one decision-changing finding is ready, return an ordinary receipt with that correction and leave the wider question open with its next small `next_action`. Resolve or defer only what the evidence warrants. No separate checkpoint field is needed. This uses normal receipt acceptance and existing progress accounting; it adds no fixed search quota, training run, partial-receipt parser or campaign deadline.
+
+To retract an interpretation without a supported replacement, put `{key, status: "withdrawn", reason, evidence}` in `corrections`. It replaces that key's current report and retains the previous receipt pointer; the withdrawal remains in handoff even when older prose contains the claim. A later supported correction under the same key can replace it. Update the editable current notes accordingly while preserving sealed history. Recheck the cited source and its quantity bindings before relying on any remembered interpretation.
+
+```json
+{
+  "research_state": {
+    "status": "open",
+    "route": "source",
+    "question": "Can labelled group history be available at inference?",
+    "alternatives": ["Test entities have labelled training peers", "Test entities are unseen"],
+    "missing_evidence": "Inspect official inference conditions and permitted entity overlap.",
+    "answer_actions": [
+      {"observation": "Labelled peers are permitted", "action": "Design a fold-local history mechanism."},
+      {"observation": "Entities are unseen", "action": "Use deployable feature-only relationships."}
+    ],
+    "evidence": ["research/rules/body.md#Inference"]
+  },
+  "corrections": [{
+    "key": "history-transfer",
+    "claim": "The observed gain is limited to the tested entity-overlap regime.",
+    "conditions": "Recorded development split and complete fitted pipeline.",
+    "limitations": "No evidence yet establishes the same information at inference.",
+    "reopen_when": "Official conditions or inspected overlap establish availability.",
+    "evidence": ["runs/history/result.json", "research/rules/body.md#Inference"]
+  }]
+}
+```
+
+These are optional fields of the normal receipt, alongside its required status/summary/next_action/stop_reason/evidence. They are conditional agent reports; schema validation checks their shape, not scientific truth. Retain source locations and describe uncertainty instead of treating metadata as a proof.
+
+On successful receipt acceptance the driver stores the question and the latest correction per key and complete comparison, with the source turn/receipt path. A correction can therefore be delivered without inventing a candidate or new fit. Raw receipts preserve the prior chain; replacing a key changes the current interpretation, never sealed scores or source. Failed deliveries cannot update this state. These records do not add executed implementations, reset stagnation or authorize promotion.
+
+An open question routes ordinary work to `research`, while execution repair, frozen measurement, comparison obligations and due strategy reviews retain priority. Its prompt starts with the complete selected `next_action`; the wider question and missing evidence remain background. Finish that check and return a receipt, keeping the remaining question open or resolving/deferring it as the evidence warrants. Candidate initialization, implementation and unrelated archive procedures are not prerequisites for an evidence-only review. Use the schema frozen for this request; older campaign-root schemas and receipts remain historical records. The driver continues the campaign after delivery. These are model instructions, not a tool-call cap or a forced-finalization mechanism: the watchdog can interrupt an invocation but cannot produce an accepted receipt. Failed delivery retains the selected action for recovery of relevant artifacts. Repeating a question without evidence does not count as discovery. Corrections and the current question are delivered ahead of optional historical prose. Oversized reports become complete receipt pointers with an omission marker and hash, never truncated assertions stripped of their limitations. Retrieve an omitted report before using it.
 
 New implementations and objective improvement are separate signals. By default, the latest development record selects the complete comparison contract. When full evaluations and auxiliary smoke/screening runs coexist, pass `--objective-anchor BASELINE_ID` at start or resume to select the primary contract from an existing valid scored development implementation. New records under that contract still update the latest anchor, best and stagnation history; records under other contracts cannot move the primary ranking, active pending work or repeat-conflict review. The named candidate identifies a contract, not a permanently preferred implementation. Execution health and comparison-continuity diagnostics still see all development executions. The driver never infers a priority from names such as `full` or `smoke`.
 
@@ -96,7 +137,7 @@ When a frozen source/seed fails and completing that protocol is no longer feasib
 
 status reports actual manager/supervisor process identity and liveness, active worker/agent heartbeat, accepted progress, reported usage, retry time, last result and next action. It also exposes the current comparison's best candidate/value, implementations since best, numbers of frontier implementations, pending proposals and completed trials exposed, successful checkpoints in the current context, refresh count/reason and configured review/rotation thresholds. state.json is durable intent; a running status with dead processes is not itself proof that work is currently executing.
 
-The normal stop finishes the current invocation. --now cancels the active local invocation and its owned children, including during a hung call. Both preserve accepted candidates. After inspecting an observed blocker or a stopped campaign, resume reconciles the same in-flight request before starting a successor. A running campaign rejects another manager/supervisor. Separate campaigns cannot simultaneously own the same canonical workspace or archive; use separate checkouts for independent searches.
+The normal stop finishes the current invocation. --now cancels the active local invocation and its owned children, including during a hung call. Stops also apply while the manager is `starting`. Both preserve accepted candidates. After inspecting an observed blocker or a stopped campaign, resume reconciles the same in-flight request before starting a successor. An explicit resume consumes only the stop request present when that command began, after control files and the accepted archive pass verification; a later stop still applies. Automatic crash recovery preserves pending stops. A running campaign rejects another manager/supervisor. Separate campaigns cannot simultaneously own the same canonical workspace or archive; use separate checkouts for independent searches.
 
 Extend a previous limit with --max-turns N, --max-tokens N or --max-wall-seconds N on resume. --clear-max-turns, --clear-max-tokens and --clear-max-wall-seconds remove the corresponding limit. Cumulative records and usage remain. Limits cannot be rewritten by a second runner while the manager is active.
 
@@ -132,9 +173,13 @@ The driver delegates turn decisions and successful delivery accounting to `Campa
 
 Each turn has a durable request token, prompt, launch intent, process markers, CLI events/stderr, final receipt and exit.json under turns/NNNNNN/. The worker owns an execution lock and passes the turn/resource locks to Codex. A manager crash adopts that invocation; a worker crash cannot launch a second Codex for the same launch intent. If the original exit status was lost, the outcome is marked interrupted even when a receipt exists. Acceptance requires the matching durable exit record, exit zero, unchanged output hashes, a successful turn.completed event and a valid receipt.
 
+Return one raw JSON receipt as the final message, without Markdown fences or trailing prose. For tool-capable providers that cannot use schema decoding, the adapter also accepts a prose preamble and a single complete terminal JSON code block (unlabelled or labelled `json`). The closing fence must use the same character and be at least as long as the opening fence. It validates the same exact schema and preserves the raw message and output hashes; incomplete JSON/fences, multiple objects or trailing explanatory material remain invalid. This tolerance does not bypass process, terminal-event, archive or hash checks. A wrapping defect calls for receipt parsing repair and artifact reconciliation, not repeating completed experiments.
+
 The prepared request seals the exact context packet and its SHA-256 before a process starts. Missing files can be materialized from that durable intent; recovery does not silently regenerate the packet from a later archive state. A changed packet, request or prompt blocks acceptance. Context counters and review checkpoints are saved with the in-flight request, so adopting a turn does not count another rotation or repeat its review.
 
 Confirmed archive bytes are immutable. A malformed or torn **unconfirmed append** is copied into a hashed quarantine file and journaled before it is removed from the active archive. The confirmed prefix is retained; the next agent must recover artifacts from that evidence rather than blindly rerun. This is explicit suffix reconciliation, not permission to rewrite accepted history. Previously accepted artifacts are checked on startup and before task completion; new artifacts are checked when accepted.
+
+Startup verification compares optional training-execution metadata only when the historical archive captured it; older resident readers may have omitted that field from an otherwise unchanged result. Result-file and candidate-artifact hashes are still checked. This compatibility neither rewrites history nor retroactively asserts a pre-fit proposal or verified training cost for those old records.
 
 [`CampaignArchive`](../../../docs/campaign-archive.md) owns these file operations through `verified`, `confirmed` and `receive`. Handoff preparation checks the same complete archive before and after building its packet. Receipt acceptance and campaign state persistence remain in the driver; a failed invocation can still contribute valid archive evidence. JSONL replay shares `candidate_archive.parse_records(raw, source)` with the CLI and does not require a temporary prefix file.
 

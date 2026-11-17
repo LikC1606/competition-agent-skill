@@ -564,11 +564,24 @@ def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: Campaig
     """
     facts = view.signals(memory["comparison_review_checkpoint"], objective_anchor=memory.get("objective_anchor"))
     key = facts["objective_progress"]["comparison_key"]
+    research = memory.get("research_state")
+    if research and research["comparison_key"] != key:
+        research = None
+    corrections = sorted(memory.get("research_corrections", {}).get(key or "null", {}).values(),
+                         key=lambda row: (-row["turn"], row["report"]["key"]))
+    decision_context = ({"research_state": research, "corrections": corrections,
+                         "scope": "Agent interpretations under the current development comparison. "
+                                  "A status=withdrawn report retracts that key; do not reuse its older claim. "
+                                  "Other corrections supersede the same key in older receipts, not sealed observations. "
+                                  "Recheck source entities and premises before relying on a report; "
+                                  "conditions, limitations and reopening evidence do not prove causality."}
+                        if research or corrections else None)
     packet = handoff_packet(
         pathlib.Path(memory["archive"]), view.records, memory["archive_snapshot"], task_sha256,
         progress=facts["objective_progress"], health=facts["execution_health"],
         continuity=facts["comparison_continuity"], _view=view,
         measurement_plan=facts["measurement_plan"], mode=prepared.updates["next_mode"],
+        decision_context=decision_context,
         frontier_seen=memory["frontier_exposures"].get(key, {}),
         pending_seen=memory["pending_proposal_exposures"].get(key, {}),
         trial_seen=memory["trial_exposures"].get(key, {}),
@@ -600,6 +613,7 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
                    learning_seen: dict[str, int] | None = None,
                    evidence: archive_tools.ComparisonEvidence | None = None,
                    measurement_plan: dict[str, Any] | None = None,
+                   decision_context: dict[str, Any] | None = None,
                    _view: CampaignEvidence | None = None, mode: str = "work") -> dict[str, Any]:
     view = _view if _view is not None else CampaignEvidence(records, comparisons=evidence)
     reads, evidence = view._reads, view._comparisons
@@ -687,4 +701,6 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
     if repeat_conflict:
         repeat_conflict["retrieval_sha256"] = archive_tools.sha256(
             archive_tools.canonical(_repeat_conflict_identity(packet)))
+    if decision_context:
+        packet["decision_context"] = decision_context
     return bound_packet(packet, budget=HANDOFF_BYTES, mode=mode)

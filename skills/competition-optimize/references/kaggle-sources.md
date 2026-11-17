@@ -21,6 +21,12 @@ All commands below use an existing task/run location chosen by the caller. `--ou
 
 The question is passed as the forum's search query. Use a concrete mechanism or failure term and pivot when its vocabulary misses the issue. The command does not automatically search papers or analogous competitions; existing web/research tools can cover those sources.
 
+Read the returned JSON directly before adding a parser. The default envelope has `status`, snapshot paths, `source` and `view`: discovery leads are `result["source"]["sources"]`, with `coverage` and `errors` also inside `source`. Missing top-level `sources` is an envelope mismatch, not an empty search. Use `--format source` when a consumer needs `sources`, `coverage` and `errors` at the JSON root; it prints the full normalized `source.json`, including all returned bodies/comments, without local display truncation. The command's exit status still reports acquisition failure. The default envelope remains useful for status and provenance paths.
+
+An empty response describes the exact query, forum and page returned. If a long query misses, try its decisive mechanism term, inspect the resulting titles and read the relevant original source. Overlapping results are leads, not independent evidence or proof of competitive value.
+
+New discovery snapshots retain count `quantities` with a value, entity, unit, population scope and raw-response file/hash/location. A returned leaderboard-entry count, returned forum-topic count and server-reported query-match count describe different populations; none supplies a training-set row count. Carry that binding when quoting a number. A missing quantity stays unknown; older cached snapshots retain their original fields and can be traced through their saved raw responses without rewriting them. Hashes identify the source bytes, not the truth of an interpretation.
+
 Use `discover --search-page N` to request another explicit forum search page; the default is 1. The server chooses the number of topics per page (20 in the live example), and `coverage` records that returned count and any server-reported match count. For `discover`, `--page-size N` controls how many search leads are shown locally; board-linked leads remain visible and all returned leads stay in `source.json`. Changing that display limit can reuse the same cache. Changing `--search-page` creates a distinct request/cache identity. Search results may include both discussions and writeup URLs.
 
 Supported `read` targets:

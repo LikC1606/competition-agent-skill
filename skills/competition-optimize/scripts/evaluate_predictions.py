@@ -16,7 +16,7 @@ from dataclasses import dataclass, fields
 
 from prediction_core import (
     METRIC_DIRECTIONS, UNCHECKED_RULES, PredictionFailure,
-    byte_hash, object_hash, read_values, calculate_metric,
+    byte_hash, object_hash, read_values, calculate_metric, binary_log_losses, metric_backend, scorer_fingerprint,
 )
 
 
@@ -41,9 +41,8 @@ class EvaluationSpec:
 
 
 def evaluator_fingerprint() -> str:
-    """Bind the executed scorer, including its extracted implementation."""
-    return object_hash({name: byte_hash(pathlib.Path(__file__).with_name(name).read_bytes())
-                        for name in ["evaluate_predictions.py", "prediction_core.py"]})
+    """Bind scorer source and the numerical libraries that execute it."""
+    return scorer_fingerprint(pathlib.Path(__file__).parent, metric_backend())
 
 
 def evaluate(args: EvaluationSpec | argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any]:
@@ -87,22 +86,26 @@ def evaluate(args: EvaluationSpec | argparse.Namespace, output_dir: pathlib.Path
     case_profile = None
     if include_case_profile:
         losses = {}
-        for key in sample_ids:
+        log_losses = (binary_log_losses([labels[key] for key in sample_ids],
+                                       [predictions[key] for key in sample_ids], args.log_loss_epsilon)
+                      if args.metric == "binary_log_loss" else None)
+        for index, key in enumerate(sample_ids):
             label, prediction = labels[key], predictions[key]
             if args.metric == "rmse":
                 residual = label - prediction
                 loss = residual * residual
             elif args.metric == "mae":
                 loss = abs(label - prediction)
+            elif args.metric == "accuracy":
+                loss = float(label != prediction)
             else:
-                clipped = min(1 - args.log_loss_epsilon, max(args.log_loss_epsilon, prediction))
-                loss = -math.log(clipped) if label == 1 else -math.log1p(-clipped)
+                loss = float(log_losses[index])
             if not math.isfinite(loss):
                 raise PredictionFailure("invalid_score", "Case loss exceeds finite floating-point range")
             losses[key] = loss
         case_profile = {
             "metric": {"rmse": "squared_error", "mae": "absolute_error",
-                       "binary_log_loss": "binary_log_loss"}[args.metric],
+                       "binary_log_loss": "binary_log_loss", "accuracy": "zero_one_error"}[args.metric],
             "direction": "minimize", "cases": losses,
         }
     snapshot = output_dir / "predictions.csv"
@@ -125,7 +128,8 @@ def evaluate(args: EvaluationSpec | argparse.Namespace, output_dir: pathlib.Path
             "config_hash": object_hash(config), "configuration": config,
             "expected_cases": len(labels), "completed_cases": len(predictions),
             "seeds": [], "repetitions": 1,
-            "runtime_environment": {"python": platform.python_version(), "system": platform.system()},
+            "runtime_environment": {"python": platform.python_version(), "system": platform.system(),
+                                    "metric_backend": metric_backend()},
         },
         "inputs": {"truth": str(truth_path), "predictions": str(prediction_path)},
         "artifacts": [str(snapshot)], "error": None,

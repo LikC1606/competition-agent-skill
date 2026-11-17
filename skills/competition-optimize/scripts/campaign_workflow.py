@@ -11,6 +11,7 @@ from typing import Any
 
 from candidate_evidence import canonical, sha256
 from campaign_runtime import CampaignError, atomic_bytes, file_hash
+from codex_invocation import FINAL_SCHEMA
 
 
 # A running manager retains its loaded code even if a later checkpoint adopts
@@ -23,6 +24,9 @@ def freeze_workflow(campaign: pathlib.Path, skill: pathlib.Path,
     paths = [skill / "SKILL.md", *sorted((skill / "references").rglob("*.md")),
              *sorted(path for path in (skill / "scripts").iterdir() if path.is_file())]
     contents = {str(path.relative_to(skill)): path.read_bytes() for path in paths}
+    # Future turns can adopt an extended receipt without replacing a campaign's
+    # original protected schema or changing an already sealed command.
+    contents["receipt.schema.json"] = canonical(FINAL_SCHEMA) + b"\n"
     hashes = {name: sha256(raw) for name, raw in contents.items()}
     fingerprint = sha256(canonical(hashes))
     root = campaign / "workflow" / fingerprint
@@ -45,6 +49,7 @@ def freeze_workflow(campaign: pathlib.Path, skill: pathlib.Path,
         atomic_bytes(manifest, manifest_bytes)
     protected[str(manifest)] = file_hash(manifest)
     snapshot = {"schema_version": 1, "skill_root": str(root), "skill_path": str(root / "SKILL.md"),
+                "receipt_schema_path": str(root / "receipt.schema.json"),
                 "manifest_path": str(manifest), "package_sha256": fingerprint}
     provenance = {"schema_version": 1, "package_sha256": fingerprint,
                   "skill_sha256": hashes["SKILL.md"], "runner_sha256": MANAGER_SOURCE_SHA256,

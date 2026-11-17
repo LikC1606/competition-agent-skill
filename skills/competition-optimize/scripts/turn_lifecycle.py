@@ -60,7 +60,13 @@ def retry_later(state: dict[str, Any], error: str) -> None:
     state["retry_at"] = time.time() + delay
     state["last_error"] = error
     state["recovery_needed"] = True
-    state["next_action"] = "Reconcile prior artifacts, then execute the best remaining improvement"
+    # Recovery is conveyed separately by recovery_needed. An interrupted research
+    # check still has the same unanswered action, even if policy refreshes context.
+    research = state.get("research_state") or {}
+    current_key = (state.get("objective_progress") or {}).get("comparison_key")
+    if not (research.get("comparison_key") == current_key and
+            research.get("report", {}).get("status") == "open" and state["next_action"].strip()):
+        state["next_action"] = "Reconcile prior artifacts, then execute the best remaining improvement"
 
 
 class TurnLifecycle:
@@ -140,7 +146,8 @@ class TurnLifecycle:
         state["inflight"] = None
         error, receipt = invocation.error, invocation.receipt
         # New archive evidence is accepted even if invocation delivery failed.
-        outcome = TurnOutcome(evidence, received.appended_events, delta, receipt, time.time())
+        outcome = TurnOutcome(evidence, received.appended_events, delta, receipt, time.time(),
+                              receipt_path=str(directory / "message.json"))
         state.update(CampaignPolicy().accept(state, turn, outcome))
         if receipt is None:
             retry_later(state, error)

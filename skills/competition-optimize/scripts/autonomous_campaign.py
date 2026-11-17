@@ -9,6 +9,7 @@ Linux and Python 3.10+ are required. No third-party Python packages are needed.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import pathlib
@@ -42,6 +43,9 @@ from campaign_runtime import (
 
 TERMINAL = {"complete", "blocked", "stopped_by_user", "limit_reached"}
 LIMITS = ("max_turns", "max_tokens", "max_wall_seconds")
+BACKGROUND_STARTUP_SECONDS = 5.0
+
+
 def evidence_exists(evidence: list[str], state: dict[str, Any], campaign: pathlib.Path) -> bool:
     return bool(evidence) and all(
         pathlib.Path(name).exists() if pathlib.Path(name).is_absolute() else
@@ -119,6 +123,23 @@ def heartbeat(campaign: pathlib.Path, state: dict[str, Any]) -> None:
 def stop_request(campaign: pathlib.Path) -> dict[str, Any] | None:
     path = campaign / "stop.request.json"
     return read_json(path) if path.exists() else None
+
+
+def request_stop(campaign: pathlib.Path, reason: str, immediate: bool) -> None:
+    with (campaign / "stop-control.lock").open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        atomic_json(campaign / "stop.request.json", {"reason": reason, "immediate": immediate,
+                    "at": utc_now(), "request_id": uuid.uuid4().hex})
+
+
+def consume_resumed_stop(campaign: pathlib.Path, expected: str) -> None:
+    # Share a short critical section with stop writers so a new stop cannot be
+    # replaced between comparing the old request and removing it.
+    with (campaign / "stop-control.lock").open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = campaign / "stop.request.json"
+        if path.exists() and file_hash(path) == expected:
+            path.unlink()
 
 
 def await_turn(campaign: pathlib.Path, state: dict[str, Any],
@@ -199,7 +220,8 @@ def limit_reason(state: dict[str, Any]) -> str:
 
 
 def run_campaign(campaign: pathlib.Path, overrides: dict[str, Any] | None = None,
-                 managed: bool = False, generation: str | None = None) -> dict[str, Any]:
+                 managed: bool = False, generation: str | None = None,
+                 resume_stop_hash: str | None = None) -> dict[str, Any]:
     if not managed and lock_busy(campaign / "supervisor.lock"):
         raise CampaignError("Background supervisor is already running; use status or stop")
     try:
@@ -221,9 +243,11 @@ def run_campaign(campaign: pathlib.Path, overrides: dict[str, Any] | None = None
                 state["objective_progress"] = verified.evidence.signals(
                     objective_anchor=overrides["objective_anchor"])["objective_progress"]
             state.update(overrides)
+        if resume_stop_hash:
+            # Only an explicit resume consumes the request observed at its entry.
+            # A later stop, or a supervisor's crash recovery, retains its intent.
+            consume_resumed_stop(campaign, resume_stop_hash)
         if state["status"] in TERMINAL:
-            if state["status"] == "stopped_by_user":
-                (campaign / "stop.request.json").unlink(missing_ok=True)
             state["status"] = "running"
             state["stop_reason"] = ""
             state["retry_at"] = None
@@ -256,8 +280,7 @@ def run_campaign(campaign: pathlib.Path, overrides: dict[str, Any] | None = None
                 check_control_files(state)
                 prepare_turn(campaign, state)
             except KeyboardInterrupt:
-                atomic_json(campaign / "stop.request.json", {"reason": "User interrupted foreground runner",
-                            "immediate": True, "at": utc_now()})
+                request_stop(campaign, "User interrupted foreground runner", True)
         heartbeat(campaign, state)
         return state
     except (CampaignError, archive_tools.ArchiveFailure, OSError, ValueError, KeyError) as exc:
@@ -266,6 +289,7 @@ def run_campaign(campaign: pathlib.Path, overrides: dict[str, Any] | None = None
         state["stop_reason"] = str(exc)
         save_state(campaign, state)
         append_event(campaign, {"event": "driver_blocked", "error": str(exc)})
+        heartbeat(campaign, state)
         return state
     finally:
         if resources:
@@ -335,7 +359,8 @@ def new_campaign(args: argparse.Namespace) -> pathlib.Path:
     return campaign
 
 
-def supervise(campaign: pathlib.Path, overrides: dict[str, Any]) -> int:
+def supervise(campaign: pathlib.Path, overrides: dict[str, Any],
+              resume_stop_hash: str | None = None) -> int:
     try:
         lock = exclusive_lock(campaign / "supervisor.lock")
     except BlockingIOError as exc:
@@ -355,7 +380,8 @@ def supervise(campaign: pathlib.Path, overrides: dict[str, Any]) -> int:
             now = time.monotonic()
             if now >= heartbeat_at:
                 atomic_json(campaign / "supervisor.json", {**process_info(os.getpid()),
-                            "at": utc_now(), "restarts": restarts})
+                            "at": utc_now(), "restarts": restarts,
+                            "manager_generation": child_generation or adopted_generation})
                 heartbeat_at = now + HEARTBEAT_SECONDS
             if child is not None:
                 code = child.poll()
@@ -366,6 +392,7 @@ def supervise(campaign: pathlib.Path, overrides: dict[str, Any]) -> int:
                 state = read_state(campaign)
                 if (state["manager_generation"] == child_generation and state["status"] in TERMINAL):
                     return 0 if state["status"] != "blocked" else 2
+                child_generation = None
                 restarts += 1
                 retry_at = now + min(60, state["retry_base_seconds"] * 2 ** min(restarts - 1, 12))
                 append_event(campaign, {"event": "manager_restart_scheduled",
@@ -375,6 +402,8 @@ def supervise(campaign: pathlib.Path, overrides: dict[str, Any]) -> int:
                 # If an earlier supervisor died, adopt its still-running manager.
                 adopted = True
                 if state["status"] == "running" or state["manager_generation"] != entry_generation:
+                    if adopted_generation != state["manager_generation"]:
+                        heartbeat_at = 0.0
                     adopted_generation = state["manager_generation"]
                 first = False
                 time.sleep(POLL_SECONDS)
@@ -386,6 +415,7 @@ def supervise(campaign: pathlib.Path, overrides: dict[str, Any]) -> int:
                          state["manager_generation"] != entry_generation)):
                     return 0 if state["status"] != "blocked" else 2
                 adopted = False
+                adopted_generation = None
             if now < retry_at:
                 time.sleep(POLL_SECONDS)
                 continue
@@ -393,36 +423,59 @@ def supervise(campaign: pathlib.Path, overrides: dict[str, Any]) -> int:
             command = [sys.executable, str(pathlib.Path(__file__).resolve()), "_run",
                        "--campaign", str(campaign), "--generation", child_generation]
             if first:
+                if resume_stop_hash:
+                    command += ["--resume-stop-hash", resume_stop_hash]
                 for key, value in overrides.items():
                     command += (["--clear-" + key.replace("_", "-")] if value is None else
                                 ["--" + key.replace("_", "-"), str(value)])
             with (campaign / "manager.log").open("ab") as log:
                 child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
             first = False
+            heartbeat_at = 0.0
             time.sleep(POLL_SECONDS)
 
 
-def launch_background(campaign: pathlib.Path, overrides: dict[str, Any]) -> dict[str, Any]:
+def manager_ready(state: dict[str, Any], manager: dict[str, Any] | None,
+                  generation: str | None) -> bool:
+    if not generation or state["manager_generation"] != generation:
+        return False
+    return state["status"] in TERMINAL or bool(
+        manager and manager.get("generation") == generation and process_alive(manager))
+
+
+def launch_background(campaign: pathlib.Path, overrides: dict[str, Any],
+                      resume_stop_hash: str | None = None) -> dict[str, Any]:
     if lock_busy(campaign / "supervisor.lock"):
         raise CampaignError("Background supervisor is already running; use status or stop")
     if overrides and lock_busy(campaign / "runner.lock"):
         raise CampaignError("Cannot change limits while an existing manager is running")
     command = [sys.executable, str(pathlib.Path(__file__).resolve()), "_supervise",
                "--campaign", str(campaign)]
+    if resume_stop_hash:
+        command += ["--resume-stop-hash", resume_stop_hash]
     for key, value in overrides.items():
         command += (["--clear-" + key.replace("_", "-")] if value is None else
                     ["--" + key.replace("_", "-"), str(value)])
     with (campaign / "supervisor.log").open("ab") as log:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                    start_new_session=True)
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + BACKGROUND_STARTUP_SECONDS
+    observed_supervisor = False
     while time.monotonic() < deadline:
         marker = campaign / "supervisor.json"
         if marker.exists() and read_json(marker).get("pid") == process.pid:
-            return read_state(campaign)
+            observed_supervisor = True
+            supervisor = read_json(marker)
+            state = read_state(campaign)
+            manager_path = campaign / "manager.json"
+            manager = read_json(manager_path) if manager_path.exists() else None
+            if manager_ready(state, manager, supervisor.get("manager_generation")):
+                return state
         if process.poll() is not None:
             raise CampaignError(f"Could not start background supervisor; inspect {campaign / 'supervisor.log'}")
         time.sleep(POLL_SECONDS)
+    if observed_supervisor and process.poll() is None:
+        return read_state(campaign)  # public_status reports starting until this manager is ready.
     raise CampaignError("Background supervisor did not become ready; inspect supervisor.log before retrying")
 
 
@@ -436,6 +489,13 @@ def public_status(campaign: pathlib.Path, state: dict[str, Any]) -> dict[str, An
         "comparison_continuity", "comparison_review_window", "workflow_provenance", *LIMITS)}
     value["unreported_usage_turns"] = state["unreported_usage_turns"]
     comparison_key = (state["objective_progress"] or {}).get("comparison_key")
+    research = state.get("research_state")
+    value["research_state"] = research if research and research["comparison_key"] == comparison_key else None
+    corrections = state.get("research_corrections", {}).get(comparison_key or "null", {})
+    value["research_correction_keys"] = [key for key, row in corrections.items()
+                                         if row["report"].get("status") != "withdrawn"]
+    value["research_withdrawn_keys"] = [key for key, row in corrections.items()
+                                       if row["report"].get("status") == "withdrawn"]
     value["frontier_exposed_implementations"] = len(state["frontier_exposures"].get(comparison_key, {}))
     value["pending_exposed_proposals"] = len(state["pending_proposal_exposures"].get(comparison_key, {}))
     value["trial_exposed_proposals"] = len(state["trial_exposures"].get(comparison_key, {}))
@@ -446,6 +506,10 @@ def public_status(campaign: pathlib.Path, state: dict[str, Any]) -> dict[str, An
         path = campaign / f"{role}.json"
         marker = read_json(path) if path.exists() else None
         value[role] = {**marker, "alive": process_alive(marker)} if marker else None
+    supervisor = value["supervisor"]
+    if (supervisor and supervisor["alive"] and "manager_generation" in supervisor and
+            not manager_ready(state, value["manager"], supervisor["manager_generation"])):
+        value["status"] = "starting"
     turn = state["inflight"]
     value["inflight"] = ({key: turn[key] for key in ("number", "token", "mode", "started_unix")}
                          if turn else None)
@@ -521,6 +585,8 @@ def parser() -> argparse.ArgumentParser:
             add_search_policy(command)
         if name == "_run":
             command.add_argument("--generation")
+        if name in {"_run", "_supervise"}:
+            command.add_argument("--resume-stop-hash")
         if name == "resume":
             command.add_argument("--background", action="store_true")
         if name == "stop":
@@ -577,22 +643,27 @@ def main() -> int:
             if args.command == "_worker":
                 return run_worker(campaign, args.number, args.resource_fd, args.kind)
             if args.command == "_supervise":
-                return supervise(campaign, overrides)
+                return supervise(campaign, overrides, args.resume_stop_hash)
             if args.command == "_run":
-                state = run_campaign(campaign, overrides, managed=True, generation=args.generation)
+                state = run_campaign(campaign, overrides, managed=True, generation=args.generation,
+                                     resume_stop_hash=args.resume_stop_hash)
             elif args.command == "status":
                 state = read_state(campaign)
             elif args.command == "stop":
                 state = read_state(campaign)
-                if state["status"] not in {"running", "blocked"}:
-                    raise CampaignError("Only a running or blocked campaign can be stopped")
-                atomic_json(campaign / "stop.request.json", {"reason": args.reason,
-                            "immediate": args.now, "at": utc_now()})
+                if (state["status"] not in {"running", "blocked"} and
+                        public_status(campaign, state)["status"] != "starting"):
+                    raise CampaignError("Only a running, starting or blocked campaign can be stopped")
+                request_stop(campaign, args.reason, args.now)
             else:
-                state = (launch_background(campaign, overrides) if args.background else
-                         run_campaign(campaign, overrides))
-        print(json.dumps(public_status(campaign, state), ensure_ascii=False, indent=2))
-        return 2 if state["status"] == "blocked" and args.command not in {"status", "stop"} else 0
+                stop_path = campaign / "stop.request.json"
+                resume_stop_hash = file_hash(stop_path) if stop_path.exists() else None
+                state = (launch_background(campaign, overrides, resume_stop_hash) if args.background else
+                         run_campaign(campaign, overrides, resume_stop_hash=resume_stop_hash))
+        report = public_status(campaign, state)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        status = state["status"] if args.command == "_run" else report["status"]
+        return 2 if status == "blocked" and args.command not in {"status", "stop"} else 0
     except (CampaignError, archive_tools.ArchiveFailure, OSError, ValueError, KeyError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2

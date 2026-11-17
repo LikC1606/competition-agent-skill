@@ -17,7 +17,7 @@ from candidate_evidence import canonical, sha256
 PROSE = {"scope", "selection_policy", "feedback", "failure_mechanism", "mechanism", "basis",
          "change", "expected_observation", "next_action", "feedback_scope", "message", "error"}
 SEALED = {"implementation", "implementation_review", "artifact_paths", "result", "code_targets",
-          "learning", "evidence", "comparison", "scoped_learning"}
+          "learning", "evidence", "comparison", "scoped_learning", "decision_context"}
 
 
 def bound_packet(packet: dict[str, Any], *, budget: int, mode: str = "work") -> dict[str, Any]:
@@ -115,10 +115,46 @@ def bound_packet(packet: dict[str, Any], *, budget: int, mode: str = "work") -> 
     priorities = (["execution_recovery"] if mode == "repair" else
                   ["measurement_plan", "repeat_conflict", "comparison_recovery"] if mode == "measure" else [])
     priorities += [name for name in ("execution_recovery", "measurement_plan", "repeat_conflict",
-                                     "comparison_recovery", "objective_progress", "execution_health",
-                                     "comparison_continuity", "measurement_decision", "measurement_stop")
+                                     "comparison_recovery")
                    if name not in priorities]
     for name in priorities:
+        add(name, source.get(name))
+
+    # Keep current decision boundaries ahead of optional historical candidate
+    # prose. An oversized report becomes an exact receipt pointer, never a
+    # substring that could remove its conditions or reopening rule.
+    decision = source.get("decision_context")
+    if decision:
+        target = {"scope": decision["scope"], "research_state": None, "corrections": []}
+        selected["decision_context"] = target
+        def decision_card(row: dict[str, Any], path: str) -> dict[str, Any]:
+            pointer = {key: value for key, value in row.items() if key != "report"}
+            pointer.update(report=None, report_sha256=sha256(canonical(row["report"])),
+                           report_key=row["report"].get("key"),
+                           report_status=row["report"].get("status", "active"),
+                           details_omitted="Read the complete report in receipt_path before applying it")
+            omitted(path + "/report")
+            return pointer
+        if decision.get("research_state"):
+            row = decision["research_state"]
+            target["research_state"] = row
+            if not fits():
+                target["research_state"] = decision_card(row, "/decision_context/research_state")
+                if not fits():
+                    target["research_state"] = None
+        for row in decision.get("corrections", []):
+            target["corrections"].append(row)
+            if not fits():
+                target["corrections"][-1] = decision_card(row, "/decision_context/corrections")
+                if not fits():
+                    target["corrections"].pop()
+                    omitted("/decision_context/corrections/omitted_items")
+        if not fits():
+            selected["decision_context"] = None
+            omitted("/decision_context")
+
+    for name in ("objective_progress", "execution_health", "comparison_continuity",
+                 "measurement_decision", "measurement_stop"):
         add(name, source.get(name))
 
     def fit_collection(parent: dict[str, Any], name: str, value: Any, path: str) -> None:

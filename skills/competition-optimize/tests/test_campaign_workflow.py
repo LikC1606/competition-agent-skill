@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from campaign_runtime import CampaignError
 from campaign_state import check_control_files, complete_state, read_state, save_state
 from campaign_workflow import freeze_workflow
+from codex_invocation import CodexInvocation, FINAL_SCHEMA
 
 
 class CampaignWorkflowTests(unittest.TestCase):
@@ -72,6 +73,25 @@ class CampaignWorkflowTests(unittest.TestCase):
         left, right = complete_state({}), complete_state({})
         left["trial_exposures"]["comparison"] = {"candidate": 1}
         self.assertEqual(right["trial_exposures"], {})
+        left["research_corrections"]["comparison"] = {"conditional": {"turn": 1}}
+        self.assertEqual(right["research_corrections"], {})
+
+    def test_new_turn_uses_frozen_receipt_without_replacing_legacy_campaign_schema(self):
+        original = b'{"type":"object","properties":{"old":{}}}\n'
+        (self.campaign / "receipt.schema.json").write_bytes(original)
+        snapshot, protected, _ = freeze_workflow(self.campaign, self.skill, self.state)
+        schema = Path(snapshot["receipt_schema_path"])
+        self.assertEqual(json.loads(schema.read_bytes()), FINAL_SCHEMA)
+        self.assertIn(str(schema), protected)
+        manifest = json.loads(Path(snapshot["manifest_path"]).read_bytes())
+        self.assertIn("receipt.schema.json", manifest["files"])
+        for session_id in (None, "existing-session"):
+            state = {**self.state, "workspace": str(self.root), "archive": str(self.root / "archive.jsonl"),
+                     "session_id": session_id, "next_mode": "work", "sandbox": "workspace-write",
+                     "instruction_snapshot": snapshot}
+            command = CodexInvocation.command(state, self.campaign, 4)
+            self.assertEqual(command[command.index("--output-schema") + 1], str(schema))
+        self.assertEqual((self.campaign / "receipt.schema.json").read_bytes(), original)
 
 
 if __name__ == "__main__":

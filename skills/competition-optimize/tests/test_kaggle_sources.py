@@ -320,6 +320,36 @@ class KaggleSourceTests(unittest.TestCase):
                          [(10, 1, "0.62", "private"), (20, 2, 0, "private")])
         self.assertTrue(all(row["competition"] == "wheat" for row in sources))
 
+    def test_discovery_counts_retain_entity_population_and_raw_response_identity_across_cache(self):
+        board = {"publicLeaderboard": [{"teamId": i} for i in range(3)], "teams": []}
+        topics = [{"id": i, "topic_url": f"/competitions/wheat/discussion/{i}"} for i in (11, 12)]
+        result = kaggle.run(self.args("--page-size", "1", command="discover"),
+                            self.discovery_client(board, {"count": 19, "topics": topics}))
+        quantities = {row["name"]: row for row in result["source"]["quantities"]}
+        entries = quantities["returned_leaderboard_entries"]
+        self.assertEqual((entries["value"], entries["entity"], entries["unit"]), (3, "leaderboard_entry", "entries"))
+        self.assertEqual(entries["scope"], {"competition": "wheat", "board": "public", "population": "returned_response"})
+        snapshot = Path(result["snapshot"])
+        for row in quantities.values():
+            raw = (snapshot / row["basis"]["response_file"]).read_bytes()
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), row["basis"]["response_sha256"])
+        board_raw = json.loads((snapshot / entries["basis"]["response_file"]).read_bytes())
+        self.assertEqual(entries["value"], len(board_raw["publicLeaderboard"]))
+        returned, matches = quantities["returned_search_topics"], quantities["server_search_matches"]
+        self.assertEqual((returned["value"], matches["value"]), (2, 19))
+        self.assertNotEqual(returned["scope"]["population"], matches["scope"]["population"])
+        self.assertEqual(returned["scope"]["query"], "representation")
+        self.assertEqual(returned["scope"]["page"], 1)
+        cached = kaggle.run(self.args(command="discover"), self.client())
+        self.assertTrue(cached["cache_hit"])
+        self.assertEqual(cached["source"]["quantities"], result["source"]["quantities"])
+
+    def test_failed_or_absent_source_counts_are_not_fabricated_as_zero_quantities(self):
+        result = kaggle.run(self.args(command="discover"), self.discovery_client({}, {}, board_status=503))
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["source"]["quantities"], [])
+        self.assertEqual(result["source"]["errors"][0]["operation"], "leaderboard")
+
     def discovery_client(self, board, search, *, facts=None, board_status=200, search_raw=None, search_page=1):
         facts = facts or {"id": 8, "competitionName": "wheat", "url": "/competitions/wheat", "forumId": 167}
         search_request = {"forumId": 167, "hasForumId": True, "searchQuery": "representation", "hasSearchQuery": True,
@@ -423,6 +453,47 @@ class KaggleSourceTests(unittest.TestCase):
         self.assertFalse(second["cache_hit"])
         self.assertNotEqual(second["snapshot"], first["snapshot"])
         self.assertEqual(second["source"]["coverage"]["search_page"], 2)
+
+    def test_source_format_exposes_all_leads_without_an_envelope_parser_or_new_requests(self):
+        search = {"count": "20", "topics": [
+            {"id": i, "title": f"Mechanism {i}", "topic_url": f"/competitions/wheat/discussion/{i}"}
+            for i in range(20)]}
+        result = kaggle.run(self.args("--page-size", "1", command="discover"),
+                            self.discovery_client({"privateLeaderboard": [], "publicLeaderboard": [], "teams": []}, search))
+        original = Path(result["source_path"]).read_bytes()
+        for output_format in ("json", "source"):
+            with self.subTest(output_format=output_format):
+                output = io.StringIO()
+                with mock.patch.object(kaggle, "Client", return_value=self.client()), contextlib.redirect_stdout(output):
+                    code = kaggle.main(["discover", "--competition", "wheat", "--question", "representation",
+                                        "--page-size", "1", "--output-dir", str(self.output),
+                                        "--format", output_format])
+                self.assertEqual(code, 0)
+                document = json.loads(output.getvalue())
+                source = document["source"] if output_format == "json" else document
+                self.assertEqual(len(source["sources"]), 1 if output_format == "json" else 20)
+                self.assertEqual(source["coverage"]["returned_search_topics"], 20)
+                self.assertEqual(source["errors"], [])
+                if output_format == "json":
+                    self.assertTrue(document["cache_hit"])
+                else:
+                    self.assertEqual(document, json.loads(original))
+        self.assertEqual(Path(result["source_path"]).read_bytes(), original)
+
+    def test_source_format_retains_partial_errors_and_nonzero_failure_exit(self):
+        for index, (board_status, expected_exit) in enumerate(((200, 0), (503, 1))):
+            with self.subTest(board_status=board_status):
+                output = io.StringIO()
+                failure = wire({"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": []}})
+                client = self.discovery_client({"privateLeaderboard": [], "publicLeaderboard": [], "teams": []},
+                                               {}, board_status=board_status, search_raw=failure)
+                with mock.patch.object(kaggle, "Client", return_value=client), contextlib.redirect_stdout(output):
+                    code = kaggle.main(["discover", "--competition", "wheat", "--question", "representation",
+                                        "--output-dir", str(self.output / str(index)), "--format", "source"])
+                source = json.loads(output.getvalue())
+                self.assertEqual(code, expected_exit)
+                self.assertEqual(source["sources"], [])
+                self.assertTrue(source["errors"])
 
     def test_sse_uses_matching_rpc_id_and_does_not_treat_error_words_in_prose_as_failure(self):
         raw = (b"event: message\ndata: " + wire({"jsonrpc": "2.0", "id": 99, "result": {"isError": True}})

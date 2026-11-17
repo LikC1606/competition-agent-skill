@@ -276,7 +276,12 @@ if (scenario == "invalid_receipt" and number == 1 or
         scenario == "comparison_retry_receipt" and number == 5 or
         scenario == "trial_failures" and number == 2):
     receipt.pop("evidence")
-pathlib.Path(sys.argv[sys.argv.index("-o") + 1]).write_text(json.dumps(receipt))
+message = json.dumps(receipt)
+if scenario == "prose_receipt":
+    message = "All work is recorded. Receipt follows.\n\n" + message
+if scenario == "fenced_receipt":
+    message = "All work is recorded. Receipt follows.\n\n```json\n" + json.dumps(receipt, indent=2) + "\n```\n"
+pathlib.Path(sys.argv[sys.argv.index("-o") + 1]).write_text(message)
 if scenario == "left_child":
     child = subprocess.Popen([sys.executable, "-c",
         "import pathlib,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
@@ -386,6 +391,49 @@ class AutonomousCampaignTests(unittest.TestCase):
 
     def events(self) -> list[dict]:
         return [json.loads(line) for line in (self.campaign / "events.jsonl").read_text().splitlines()]
+
+    def test_public_status_distinguishes_current_and_withdrawn_interpretations(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "no_progress"
+        result = self.start("--max-turns", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.state()
+        key = (state["objective_progress"] or {}).get("comparison_key") or "null"
+        state["research_corrections"] = {
+            key: {"current": {"report": {"key": "current", "claim": "Conditional finding"}},
+                  "obsolete": {"report": {"key": "obsolete", "status": "withdrawn", "reason": "Bad premise"}}},
+            "foreign": {"unrelated": {"report": {"key": "unrelated", "status": "withdrawn"}}}}
+        status = driver.public_status(self.campaign, state)
+        self.assertEqual(status["research_correction_keys"], ["current"])
+        self.assertEqual(status["research_withdrawn_keys"], ["obsolete"])
+
+    def test_failed_research_retains_its_selected_action_for_recovery(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "no_progress"
+        first = self.start("--max-turns", "1")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        state = self.state()
+        action = "Inspect the existing controls; if absent, keep the transfer claim unknown."
+        research = {"turn": 1, "receipt_path": str(self.campaign / "turns/000001/message.json"),
+                    "comparison_key": state["objective_progress"]["comparison_key"],
+                    "assessment_kind": "agent_report", "report": {
+                        "status": "open", "route": "diagnostic", "question": "Is transfer identified?",
+                        "alternatives": ["Controlled evidence exists", "Controls are unknown"],
+                        "missing_evidence": "Inspect saved controls before any new measurement.",
+                        "answer_actions": [{"observation": "No saved controls", "action": "Retain uncertainty"}],
+                        "evidence": [str(self.task)]}}
+        state.update(research_state=research, next_action=action, next_mode="research")
+        driver.save_state(self.campaign, state)
+        self.environment["FAKE_SCENARIO"] = "bad_session"
+        failed = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(failed.returncode, 0, failed.stderr)
+        recovered = self.state()
+        self.assertTrue(recovered["recovery_needed"])
+        self.assertEqual(recovered["next_action"], action)
+        self.assertEqual(recovered["research_state"], research)
+        self.assertEqual(recovered["next_mode"], "research")
+        self.assertEqual(recovered["session_turns"], state["session_turns"])
+        request = json.loads((self.campaign / "turns/000002/request.json").read_text())
+        self.assertEqual(request["mode"], "research")
+        self.assertEqual(request["context"]["decision_context"]["research_state"]["report"], research["report"])
 
     def seed_open_branches(self, count: int = 5) -> list[dict]:
         """Run old, low-scoring implementations under the fake agent's contract."""
@@ -743,7 +791,7 @@ class AutonomousCampaignTests(unittest.TestCase):
             path = self.campaign / (role + ".json")
             if path.exists():
                 identity = json.loads(path.read_text())
-                if runtime.process_alive(identity):
+                if identity["pid"] != os.getpid() and runtime.process_alive(identity):
                     os.kill(identity["pid"], signal.SIGTERM)
         # Detached processes may need a moment to release locks before temp cleanup.
         time.sleep(0.05)
@@ -801,6 +849,18 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertIn("mock-model", calls[1]["argv"])
         self.assertEqual(self.state()["usage"], {
             "input_tokens": 30, "cached_input_tokens": 9, "output_tokens": 6})
+
+    def test_provider_prose_receipts_accept_completed_work_without_retries(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "prose_receipt"
+        result = self.start("--max-turns", "3")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(len(self.calls()), 3)
+        self.assertEqual(self.state()["progress"]["executed_implementations"], 3)
+        completed = [e for e in self.events() if e["event"] == "turn_completed"]
+        self.assertEqual(len(completed), 3)
+        self.assertFalse(any(e["event"] == "turn_interrupted" for e in self.events()))
+        message = self.campaign / "turns/000001/message.json"
+        self.assertTrue(message.read_text().startswith("All work is recorded."))
 
     def test_distinct_but_worse_implementations_trigger_periodic_strategy_reviews(self) -> None:
         self.environment["FAKE_SCENARIO"] = "regress"
@@ -1972,6 +2032,27 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertIn("terminal event", interrupted[0]["error"])
         self.assertIn("preceding invocation was interrupted", self.calls()[1]["prompt"])
 
+    def test_fenced_receipts_continue_without_false_recovery_or_repeated_execution(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "fenced_receipt"
+        result = self.start("--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = self.state()
+        self.assertEqual(state["progress"]["executed_implementations"], 2)
+        self.assertEqual(state["failures"], 0)
+        self.assertFalse(state["recovery_needed"])
+        self.assertEqual(len(self.calls()), 2)
+        self.assertIn("resume", self.calls()[1]["argv"])
+        self.assertNotIn("preceding invocation was interrupted", self.calls()[1]["prompt"])
+        self.assertEqual(len([event for event in self.events() if event["event"] == "turn_completed"]), 2)
+        self.assertFalse([event for event in self.events() if event["event"] == "turn_interrupted"])
+        for number in (1, 2):
+            directory = self.campaign / "turns" / f"{number:06}"
+            message = directory / "message.json"
+            self.assertTrue(message.read_text().startswith("All work is recorded."))
+            self.assertTrue(message.read_text().endswith("\n```\n"))
+            exit_record = json.loads((directory / "exit.json").read_text())
+            self.assertEqual(exit_record["outputs"]["message.json"], runtime.file_hash(message))
+
     def test_receipt_and_terminal_event_do_not_override_nonzero_exit(self) -> None:
         self.environment["FAKE_SCENARIO"] = "receipt_then_fail"
         result = self.start("--max-turns", "2")
@@ -2171,6 +2252,28 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertEqual(len(self.calls()), 2)
         self.assertEqual(self.state()["progress"]["executed_implementations"], 1)
 
+    def blocked_campaign_with_stop(self) -> bytes:
+        self.assertEqual(self.start("--max-turns", "1").returncode, 0)
+        prefix = self.archive.read_bytes()
+        task = self.campaign / "task.md"
+        original = task.read_bytes()
+        task.write_text("modified task")
+        self.assertEqual(self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2").returncode, 2)
+        self.assertEqual(self.state()["status"], "blocked")
+        self.assertEqual(self.call("stop", "--campaign", str(self.campaign), "--now").returncode, 0)
+        task.write_bytes(original)
+        return prefix
+
+    def test_explicit_resume_clears_a_blocked_campaigns_old_stop_once(self) -> None:
+        prefix = self.blocked_campaign_with_stop()
+        result = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(self.state()["status"], "limit_reached")
+        self.assertEqual(len(self.calls()), 2)
+        self.assertEqual(self.state()["progress"]["executed_implementations"], 2)
+        self.assertTrue(self.archive.read_bytes().startswith(prefix))
+        self.assertFalse((self.campaign / "stop.request.json").exists())
+
     def test_child_ignoring_term_is_killed_even_after_its_leader_exits(self) -> None:
         self.environment["FAKE_SCENARIO"] = "left_child"
         result = self.start("--max-turns", "1")
@@ -2294,6 +2397,121 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.wait_for(lambda: self.state()["status"] == "limit_reached")
         self.assertEqual(len(self.calls()), 2)
         self.assertEqual(self.state()["progress"]["executed_implementations"], 2)
+
+    def delayed_background_resume(self, *extra: str) -> tuple[Path, subprocess.CompletedProcess[str]]:
+        release = self.campaign / "manager-initialization-release"
+        waiting = self.campaign / "manager-initialization-waiting"
+        wrapper = self.root / "delayed-background.py"
+        shim = ("import os,pathlib,sys,time; "
+                f"pathlib.Path({str(waiting)!r}).touch(); "
+                f"\nwhile not pathlib.Path({str(release)!r}).exists(): time.sleep(0.02)"
+                "\nos.execv(sys.argv[1],sys.argv[1:])")
+        wrapper.write_text(
+            "import pathlib,sys\n"
+            f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+            "import autonomous_campaign as campaign\n"
+            "original=campaign.subprocess.Popen\n"
+            "def delayed(command, **kwargs):\n"
+            "    if '_supervise' in command:\n"
+            f"        command=[{PYTHON!r}, {str(wrapper)!r}, *command[2:]]\n"
+            f"    elif '_run' in command and not pathlib.Path({str(release)!r}).exists():\n"
+            f"        command=[{PYTHON!r}, '-c', {shim!r}, *command]\n"
+            "    return original(command, **kwargs)\n"
+            "campaign.subprocess.Popen=delayed\n"
+            "campaign.BACKGROUND_STARTUP_SECONDS=0.6\n"
+            "raise SystemExit(campaign.main())\n")
+        result = subprocess.run([PYTHON, str(wrapper), "resume", "--campaign", str(self.campaign),
+                                 "--background", *extra], capture_output=True, text=True,
+                                env=self.environment, timeout=10)
+        self.wait_for(waiting.exists)
+        return release, result
+
+    def test_background_launch_reports_starting_until_the_new_manager_is_ready(self) -> None:
+        self.assertEqual(self.start("--max-turns", "1").returncode, 0)
+        old_generation = self.state()["manager_generation"]
+        self.environment["FAKE_SCENARIO"] = "hold_second"
+        release, result = self.delayed_background_resume("--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(json.loads(result.stdout)["status"], "starting")
+        self.assertEqual(self.state()["status"], "limit_reached")
+        self.assertEqual(self.state()["manager_generation"], old_generation)
+        self.assertEqual(json.loads(self.call("status", "--campaign", str(self.campaign)).stdout)["status"], "starting")
+        self.assertEqual(len(self.calls()), 1)
+        release.touch()
+        self.wait_for(lambda: (self.campaign / "fake-ready-2").exists())
+        report = json.loads(self.call("status", "--campaign", str(self.campaign)).stdout)
+        self.assertEqual(report["status"], "running")
+        self.assertNotEqual(report["manager"]["generation"], old_generation)
+        self.assertEqual(report["manager"]["generation"], report["supervisor"]["manager_generation"])
+        (self.campaign / "fake-release").touch()
+        self.wait_for(lambda: self.state()["status"] == "limit_reached")
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_stop_issued_during_background_initialization_is_not_consumed_by_resume(self) -> None:
+        self.blocked_campaign_with_stop()
+        old_stop = json.loads((self.campaign / "stop.request.json").read_text())
+        release, result = self.delayed_background_resume("--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(json.loads(result.stdout)["status"], "starting")
+        stopped = self.call("stop", "--campaign", str(self.campaign), "--now")
+        self.assertEqual(stopped.returncode, 0, stopped.stderr + stopped.stdout)
+        new_stop = json.loads((self.campaign / "stop.request.json").read_text())
+        self.assertEqual(old_stop["reason"], new_stop["reason"])
+        self.assertNotEqual(old_stop["request_id"], new_stop["request_id"])
+        release.touch()
+        self.wait_for(lambda: self.state()["status"] == "stopped_by_user")
+        self.assertEqual(len(self.calls()), 1)
+        self.assertEqual(json.loads((self.campaign / "stop.request.json").read_text()), new_stop)
+
+    def test_initializing_resume_can_be_stopped_while_saved_state_is_at_limit(self) -> None:
+        self.assertEqual(self.start("--max-turns", "1").returncode, 0)
+        release, result = self.delayed_background_resume("--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(json.loads(result.stdout)["status"], "starting")
+        stopped = self.call("stop", "--campaign", str(self.campaign), "--now")
+        self.assertEqual(stopped.returncode, 0, stopped.stderr + stopped.stdout)
+        release.touch()
+        self.wait_for(lambda: self.state()["status"] == "stopped_by_user")
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_background_resume_clears_a_blocked_campaigns_old_stop_once(self) -> None:
+        prefix = self.blocked_campaign_with_stop()
+        result = self.call("resume", "--campaign", str(self.campaign), "--background", "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn(json.loads(result.stdout)["status"], {"running", "limit_reached"})
+        self.wait_for(lambda: self.state()["status"] == "limit_reached")
+        self.assertEqual(len(self.calls()), 2)
+        self.assertTrue(self.archive.read_bytes().startswith(prefix))
+        self.assertFalse((self.campaign / "stop.request.json").exists())
+
+    def test_background_startup_returns_a_new_initialization_blocker(self) -> None:
+        self.assertEqual(self.start("--max-turns", "1").returncode, 0)
+        old_generation = self.state()["manager_generation"]
+        (self.campaign / "task.md").write_text("changed task")
+        result = self.call("resume", "--campaign", str(self.campaign), "--background", "--max-turns", "2")
+        self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["status"], "blocked")
+        self.assertIn("identity changed", report["stop_reason"])
+        self.assertNotEqual(report["manager"]["generation"], old_generation)
+        self.assertEqual(report["manager"]["generation"], self.state()["manager_generation"])
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_supervisor_crash_recovery_preserves_a_pending_graceful_stop(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "hold"
+        result = self.start("--background", "--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.wait_for(lambda: (self.campaign / "fake-ready-1").exists())
+        manager = json.loads((self.campaign / "manager.json").read_text())
+        self.assertEqual(self.call("stop", "--campaign", str(self.campaign)).returncode, 0)
+        request = (self.campaign / "stop.request.json").read_bytes()
+        os.kill(manager["pid"], signal.SIGKILL)
+        self.wait_for(lambda: json.loads((self.campaign / "manager.json").read_text())["pid"] != manager["pid"])
+        self.assertEqual((self.campaign / "stop.request.json").read_bytes(), request)
+        (self.campaign / "fake-release").touch()
+        self.wait_for(lambda: self.state()["status"] == "stopped_by_user")
+        self.assertEqual(len(self.calls()), 1)
+        self.assertEqual(self.state()["progress"]["executed_implementations"], 1)
 
     def test_background_resume_waits_for_new_manager_initialization_before_accepting_terminal_state(self) -> None:
         self.assertEqual(self.start("--max-turns", "1").returncode, 0)
