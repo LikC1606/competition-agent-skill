@@ -79,7 +79,7 @@ flowchart TD
 
 ## 落地范围与成本
 
-入口和恢复路由负责选择行动；资料与评测指南负责对应分支；campaign 的 work/rethink/execute 提示使用同样的分流和反馈规则。沿用现有 proposal、card、archive 与测量计划，不新增状态机或评分字段。
+入口和恢复路由负责选择行动；资料与评测指南负责对应分支；campaign 的 work/rethink/execute 提示使用同样的分流和反馈规则。沿用现有 proposal、card、archive 与测量计划。可选 `working_selection` 单独记录当前采用候选及其依据，不改变原始目标分数或停滞统计；具体接口见 [campaign policy](campaign-policy.md)。
 
 Runner 继续按真实档案统计执行进展。一次有依据的研究／评测前置工作可以先于实现，但记录本身不计作新实现，也不会重置停滞信号。它校验身份与证据连续性，不能自动证明评测代表性或机制价值。
 

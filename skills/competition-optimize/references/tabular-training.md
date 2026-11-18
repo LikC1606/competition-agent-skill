@@ -29,6 +29,12 @@ The adapter gives each fit only the declared training features/labels. It record
 
 Before claiming a capability gap, inspect the model's mapping and objective. An RBF kernel, including its Nystroem approximation, can represent nonlinear interactions already; explicit product columns change its geometry and regularization and may help, but do not introduce nonlinearity into an otherwise additive model. Attribute a gain to the executed comparison unless a targeted analysis supports the stronger mechanism claim.
 
+## Check the Actual Feature Consumer Before Fitting
+
+When a changed or reportedly broken stage decides whether to spend on a fit, trace the real `build_model` and pipeline calls. Use a discriminating development case or small synthetic fixture. Run the actual feature producer through the wrapper and selector that consume it and inspect the values and their column identities at the downstream estimator. For example, a new column can be nonconstant in the feature frame and still be dropped by a fixed selector. Vary its input through the real caller and compare the selected columns and values with the control; calling the feature helper alone would miss the drop.
+
+Reuse [saved fold models](#inspect-saved-fold-models-without-fitting) for unchanged dependencies and inspect each model through its own fitted transforms. For changed code, use the candidate's normal constructor and the existing pipeline API on the smallest inputs that expose the issue. If the check needs learned state that cannot be reused, fit only that stage on appropriate rows. Check [the supervised training path](#verify-supervised-preprocessing-information-flow) when training and inference behave differently. In the existing proposal or notes, record the actual call, observed behavior and cost. This check can settle whether the intended feature reaches its consumer; it does not supply a fold-clean performance comparison for the changed pipeline.
+
 ## Verify Supervised Preprocessing Information Flow
 
 The adapter's fit-row receipt establishes which rows were passed to `estimator.fit`; it does not prove what each nested transformer passed to its downstream estimator. Review the actual `Pipeline`/wrapper call path when a proposal relies on cross-fitting, target statistics, feature selection or stacking.
@@ -36,6 +42,8 @@ The adapter's fit-row receipt establishes which rows were passed to `estimator.f
 In sklearn's [TargetEncoder](https://scikit-learn.org/1.7/modules/generated/sklearn.preprocessing.TargetEncoder.html), internal cross-fitting runs in `fit_transform(X, y)`. `fit(X, y).transform(X)` uses encodings fitted on all those labels. Setting `cv=5`, checking `categories_`, or comparing a stored encoder's `transform` with itself cannot distinguish these paths. The [official example](https://scikit-learn.org/1.7/auto_examples/preprocessing/plot_target_encoder_cross_val.html) demonstrates the resulting overfitting risk.
 
 `Pipeline`/`ColumnTransformer` directly containing `TargetEncoder` uses its `fit_transform` during fitting. A custom `TransformerMixin` wrapper with only `fit` and `transform` defaults to `fit(...).transform(...)`, which can bypass the encoder's cross-fitting. Prefer direct composition where suitable; otherwise implement the wrapper's training transformation explicitly and retain a full-fit encoder for later inference. Return the cross-fitted training block to the downstream model; do not overwrite it with the full-fit `transform` result. Inner splits must respect the task's group/time boundary when required; plain KFold is not universally appropriate.
+
+For example, to append one already-built final column to a supervised base transformer, use `ColumnTransformer([("base", base, slice(0, -1)), ("extra", "passthrough", [-1])])` when that matches the array contract. It preserves the base transformer's training call. Recheck the emitted training matrix after changing this composition: unchanged non-target members, correct row boundaries and an earlier encoder audit do not prove a new wrapper preserves cross-fitting.
 
 For this kind of defect, use a small deterministic synthetic fixture before another competition fit:
 
@@ -136,6 +144,45 @@ Pass raw numeric features in that model's declared order to the full saved pipel
 
 This is a single-threaded reader for trusted candidate code, not a sandbox. It performs no fitting or artifact writes; use it for analysis/prediction, and keep model creation/serialization in the managed training path. It cannot restore optional dependencies or implementation files that were never snapshotted.
 
+## Reuse Fitted Artifacts for Prediction-Only Changes
+
+Before scheduling a fit, trace the actual build, fit and prediction paths. A fixed output weight or aggregation rule can reuse fitted artifacts when the change does not affect training, fitted preprocessing, member selection or calibration. Check the saved data and protocol, feature order and target scale, and the fit and validation IDs, seeds and environment for each fold of each partition being compared. A newly fitted coefficient or calibrator needs its own [label boundary](local-evaluation.md); reusing members does not make that step fixed.
+
+Use matching saved OOF columns aligned by ID, or load the relevant fold models as above and recover the required member predictions through their own saved transforms. Apply the proposed rule at the same point as intended for inference: a rule within a fold model can differ from one applied after averaging, thresholding or inverse transformation. Before interpreting the comparison, reproduce the saved control with its original rule on each used partition; explain any numerical difference against the recorded precision. If a needed prediction or compatible model is missing, locate it first, then fit only the missing components and folds required by the declared comparison.
+
+For a fixed affine blend under RMSE, squared error along that direction is quadratic; reuse paired residuals and predictions to reason about or evaluate a declared change. The [existing blend direction check](codex-tools.md#reuse-the-existing-numeric-operations) answers whether an interior convex blend can beat both endpoints on those rows. It supplies neither weights nor validation of a new recipe. A zero-fit grid is still a parameter sweep; do not use it when tuning is out of scope, and do not convert a value selected on those labels into independent evidence.
+
+Score newly composed predictions in a fresh directory with the matching `evaluate_predictions.py` contract. Keep the output rule, input recipe/model identities, and the control reproduction with the evidence. Record an exploratory ablation as `--role diagnostic`; for a declared contender, provide the executed output recipe as `--configuration` and cite how scoring rows were excluded from all fitting/selection stages with `--prediction-boundary`. Do not borrow the parent's `training_execution` or rebind its proposal. The managed `rescore` command below accepts unchanged sealed OOF only.
+
+### Fit Only an Added Member
+
+When the existing fitted members and upstream transforms stay fixed, keep their sealed control run. Use the normal `train` command with a candidate that constructs only the new member. Give it the same data and fold protocol; the feature list may differ, and each model will receive its own feature columns in order. If a change alters how an existing member was fitted, its old state cannot test that change.
+
+```sh
+$PY "$S/tabular_training.py" train --data training.csv --protocol member-folds.json \
+  --candidate member.py --output-dir runs/added-member
+$PY "$S/tabular_training.py" recompose --control runs/baseline --member runs/added-member \
+  --composition compose.py --output-dir runs/composed
+```
+
+Implement the declared rule as `predict_fold(control, member, x_fit, x_score, member_x_fit, member_x_score, *, include_member)` in `compose.py`. Both models are already fitted. For example, a fixed regression blend could return `base + share * (extra - base)`, with `base = control.predict(x_score)`, `extra = member.predict(member_x_score)`, and `share = DECLARED_WEIGHT * include_member`. For an internal ensemble change, reuse its fitted members and transforms and turn off the new contribution **in the same formula**. Use [the existing CSV blend tool](data-model.md) if a fixed convex blend of available predictions is all that is needed.
+
+The same hook can replace one fitted member when its peers and upstream transforms are proven unchanged. Reproduce the full old control with `include_member=False`; with `True`, substitute only the declared member and recompute downstream calibration or mixing fitted from its outputs using only that fold's permitted fit data. Preserve any inner cross-fitting the original rule requires. Stored validation predictions alone cannot reconstruct fit-side state or establish that the replacement reaches the scored output. If the new member changes another member's inputs, fit that dependent member again.
+
+The adapter matches training/inference bytes and the protocol (including ordered fit/score rows and seeds), then checks the disabled rule on every scored fold against the saved control. The default reproduction tolerance is exact; specify `--control-atol` only for a justified numerical difference. For accuracy it also checks the raw control probabilities. Reproduction checks the disabled rule and row alignment. To verify an active change, perturb the exact statistic at its consumer and check the fitted state or final score-path predictions. A check on `train_prediction_` says nothing about a clip scale that reads `model.predict(x_fit)` instead. Neither a changed row count nor reproduced control proves that an arbitrary hook uses the intended input.
+
+The result is a fresh development score for `runs/composed/oof.csv`. Keep `recipe.json` (the rule and the two recipe hashes) plus sealed `recomposition.json` (the exact model run seals, fold checks, and separate original training costs). Recomposition itself adds zero adapter fits. Count new member training with `cost --run runs/added-member`; the control's original cost is provenance, not a new charge. This path does not attach a managed training receipt or produce a deliverable frozen model. A shortlisted recipe needs the same composed prediction path for inference before it can be frozen or submitted.
+
+If the returned evaluator differs from the pinned comparator, run the saved `evaluate_predictions.py` directly on the **new** OOF and its sealed truth snapshot. Copy the reference result's metric, split ID, column names, score kind and custom metric options. For a pinned default-column RMSE proxy:
+
+```sh
+$PY "$PINNED_EVALUATOR" --truth runs/composed/truth.csv --predictions runs/composed/oof.csv \
+  --stage development --metric rmse --split-id "$REFERENCE_SPLIT_ID" \
+  --score-kind proxy --case-profile --output-dir runs/composed-pinned
+```
+
+Check the result with `compare_prediction_results.py` against the reference before interpreting the gain. Archive the matching result with the new composition recipe and a boundary citation to both sealed fits and the actual composition. The adapter cannot certify arbitrary code's information flow.
+
 ## Freeze the Submission Schema and Target Scale
 
 Internal evaluation columns and target units need not match the official CSV. At `freeze`, declare `--submission-column` when the official target name differs, and `--inverse-transform` when model predictions require a target inverse. Defaults preserve the protocol prediction column and use `identity`. Supported regression inverses are `exp` for a target trained as `log(y)` and `expm1` for `log1p(y)`. Choose from the actual preprocessing/model output contract; an estimator that already returns original units needs `identity`. Do not infer units from plausible-looking values or apply the inverse twice.
@@ -161,6 +208,27 @@ Read `submission_path` and `submission_hash` from `delivery.json` or the returne
 For a proposed tabular successor, pass `--archive` and `--proposal-id`. Before importing candidate code, the adapter validates the open proposal and saves its exact hash and archive prefix in `execution.json`. `candidate_archive.py record` verifies this receipt, inputs, recipe, sealed files and fit costs. A managed run trained without this binding cannot later fulfill a newly written proposal. Initial baselines and standalone legacy use can run without a proposal and are marked `unregistered`; legacy results without execution evidence remain readable without a claim about proposal timing.
 
 An identical request automatically reuses a verified completed sibling run when only `--output-dir` changes or a completed output is requested again. Identity includes exact source/data/protocol bytes, seeds, inference metadata, Python/packages, adapter and evaluator. The copy retains the original seal and `execution_id`; the returned receipt says `new_fit_calls: 0`. It cannot acquire a later proposal identity. Changed scoring may reuse predictions by reevaluating them, but does not silently reuse an old scoring contract through training.
+
+### Count and Bind Paired Fits Before Launch
+
+Before a bounded stage, count fit calls from the protocol files for the planned new executions. List each execution once; a matched cached control is not a new execution. The estimate counts one adapter call per actual fold. For example, two five-fold protocols require ten calls, regardless of how many times a prior procedure called `fit`:
+
+```sh
+$PY "$S/tabular_training.py" plan-cost --protocol repartition-a.json --protocol repartition-b.json \
+  --expected-fit-calls 10
+```
+
+This command only reads protocol JSON. A mismatch fails before launch. Pass the per-execution count to `train --expected-fit-calls` to check the actual protocol used. Explicit retries and estimator fits hidden inside candidate code are outside this estimate; use the fit journal for actual costs.
+
+To run a slot in a [frozen paired plan](local-evaluation.md#freeze-a-paired-eligibility-rule), copy that exact protocol's `protocol_sha256` from `plan-cost` into the run entry before archiving the plan. One managed training call is one repetition. The slot's `seeds` may be `[]` when the exact protocol already binds all folds and their seeds, or the list of unique estimator seeds in protocol order. Pass its IDs when launching:
+
+```sh
+$PY "$S/tabular_training.py" train --data training.csv --protocol repartition-a.json \
+  --candidate candidate.py --output-dir runs/paired-a --expected-fit-calls 5 \
+  --measurement-archive ARCHIVE --measurement-plan-id paired-gate --measurement-run-id round-a
+```
+
+The adapter checks the frozen slot, exact protocol bytes and executed recipe identity before importing the candidate. Record the sealed result with `candidate_archive.py record --configuration runs/paired-a/recipe.json --result runs/paired-a/evaluation/result.json` and the other usual fields, including a reuse reason where needed. The archive checks the completed matching comparison. This path uses the trainer's current scorer and recipe identity; keep matched cached controls whose evidence belongs to that same contract.
 
 When installed scorer code has changed but a development comparison must retain its existing contract, use the original run's sealed OOF with the exact saved scorer that produced a valid reference result:
 

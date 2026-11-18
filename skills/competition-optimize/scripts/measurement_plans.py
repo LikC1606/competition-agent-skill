@@ -1,15 +1,16 @@
 """Freeze a paired repeatability experiment before its result files exist.
 
-Plans live in the candidate JSONL archive. A plan names two archived source/recipe
-identities, one complete comparison and a finite set of paired run slots. Later
-results must carry the plan and run identities in their evaluation metadata.
-This module tracks completion and explicit stops; the task's declared decision
-rule remains human or adapter interpreted and never changes the archive's
-first-observation ranking.
+Plans live in the candidate JSONL archive. They bind two archived recipes, a
+primary comparison and a finite set of paired runs. Results carry plan and run
+identities. Eligibility plans evaluate explicit gates on the paired observations;
+historical prose rules remain readable without certifying eligibility.
 """
 
 from __future__ import annotations
 
+import math
+import operator
+from statistics import mean
 from typing import Any
 
 from candidate_evidence import (
@@ -19,6 +20,9 @@ from candidate_evidence import (
 from evidence_files import EvidenceReads, verify_artifacts, verify_result
 
 
+OPERATORS = {">": operator.gt, ">=": operator.ge, "<": operator.lt, "<=": operator.le}
+
+
 def _text(value: Any, name: str) -> str:
     result = nonempty_text(value, name)
     if len(result) > 128:
@@ -26,13 +30,15 @@ def _text(value: Any, name: str) -> str:
     return result
 
 
-def _runs(value: Any) -> list[dict[str, Any]]:
+def _runs(value: Any, *, eligibility: bool = False) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not value:
         raise ArchiveFailure("invalid_measurement_plan", "runs must be a nonempty list")
     seen: set[str] = set()
     runs = []
     for item in value:
-        if not isinstance(item, dict) or set(item) != {"run_id", "seeds", "repetitions"}:
+        required = {"run_id", "seeds", "repetitions"}
+        optional = {"protocol_sha256"} | ({"comparison", "leader_result"} if eligibility else set())
+        if not isinstance(item, dict) or not required <= set(item) <= required | optional:
             raise ArchiveFailure("invalid_measurement_plan", "Each run needs run_id, seeds and repetitions")
         run_id = _text(item["run_id"], "run_id")
         seeds = item["seeds"]
@@ -43,9 +49,41 @@ def _runs(value: Any) -> list[dict[str, Any]]:
                 or len({(type(seed).__name__, seed) for seed in seeds}) != len(seeds)
                 or type(item["repetitions"]) is not int or item["repetitions"] < 1):
             raise ArchiveFailure("invalid_measurement_plan", "Runs require unique IDs/seeds and positive repetitions")
+        if "protocol_sha256" in item:
+            digest = item["protocol_sha256"]
+            if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                raise ArchiveFailure("invalid_measurement_plan", "protocol_sha256 must be a lowercase SHA-256 digest")
         seen.add(run_id)
-        runs.append({"run_id": run_id, "seeds": seeds, "repetitions": item["repetitions"]})
+        runs.append(item)
     return runs
+
+
+def _rule_requirements(rule: Any, runs: list[dict[str, Any]], *, eligibility: bool) -> None:
+    if not eligibility and isinstance(rule, str) and rule.strip():
+        return
+    if (not isinstance(rule, dict) or set(rule) != {"requirements"}
+            or not isinstance(rule["requirements"], list) or not rule["requirements"]):
+        raise ArchiveFailure("invalid_measurement_plan", "Freeze all hard conditions as decision_rule.requirements")
+    for requirement in rule["requirements"]:
+        if (not isinstance(requirement, dict) or set(requirement) != {"statistic", "operator", "threshold"}
+                or requirement["statistic"] not in ("wins", "mean_improvement")
+                or requirement["operator"] not in (">", ">=", "<", "<=")
+                or type(requirement["threshold"]) not in (int, float)
+                or (type(requirement["threshold"]) is float and not math.isfinite(requirement["threshold"]))):
+            raise ArchiveFailure("invalid_measurement_plan", "Each condition needs a supported statistic, operator and finite threshold")
+        if requirement["statistic"] == "wins" and (type(requirement["threshold"]) is not int
+                                                   or not 0 <= requirement["threshold"] <= len(runs)):
+            raise ArchiveFailure("invalid_measurement_plan", "A wins threshold must be an integer within the frozen run count")
+
+
+def eligibility_signature(plan: dict[str, Any], candidates: dict[str, dict[str, Any]]) -> str:
+    identities = []
+    for field in ("leader_candidate", "challenger_candidate"):
+        entry = candidates.get(_text(plan.get(field), field))
+        if entry is None:
+            raise ArchiveFailure("invalid_measurement_plan", "Plan implementations must already be archived")
+        identities.append(implementation_identity(entry)["fingerprint"])
+    return sha256(canonical({"kind": "eligibility", "comparison": plan.get("comparison"), "pair": identities}))
 
 
 def validate_plan(plan: dict[str, Any], records: list[dict[str, Any]]) -> None:
@@ -54,9 +92,9 @@ def validate_plan(plan: dict[str, Any], records: list[dict[str, Any]]) -> None:
     comparison = plan.get("comparison")
     if not isinstance(comparison, dict):
         raise ArchiveFailure("invalid_measurement_plan", "comparison must be the complete frozen contract")
-    if not isinstance(plan.get("decision_rule"), str) or not plan["decision_rule"].strip():
-        raise ArchiveFailure("invalid_measurement_plan", "decision_rule must describe the task-specific paired decision")
-    _runs(plan.get("runs"))
+    eligibility = plan.get("witness_candidate") is None
+    runs = _runs(plan.get("runs"), eligibility=eligibility)
+    _rule_requirements(plan.get("decision_rule"), runs, eligibility=eligibility)
     if any(entry["event"] == "measurement_plan" and entry["plan_id"] == plan_id for entry in records):
         raise ArchiveFailure("duplicate_measurement_plan", "Measurement plan ID already exists")
     if any(entry["event"] == "measurement_plan" and entry["conflict_signature"] == signature
@@ -67,6 +105,38 @@ def validate_plan(plan: dict[str, Any], records: list[dict[str, Any]]) -> None:
     challenger_id = _text(plan.get("challenger_candidate"), "challenger_candidate")
     if leader_id not in candidates or challenger_id not in candidates:
         raise ArchiveFailure("invalid_measurement_plan", "Plan implementations must already be archived")
+    if eligibility:
+        leader, challenger = candidates[leader_id], candidates[challenger_id]
+        leader_identity = implementation_identity(leader)
+        challenger_identity = implementation_identity(challenger)
+        if (leader_identity["fingerprint"] == challenger_identity["fingerprint"]
+                or signature != eligibility_signature(plan, candidates)
+                or any(entry["comparison"] != comparison or not observed_snapshot(entry, identity)
+                       for entry, identity in ((leader, leader_identity), (challenger, challenger_identity)))):
+            raise ArchiveFailure("invalid_measurement_plan", "Eligibility requires distinct scored development recipes under the primary comparison")
+        controls, evaluators = set(), set()
+        for run in runs:
+            paired = run.get("comparison", comparison)
+            variant = {"config_hash", "workload_hash", "evaluator_hash"}
+            if (not isinstance(paired, dict) or paired.keys() != comparison.keys()
+                    or any(paired[key] != comparison[key] for key in comparison.keys() - variant)
+                    or not isinstance(paired.get("evaluator_hash"), str) or not paired["evaluator_hash"]
+                    or not isinstance(paired.get("workload_hash"), str) or not paired["workload_hash"]):
+                raise ArchiveFailure("invalid_measurement_plan", "Each run needs an exact matched comparison with the same scoring, stage and runtime")
+            evaluators.add(paired["evaluator_hash"])
+            if len(evaluators) > 1:
+                raise ArchiveFailure("invalid_measurement_plan", "All paired runs must freeze the same evaluator")
+            if "leader_result" in run:
+                cached = candidates.get(_text(run["leader_result"], "leader_result"))
+                identity = implementation_identity(cached) if cached is not None else None
+                if (identity is None or identity["fingerprint"] != leader_identity["fingerprint"]
+                        or cached["comparison"] != paired or not observed_snapshot(cached, identity)
+                        or canonical(cached["result"].get("seeds", [])) != canonical(run["seeds"])
+                        or cached["result"].get("repetitions", 1) != run["repetitions"]
+                        or cached["result"]["result_sha256"] in controls):
+                    raise ArchiveFailure("invalid_measurement_plan", "Cached leader result must be distinct and match the exact run and recipe")
+                controls.add(cached["result"]["result_sha256"])
+        return
     view = ComparisonEvidence(
         records, eligible=lambda entry: observed_snapshot(
             entry, implementation_identity(entry))).for_candidate(leader_id)
@@ -99,15 +169,18 @@ def validate_candidate(candidate: dict[str, Any], records: list[dict[str, Any]],
         raise ArchiveFailure("closed_measurement_plan", "The plan already has a recorded decision or stop")
     run = next((item for item in plan["runs"] if item["run_id"] == result.get("measurement_run_id")), None)
     candidates = candidates if candidates is not None else candidate_index(records)
-    planned = {implementation_identity(candidates[plan[name]])["fingerprint"]
-               for name in ("leader_candidate", "challenger_candidate")}
+    leader, challenger = (implementation_identity(candidates[plan[name]])["fingerprint"]
+                          for name in ("leader_candidate", "challenger_candidate"))
     identity = implementation_identity(candidate)["fingerprint"]
-    if (run is None or candidate["role"] != "development" or candidate["comparison"] != plan["comparison"]
-            or identity not in planned or not isinstance(result.get("seeds"), list)
+    if (run is None or candidate["role"] != "development"
+            or candidate["comparison"] != run.get("comparison", plan["comparison"])
+            or identity not in {leader, challenger} or not isinstance(result.get("seeds"), list)
             or canonical(result["seeds"]) != canonical(run["seeds"])
             or type(result.get("repetitions")) is not int
             or result["repetitions"] != run["repetitions"]):
         raise ArchiveFailure("unplanned_measurement", "Result differs from the frozen plan's run, recipe or comparison")
+    if "leader_result" in run and identity == leader:
+        raise ArchiveFailure("duplicate_measurement_slot", "The plan already binds a cached leader result for this run")
     if observed_snapshot(candidate, implementation_identity(candidate)):
         slot = (plan_id, run["run_id"], identity)
         if filled_slots is not None:
@@ -123,6 +196,31 @@ def validate_candidate(candidate: dict[str, Any], records: list[dict[str, Any]],
             raise ArchiveFailure("duplicate_measurement_slot", "A successful planned slot is already recorded")
         return slot
     return None
+
+
+def _rule_result(rule: Any, runs: list[dict[str, Any]], *, direction: str, complete: bool) -> dict[str, Any]:
+    if isinstance(rule, str):
+        return {"state": "unverifiable"}
+    if not complete:
+        return {"state": "pending"}
+    sign = -1 if direction == "minimize" else 1
+    improvements = [sign * (item["challenger"]["value"] - item["leader"]["value"]) for item in runs]
+    values = {"wins": sum(gain > 0 for gain in improvements), "mean_improvement": None}
+    if all(type(gain) is int or math.isfinite(gain) for gain in improvements):
+        values["mean_improvement"] = mean(improvements)
+    checks = []
+    for requirement in rule["requirements"]:
+        value = values[requirement["statistic"]]
+        passed = None if value is None else OPERATORS[requirement["operator"]](value, requirement["threshold"])
+        checks.append({**requirement, "value": value, "passed": passed})
+    state = ("unresolved" if any(item["passed"] is None for item in checks) else
+             "passed" if all(item["passed"] for item in checks) else "failed")
+    return {"state": state, "requirements": checks}
+
+
+def _observation(entry: dict[str, Any]) -> dict[str, Any]:
+    return {"candidate_id": entry["candidate_id"], "result_sha256": entry["result"]["result_sha256"],
+            "value": entry["objective"]["value"]}
 
 
 def _status(plan: dict[str, Any], measurements: list[dict[str, Any]],
@@ -146,23 +244,30 @@ def _status(plan: dict[str, Any], measurements: list[dict[str, Any]],
                          "valid": entry["valid"], "observed": observed,
                          "value": entry["objective"]["value"] if observed else None})
         if observed:
-            observations[key] = {"candidate_id": entry["candidate_id"],
-                                 "result_sha256": entry["result"]["result_sha256"],
-                                 "value": entry["objective"]["value"]}
+            observations[key] = _observation(entry)
     runs = []
     for run in plan["runs"]:
         run_id = run["run_id"]
-        runs.append({**run, "leader": observations.get((run_id, "leader_candidate")),
+        leader = observations.get((run_id, "leader_candidate"))
+        if "leader_result" in run:
+            cached = candidates[run["leader_result"]]
+            if observed_snapshot(cached, implementation_identity(cached)):
+                leader = _observation(cached)
+        runs.append({**run, "leader": leader,
                      "challenger": observations.get((run_id, "challenger_candidate")),
                      "leader_attempts": attempts.get((run_id, "leader_candidate"), 0),
                      "challenger_attempts": attempts.get((run_id, "challenger_candidate"), 0)})
     complete = all(item["leader"] is not None and item["challenger"] is not None for item in runs)
+    rule_result = _rule_result(plan["decision_rule"], runs, direction=plan["comparison"]["direction"], complete=complete)
+    if any("leader_result" in item and item["leader"] is None for item in runs):
+        rule_result = {"state": "unresolved", "reason": "Frozen cached leader result was invalidated"}
     return {"plan_id": plan["plan_id"], "conflict_signature": plan["conflict_signature"],
             "comparison": plan["comparison"], "leader_candidate": plan["leader_candidate"],
             "challenger_candidate": plan["challenger_candidate"],
             "witness_candidate": plan["witness_candidate"], "decision_rule": plan["decision_rule"],
-            "runs": runs, "attempts": evidence, "complete": complete,
-            "scope": "Only successful, valid, scored paired results fulfill slots. Interpret the predeclared rule; do not auto-promote."}
+            "runs": runs, "attempts": evidence, "complete": complete, "rule_result": rule_result,
+            "scope": "Only successful, valid, scored paired results fulfill slots. "
+                     "A passed rule establishes eligibility within this plan; it does not promote or independently confirm a recipe."}
 
 
 def status(plan: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -181,8 +286,13 @@ def status(plan: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, Any
 def evidence_sha256(view: dict[str, Any]) -> str:
     pairs = [{"run_id": item["run_id"], "leader": item["leader"], "challenger": item["challenger"]}
              for item in view["runs"]]
-    return sha256(canonical({"plan_id": view["plan_id"],
-                             "conflict_signature": view["conflict_signature"], "pairs": pairs}))
+    evidence = {"plan_id": view["plan_id"], "conflict_signature": view["conflict_signature"], "pairs": pairs}
+    if isinstance(view["decision_rule"], dict):
+        evidence.update(decision_rule=view["decision_rule"], comparison=view["comparison"],
+                        schedule=[{key: value for key, value in item.items()
+                                   if key not in {"leader", "challenger", "leader_attempts", "challenger_attempts"}}
+                                  for item in view["runs"]])
+    return sha256(canonical(evidence))
 
 
 def validate_decision(decision: dict[str, Any], records: list[dict[str, Any]]) -> None:
@@ -202,6 +312,12 @@ def validate_decision(decision: dict[str, Any], records: list[dict[str, Any]]) -
         raise ArchiveFailure("incomplete_measurement_plan", "Every frozen paired run must be validly measured before a decision")
     if decision.get("evidence_sha256") != evidence_sha256(view):
         raise ArchiveFailure("measurement_evidence_changed", "Decision does not cite the completed paired results")
+    outcome = {"passed": "qualified", "failed": "not_qualified"}.get(view["rule_result"]["state"])
+    if isinstance(view["decision_rule"], dict) and (outcome is None or decision.get("outcome") != outcome):
+        raise ArchiveFailure("measurement_rule_unmet", "Decision outcome must match every frozen requirement; "
+                             "stop unresolved when any required criterion cannot be evaluated")
+    if isinstance(view["decision_rule"], str) and "outcome" in decision:
+        raise ArchiveFailure("measurement_rule_unmet", "A prose rule cannot establish machine-verified eligibility")
 
 
 def stop_evidence_sha256(view: dict[str, Any]) -> str:
@@ -229,11 +345,19 @@ def validate_stop(stop: dict[str, Any], records: list[dict[str, Any]]) -> None:
 def verify_stop_evidence(view: dict[str, Any], records: list[dict[str, Any]], *,
                          reads: EvidenceReads | None = None) -> None:
     candidates = candidate_index(records)
-    candidate_ids = {view[name] for name in ("leader_candidate", "challenger_candidate", "witness_candidate")}
+    candidate_ids = plan_candidate_ids(view)
     candidate_ids.update(item["candidate_id"] for item in view["attempts"])
     for candidate_id in sorted(candidate_ids):
         verify_result(candidates[candidate_id], reads=reads)
         verify_artifacts(candidates[candidate_id], reads=reads)
+
+
+def plan_candidate_ids(plan: dict[str, Any]) -> set[str]:
+    ids = {plan["leader_candidate"], plan["challenger_candidate"]}
+    if plan["witness_candidate"] is not None:
+        ids.add(plan["witness_candidate"])
+    ids.update(item["leader_result"] for item in plan["runs"] if "leader_result" in item)
+    return ids
 
 
 def first_pending(records: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -276,6 +400,9 @@ def latest_stop(records: list[dict[str, Any]],
     plan = plans[stop["plan_id"]]
     view = status(plan, records)
     if stop_evidence_sha256(view) != stop["evidence_sha256"]:
+        candidates = candidate_index(records)
+        if _evidence_invalidated(view, candidates):
+            return None
         raise ArchiveFailure("measurement_evidence_changed", "Stopped plan no longer matches its attempts")
     verify_stop_evidence(view, records, reads=reads)
     return {"plan_id": plan["plan_id"], "state": "stopped_unresolved",
@@ -305,9 +432,29 @@ def latest_decision(records: list[dict[str, Any]],
         return None
     plan = plans[decision["plan_id"]]
     view = status(plan, records)
-    if not view["complete"] or evidence_sha256(view) != decision["evidence_sha256"]:
-        raise ArchiveFailure("measurement_evidence_changed", "Archived paired decision no longer matches its results")
     candidates = candidate_index(records)
+    if not view["complete"] or evidence_sha256(view) != decision["evidence_sha256"]:
+        if _evidence_invalidated(view, candidates):
+            return None
+        raise ArchiveFailure("measurement_evidence_changed", "Archived paired decision no longer matches its results")
+    verify_decision_evidence(view, candidates, reads=reads)
+    return {"plan_id": plan["plan_id"], "comparison_key": sha256(canonical(plan["comparison"])),
+            "comparison_matches_active": plan["comparison"] == active_comparison,
+            "leader_candidate": plan["leader_candidate"], "challenger_candidate": plan["challenger_candidate"],
+            "paired_runs": len(view["runs"]), "decision_rule": plan["decision_rule"], "rule_result": view["rule_result"],
+            "outcome": decision.get("outcome"), "conclusion": decision["conclusion"], "reason": decision["reason"],
+            "next_action": decision["next_action"], "evidence_sha256": decision["evidence_sha256"],
+            "scope": "Apply this result only within its comparison. It does not promote or confirm a recipe; "
+                     "retrieve exact paired evidence with measure-status."}
+
+
+def _evidence_invalidated(view: dict[str, Any], candidates: dict[str, dict[str, Any]]) -> bool:
+    ids = plan_candidate_ids(view) | {item["candidate_id"] for item in view["attempts"]}
+    return any("score_invalidation" in candidates[candidate_id] for candidate_id in ids)
+
+
+def verify_decision_evidence(view: dict[str, Any], candidates: dict[str, dict[str, Any]], *,
+                             reads: EvidenceReads | None = None) -> None:
     for run in view["runs"]:
         for name in ("leader", "challenger"):
             entry = candidates[run[name]["candidate_id"]]
@@ -315,11 +462,25 @@ def latest_decision(records: list[dict[str, Any]],
             # source/result bytes before carrying the conclusion across turns.
             verify_result(entry, reads=reads)
             verify_artifacts(entry, reads=reads)
-    return {"plan_id": plan["plan_id"], "comparison_key": sha256(canonical(plan["comparison"])),
-            "comparison_matches_active": plan["comparison"] == active_comparison,
-            "leader_candidate": plan["leader_candidate"], "challenger_candidate": plan["challenger_candidate"],
-            "paired_runs": len(view["runs"]), "decision_rule": plan["decision_rule"],
-            "conclusion": decision["conclusion"], "reason": decision["reason"],
-            "next_action": decision["next_action"], "evidence_sha256": decision["evidence_sha256"],
-            "scope": "Agent interpretation of prespecified paired results, not automatic promotion. "
-                     "If the comparison differs, revalidate before applying it; retrieve exact runs with measure-status."}
+
+
+def validate_selection(candidate: dict[str, Any], records: list[dict[str, Any]], *,
+                       reads: EvidenceReads | None = None) -> None:
+    """Require an evidenced pass from any prospective gate for this choice."""
+    plans = [entry for entry in records if entry["event"] == "measurement_plan"
+             and entry["witness_candidate"] is None and entry["comparison"] == candidate["comparison"]]
+    if not plans:
+        return
+    candidates = candidate_index(records)
+    identity = implementation_identity(candidate)["fingerprint"]
+    for plan in plans:
+        challenger = candidates[plan["challenger_candidate"]]
+        if implementation_identity(challenger)["fingerprint"] != identity:
+            continue
+        view = status(plan, records)
+        if (view["rule_result"]["state"] != "passed" or view["decision"] is None
+                or view["decision"].get("outcome") != "qualified"
+                or not observed_snapshot(challenger, implementation_identity(challenger))
+                or evidence_sha256(view) != view["decision"]["evidence_sha256"]):
+            raise ArchiveFailure("unmet_measurement_gate", f"Selection requires a verified pass from plan {plan['plan_id']}")
+        verify_decision_evidence(view, candidates, reads=reads)

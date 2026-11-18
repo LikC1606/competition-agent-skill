@@ -64,6 +64,8 @@ class IndependentConstructionTests(unittest.TestCase):
             args += ["--configuration", str(configuration)]
         if executed:
             args += ["--result", str(result)]
+            if scope == "prediction_csv":
+                args += ["--prediction-boundary", "Synthetic fixture with a fixed development boundary."]
         else:
             args += ["--valid", "--objective-value", str(score), "--objective-direction", "maximize",
                      "--objective-kind", "official_metric", "--objective-name", "profit",

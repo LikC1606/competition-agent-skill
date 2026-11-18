@@ -69,6 +69,23 @@ Each subsequent adapter result carries `evaluation.measurement_plan_id`, `measur
 
 If the frozen protocol cannot be completed, use `candidate_archive.py measure-stop --archive ARCHIVE --plan-id ID --reason TEXT --next-action TEXT`. Describe the failure or unavailable prerequisite and a concrete repair or alternative. This appends `measurement_stop`, automatically binding the frozen protocol and every archived attempt, including failed and invalid runs. Writing the stop and carrying it in a later handoff recheck the cited source/result bytes. `measure-status` reports `state: stopped_unresolved`, preserves successful slots, failed attempts and the actual `complete` flag, and records no paired conclusion. A stopped plan is no longer scheduled and rejects later tagged results, decisions and repeated stops; the same conflict cannot acquire a replacement plan. Fixing its source/recipe creates ordinary development evidence rather than filling the old slot. Execution health still requires a usable scored observation after a failure. The handoff's `measurement_stop` carries the reason, next action, remaining slots, attempt counts and comparison scope across restart. Only a newly archived stop matching the active comparison may replace the receipt's next action; historical stops cannot repeatedly overwrite later plans. Stopping a measurement plan does not stop the campaign or change candidate ranking.
 
+### Freeze a Measurement Plan for Eligibility
+
+Use the same `measure-plan` command when a particular measured challenger must pass a task's adoption gate against a particular incumbent, even without a repeat conflict. Omit `conflict_signature` and `witness_candidate`. Set `leader_candidate` and `challenger_candidate` to those existing development IDs, and `comparison` to their exact primary comparison. Both must have successful valid measurements. Freeze the actual run entries and put every hard condition in `decision_rule.requirements`. Example rule for a hypothetical task:
+
+```json
+{
+  "requirements": [
+    {"statistic": "wins", "operator": ">=", "threshold": 4},
+    {"statistic": "mean_improvement", "operator": ">", "threshold": 0.01}
+  ]
+}
+```
+
+`wins` counts strictly better challenger scores (ties are not wins); `mean_improvement` averages one signed difference per matched run, positive when the challenger is better. Use `>`, `>=`, `<` or `<=`. A run may add its own exact `comparison` for an auxiliary workload or configuration under the same score model, metric, direction, environment and stage. All paired runs use one frozen evaluator, which can differ from the primary evaluator only when declared in their comparisons. The primary score still uses its own contract. If there is an already archived matched control, set `leader_result` to that candidate ID; it must match the frozen run's comparison and recipe and cannot be reused to fill multiple slots in one plan. For managed tabular training, also freeze `protocol_sha256` from [the fit-count preflight](tabular-training.md#count-and-bind-paired-fits-before-launch). The digest binds the exact fit rows and estimator seed schedule.
+
+`measure-status` reports `rule_result` with each predicate's value and pass/fail once the pairs are complete. Record `outcome: "qualified"` only for a pass and `outcome: "not_qualified"` for a failed rule, alongside the normal conclusion, reason and next action. If the rule cannot be evaluated, use `measure-stop`; do not replace a hard condition after looking at the outcomes. Prose-only repeat conflict decisions remain descriptive and show `rule_result.state: unverifiable`. A qualified development gate neither changes raw ranking nor confirms a delivery artifact.
+
 ## Retrieve Measured Resource Tradeoffs
 
 If the fixed adapter provides an explicit resource_profile, brief.resource_tradeoffs retrieves observed quality/resource endpoints and the normal candidates mapping includes their checked source/recipe and result pointers. The driver injects this view into the next invocation. Inspect the measurement protocol and both implementations to choose a useful parent, complete an alternative mechanism or construct a multi-parent successor. Evaluate that actual successor; quality and speed gains do not automatically combine. A field shortened by packet bounding is a retrieval hint: recover its original source/result before acting.
@@ -90,6 +107,8 @@ Analysis of existing outputs, such as [cached inference vote replay](inference-v
 `brief.diagnostic_evidence` retrieves the latest two diagnostics whose first control matches the active complete comparison, with available/omitted counts and the control card. This is a retrieval window, not an experiment allowance. Same-contract cards expose `role` and measured objective, with no gain against the best; foreign-contract diagnostics expose verified identity/pointers in `pending_references`, without their objective or original feedback. Proposal ownership still follows the first parent's own comparison. For a transfer into the current contract, list its ordinary control first and use the foreign diagnostic as a secondary parent or feedback reference.
 
 Diagnostics do not enter best/route ranking, candidate stagnation, comparison singleton signals, or close an ordinary `review_frontier` opportunity. Their prospective outcomes remain recallable in `trial_history`, carrying `outcome_role` and evidence roles. Use the observation to choose and implement a real successor. If a diagnostic implementation becomes a contender, establish the task's complete validity/comparison evidence and explicitly record it as development; retain a reuse reason when reusing a tested snapshot/result instead of rerunning an unnecessary experiment.
+
+With an unverified fit boundary or a rule chosen on the scored labels, mark the diagnostic `--descriptive`. This is also the default for unmanaged prediction diagnostics without a boundary citation. `diagnostic_scope: descriptive` preserves the measured value but suppresses its asserted hypothesis outcome in the handoff; a new test must supply decision evidence. Such diagnostics cannot supply `--learning`. Historical reports that relied on them remain in the exact trace; current learning retrieval and new `learning_from` references exclude them. A successor can revise the old report using fresh evidence.
 
 ## Record One Actionable Proposal
 
@@ -125,6 +144,8 @@ python <skill-dir>/scripts/candidate_archive.py propose `
 
 The proposal is now `pending`. Create an isolated candidate directory, implement the change, check duplicates, and execute the adapter now. Copy the needed parent components or build a standalone replacement behind the same interface; preserve the parent snapshot. The tool does not run embedded commands, generate a method or impose/renew a budget. A missing code snapshot should be reconciled from the actual executed artifacts, rather than manufactured for the record.
 
+If a check disproves the premise or materially changes the intervention, record the check without claiming the original intervention was measured. Preserve the log and cost of any interrupted attempt. When no adapter result can be recorded, stop the original with `candidate_archive.py stop --archive ARCHIVE --proposal-id ID --reason TEXT`, then register the replacement with its own change and prediction before fitting. Return its `next_proposal_id` if it remains pending. If a bound run already produced a result, keep its launch binding and record what ran with a [fidelity review](#review-the-actual-implementation); do not stop its linked proposal first or try to relink it afterward.
+
 For the [tabular adapter](tabular-training.md#proposal-binding-reuse-and-interrupted-costs), launch with `train --archive ARCHIVE --proposal-id ID` to bind the existing proposal before candidate import/fitting. Recording its result verifies the launch and carries measured costs. An unregistered managed run cannot retrospectively fulfill a proposal. Other adapters and historical results lack this execution-order proof unless they provide equivalent evidence; proposal-before-record order alone does not establish proposal-before-fit order.
 
 ## Declare an Independent Construction
@@ -159,7 +180,7 @@ Different fingerprints alone do not prove a substantive algorithm change. The ag
 
 ## Review the Actual Implementation
 
-If a successor may have omitted or substituted the proposed mechanism, inspect its executed source against the original proposal. Record fidelity independently of `prediction_status`: the latter describes whether the expected observation occurred, while fidelity describes which mechanism reached the code. An unexpected low score does not establish that an absent component failed; a strong alternative remains a measured candidate even if it differs from the proposal. Decide whether a missing component still merits implementation rather than automatically retrying it.
+If a successor may have omitted or substituted the proposed mechanism, inspect its executed source against the original proposal. The score and feedback describe what ran; `prediction_status` answers the original proposal. An explicit `partial`, `no`, or `unknown` fidelity review requires `--prediction-status unresolved`, even when the actual candidate scored better or worse. Decide whether the missing component still merits a test rather than automatically retrying it.
 
 Pass `--implementation-review <run>/review.json` on the same `record` command that attaches the measured successor. The optional JSON input is:
 
@@ -179,7 +200,7 @@ Use the actual file and observation, not this example. `fidelity` accepts `yes`,
 
 Reviews require a proposal-linked, actually executed development or diagnostic snapshot, including failed executions. Manual scores, confirmation records and output-only artifacts cannot carry one. For prediction/generated-output tasks, citations must name the executed recipe/configuration snapshot, not the prediction file. For directly evaluated programs they must belong to the successor source/configuration artifacts. A parent file or unrelated workspace file is not evidence of the successor.
 
-`brief`, exact `trace`, and matched `trial_history` evidence retain `implementation_review` as an `agent_report`, with hashed code paths. Trial cards from other comparison contracts omit this prose and require revalidation. The bounded driver packet seals an included review with its required identities; shortened or changed reports do not count as delivered trials. Retrieve the full trace when necessary. Old records remain unchanged and absence means unknown, never implicit `yes`. The report does not change scores, validity, ranking, objective progress, promotion or stopping rules, and it proves neither causation nor semantic correctness.
+`brief`, exact `trace`, and matched `trial_history` evidence retain `implementation_review` as an `agent_report`, with hashed code paths. They leave the prediction unresolved when a recorded review does not establish fidelity, including on historical inconsistent records; the archive bytes stay unchanged. Trial cards from other comparison contracts omit this prose and require revalidation. The bounded driver packet seals an included review with its required identities; shortened or changed reports do not count as delivered trials. Absence of a review never certifies fidelity. The report preserves actual scores, validity and ranking. For a historical unreviewed mismatch, use a keyed correction with the exact original proposal and executed result; keep the measured score.
 
 ## Carry Conditional Learning into the Next Construction
 

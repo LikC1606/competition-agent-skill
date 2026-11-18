@@ -67,12 +67,33 @@ def nonempty_text(value: Any, field: str) -> str:
     return value.strip()
 
 
+def prediction_result(result: dict[str, Any]) -> bool:
+    return (result.get("candidate_scope") == "prediction_csv" or
+            result.get("candidate_scope") is None and
+            result.get("validity_scope") == "prediction_artifact_and_metric_inputs")
+
+
+def descriptive_diagnostic(entry: dict[str, Any]) -> bool:
+    if entry["role"] != "diagnostic":
+        return False
+    result = entry["result"]
+    return (entry.get("diagnostic_scope") == "descriptive" or
+            prediction_result(result) and "training_execution" not in result
+            and not entry.get("prediction_boundary"))
+
+
+def proposal_prediction_status(entry: dict[str, Any]) -> str | None:
+    """Scope the prediction verdict to the proposed mechanism, independently of score."""
+    review = entry.get("implementation_review")
+    if review is not None and review["fidelity"] != "yes":
+        return "unresolved"
+    return entry.get("prediction_status")
+
+
 def implementation_identity(entry: dict[str, Any]) -> dict[str, Any]:
     """Keep stochastic prediction bytes separate from the snapshotted recipe."""
     result, artifacts = entry["result"], entry["artifacts"]
-    prediction = (result.get("candidate_scope") == "prediction_csv" or
-                  result.get("candidate_scope") is None and
-                  result.get("validity_scope") == "prediction_artifact_and_metric_inputs")
+    prediction = prediction_result(result)
     generated = result.get("candidate_scope") == "generated_artifact"
     if (prediction or generated) and "configuration" in artifacts:
         scope = "training_pipeline" if prediction else "execution_pipeline"
@@ -95,7 +116,7 @@ def measurable(entry: dict[str, Any], *, include_diagnostics: bool = False) -> b
     objective, context = entry["objective"], entry["comparison"]
     required = ("evaluator_hash", "workload_hash", "score_model_hash", "stage", "objective_name")
     roles = DEVELOPMENT_ROLES if include_diagnostics else {"development"}
-    return (entry["valid"] and entry["role"] in roles
+    return (entry["valid"] and entry["role"] in roles and "score_invalidation" not in entry
             and objective.get("value") is not None and objective.get("direction") in DIRECTIONS
             and objective.get("kind") in {"proxy", "official_metric"}
             and all(isinstance(context.get(key), str) and context[key] for key in required))
@@ -305,7 +326,7 @@ def review_opportunities(scoped: list[dict[str, Any]], index: dict[str, dict[str
             opportunity["latest_successor"] = child
             if child["candidate_id"] in observed:
                 opportunity["measured_successors"].add(child_identity["fingerprint"])
-                if child.get("prediction_status") != "unresolved":
+                if proposal_prediction_status(child) != "unresolved":
                     opportunity["superseded"] = True
     return ({fingerprint: value for fingerprint, value in opportunities.items()
              if not value["superseded"]}, identities)

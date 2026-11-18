@@ -43,12 +43,19 @@ class CampaignArchiveTests(unittest.TestCase):
             stream.write(b'{"schema_version":1,"event":"candi')
         return self.path.read_bytes()[len(self.prefix):]
 
+    def test_out_of_turn_candidate_is_not_an_archive_correction(self) -> None:
+        self.record("foreign-append", 11)
+        raw = self.path.read_bytes()
+        with self.assertRaisesRegex(campaign_archive.CampaignError, "Only score invalidations"):
+            self.store.verified_score_invalidations(self.head.snapshot)
+        self.assertEqual(self.path.read_bytes(), raw)
+
     def assert_quarantined(self, received, suffix: bytes) -> Path:
         self.assertTrue(received.quarantined)
         self.assertEqual(received.snapshot, self.head.snapshot)
         self.assertEqual(received.evidence.records, self.head.evidence.records)
         self.assertEqual(received.appended_events, [])
-        self.assertEqual(received.delta, {key: 0 for key in self.head.evidence.counts})
+        self.assertEqual(received.delta, dict.fromkeys([*self.head.evidence.counts, "new_implementation_attempts"], 0))
         self.assertEqual(self.path.read_bytes(), self.prefix)
         journal = json.loads((self.directory / "archive-repair.json").read_text())
         tail = Path(journal["quarantine"])
@@ -171,7 +178,7 @@ class CampaignArchiveTests(unittest.TestCase):
         self.assertEqual(received.snapshot, self.head.snapshot)
         self.assertEqual(received.evidence.records, self.head.evidence.records)
         self.assertEqual(received.appended_events, [])
-        self.assertEqual(received.delta, {key: 0 for key in self.head.evidence.counts})
+        self.assertEqual(received.delta, dict.fromkeys([*self.head.evidence.counts, "new_implementation_attempts"], 0))
         self.assertFalse(received.quarantined)
         self.assertIsNone(received.quarantine_event)
         self.assertEqual(list(self.directory.iterdir()), [])
@@ -186,7 +193,7 @@ class CampaignArchiveTests(unittest.TestCase):
         self.assertEqual(received.appended_events, expected[1:])
         self.assertEqual(received.snapshot, {"size": len(current), "sha256": archive.sha256(current)})
         self.assertEqual(received.delta, {
-            "events": 2, "candidates": 1, "executed_implementations": 1,
+            "events": 2, "candidates": 1, "executed_implementations": 1, "new_implementation_attempts": 1,
             "evaluated_candidates": 1, "diagnostic_evaluations": 0,
             "measurable_candidates": 1, "proposals": 1, "pending_proposals": 1,
         })

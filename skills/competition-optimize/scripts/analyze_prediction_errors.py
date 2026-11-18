@@ -15,7 +15,8 @@ from typing import Any
 
 import evaluate_predictions as evaluator
 from compare_prediction_results import ComparisonFailure
-from prediction_evidence import EvidenceFailure, load_pair, read_categories
+from prediction_core import metric_preference
+from prediction_evidence import EvidenceFailure, PredictionPair, load_fold_receipt, load_pair, read_categories
 
 
 class AnalysisFailure(Exception):
@@ -60,6 +61,43 @@ def subset_scores(metric: str, labels: list[float], baseline: list[float], candi
             "unavailable_reason": None}
 
 
+def fold_diagnostics(pair: PredictionPair, folds: dict[str, tuple[set[str], set[str]]]) -> dict[str, Any]:
+    indexes = {sample_id: index for index, sample_id in enumerate(pair.sample_ids)}
+    producers = {sample_id: name for name, (_, ids) in folds.items() for sample_id in ids}
+    rows, boundary = [], []
+    counts = {"candidate": 0, "baseline": 0, "tie": 0, "unavailable": 0}
+    for name, (training, validation) in sorted(folds.items()):
+        held_out = sorted(indexes[i] for i in validation)
+        scores = subset_scores(pair.metric, [pair.labels[i] for i in held_out], [pair.baseline[i] for i in held_out],
+                               [pair.candidate[i] for i in held_out], pair.epsilon)
+        improvement = scores["objective_improvement"]
+        preference = "unavailable" if improvement is None else metric_preference(improvement, 0.0)
+        counts[preference] += 1
+        rows.append({"fold_id": name, "case_count": len(validation), "preference": preference, **scores})
+        # Other folds supplied the OOF residuals for these outer training rows.
+        residual_rows = training & producers.keys()
+        sources = sorted({producers[i] for i in residual_rows})
+        by_producer = {source: validation & folds[source][0] for source in sources}
+        boundary.append({"fold_id": name, "held_out_labels": len(validation),
+                         "training_rows_with_saved_oof": len(residual_rows),
+                         "held_out_labels_seen_by_residual_producers": len(set().union(*by_producer.values())),
+                         "held_out_labels_seen_by_producer_fold": {source: len(ids) for source, ids in by_producer.items()}})
+    gains = [row["objective_improvement"] for row in rows if row["objective_improvement"] is not None]
+    return {"metric": pair.metric, "direction": pair.comparison["direction"], "folds": rows,
+            "fold_preference_counts": counts,
+            "observed_objective_improvement_range": [min(gains), max(gains)] if gains else None,
+            "scope": "Observed differences in the original metric's units on matched saved validation folds. "
+                     "Positive improvement favors the candidate. Folds share training data; this is "
+                     "descriptive dispersion, not an uncertainty estimate or promotion rule.",
+            "pooled_oof_second_layer_boundary": {
+                "status": ("held_out_label_overlap" if any(row["held_out_labels_seen_by_residual_producers"]
+                                                           for row in boundary) else "no_recorded_label_overlap"),
+                "folds": boundary,
+                "scope": "Checks reusing pooled OOF predictions or residuals to fit a second layer on each "
+                         "outer training partition. Overlap does not invalidate original OOF scores. "
+                         "No recorded overlap does not certify upstream feature or selection lineage."}}
+
+
 def blend_directions(metric: str, labels: list[float], baseline: list[float],
                      candidate: list[float]) -> dict[str, Any]:
     """Check convex-loss endpoint directions without choosing or scoring weights."""
@@ -96,12 +134,63 @@ def blend_directions(metric: str, labels: list[float], baseline: list[float],
                      "evidence is supplied. Evaluate any constructed recipe, including rounding, separately."}
 
 
+def influence_diagnostics(metric: str, labels: list[float], baseline: list[float],
+                          candidate: list[float], sample_ids: list[str],
+                          max_removals: int = 5) -> dict[str, Any]:
+    """Find a smallest sign-changing deletion for a fixed pair, in either direction."""
+    if metric != "rmse":
+        return {"status": "unavailable", "reason": "unsupported_metric", "metric": metric}
+    if max_removals < 1:
+        raise AnalysisFailure("Influence max removals must be positive")
+    changes = []
+    for label, before, after in zip(labels, baseline, candidate):
+        target = Fraction(label)
+        changes.append((Fraction(after) - target) ** 2 - (Fraction(before) - target) ** 2)
+    total = sum(changes, Fraction(0))
+    direction = 1 if total > 0 else -1 if total < 0 else 0
+    limit = min(max_removals, len(labels) - 1)  # Never score an empty population.
+    report = {
+        "status": "available", "metric": metric,
+        "loss_direction": "candidate_worse" if direction > 0 else
+                          "candidate_better" if direction < 0 else "tied",
+        "max_removals": max_removals, "effective_max_removals": limit,
+        "minimum_removals_to_tie_or_reverse": None, "minimum_witness_ids": [],
+        "max_removal_loss_share": None, "max_removal_ids": [], "max_removal_scores": None,
+        "calculation": "exact_rational_of_parsed_floats",
+        "scope": "Adversarial deletion sensitivity of these fixed development predictions. "
+                 "No refitting, sampling uncertainty, minimum effect size, promotion rule or "
+                 "mechanism-family conclusion follows from this diagnostic."
+    }
+    if direction == 0:
+        return report
+    ordered = sorted(range(len(labels)), key=lambda i: (-direction * changes[i], sample_ids[i]))[:limit]
+    removed = Fraction(0)
+    for count, index in enumerate(ordered, 1):
+        removed += direction * changes[index]
+        if removed >= abs(total) and report["minimum_removals_to_tie_or_reverse"] is None:
+            report["minimum_removals_to_tie_or_reverse"] = count
+            report["minimum_witness_ids"] = [sample_ids[i] for i in ordered[:count]]
+    try:
+        report["max_removal_loss_share"] = float(removed / abs(total))
+    except OverflowError:
+        report["loss_share_unavailable_reason"] = "ratio_exceeds_float_range"
+    report["max_removal_ids"] = [sample_ids[i] for i in ordered]
+    excluded = set(ordered)
+    remaining = [i for i in range(len(labels)) if i not in excluded]
+    report["max_removal_scores"] = subset_scores(
+        metric, [labels[i] for i in remaining], [baseline[i] for i in remaining],
+        [candidate[i] for i in remaining], 1e-15)
+    return report
+
+
 def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any]:
     if (not 1 <= args.top_k <= 100 or args.max_groups < 1
             or not math.isfinite(args.error_tie_epsilon) or args.error_tie_epsilon < 0):
         raise AnalysisFailure("Top-k must be 1-100, max-groups positive, and error tie epsilon finite/non-negative")
     if bool(args.slices) != bool(args.slice_column):
         raise AnalysisFailure("Provide both --slices and at least one --slice-column, or neither")
+    if bool(args.baseline_fit) != bool(args.candidate_fit):
+        raise AnalysisFailure("Provide both --baseline-fit and --candidate-fit, or neither")
     columns = args.slice_column or []
     if len(set(columns)) != len(columns) or any(not column.strip() for column in columns):
         raise AnalysisFailure("Requested slice columns must be unique and non-empty")
@@ -116,6 +205,19 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
     if config["id_column"] in columns:
         raise AnalysisFailure("ID column must differ from slice columns")
     sample_ids, truth, before, after = pair.sample_ids, pair.labels, pair.baseline, pair.candidate
+    fold_report = None
+    fold_inputs, fold_hashes = {}, {}
+    if args.baseline_fit:
+        try:
+            matched, before_fit, before_hash = load_fold_receipt(args.baseline_fit, pair, "baseline")
+            other, after_fit, after_hash = load_fold_receipt(args.candidate_fit, pair, "candidate")
+        except EvidenceFailure as exc:
+            raise AnalysisFailure(str(exc)) from exc
+        if matched != other:
+            raise AnalysisFailure("Baseline and candidate fit receipts have different training or validation assignments")
+        fold_report = fold_diagnostics(pair, matched)
+        fold_inputs = {"baseline_fit": str(before_fit), "candidate_fit": str(after_fit)}
+        fold_hashes = {"baseline_fit": before_hash, "candidate_fit": after_hash}
     slices_raw = None
     slices: dict[str, dict[str, str]] = {}
     if args.slices:
@@ -126,6 +228,10 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
     after_shares = error_shares(after_errors, metric == "rmse") if after_errors is not None else None
     check_blend = getattr(args, "check_blend_direction", False)
     blend_report = blend_directions(metric, truth, before, after) if check_blend else None
+    check_influence = getattr(args, "check_influence", False)
+    influence_limit = getattr(args, "influence_max_removals", 5)
+    influence_report = influence_diagnostics(metric, truth, before, after, sample_ids,
+                                             influence_limit) if check_influence else None
     squared_error_scale = max(max(before_errors), max(after_errors)) if metric == "rmse" else None
     counts = {"baseline": 0, "candidate": 0, "tie": 0} if before_errors is not None else None
 
@@ -214,8 +320,12 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
                          "slice_hash": evaluator.byte_hash(slices_raw) if slices_raw is not None else None}
     if check_blend:
         diagnostic_config["check_blend_direction"] = True
-    inputs = {key: str(path) for key, path in pair.paths.items()}
-    input_hashes = dict(pair.input_hashes)
+    if check_influence:
+        diagnostic_config.update(check_influence=True, influence_max_removals=influence_limit)
+    if fold_report is not None:
+        diagnostic_config["fold_hashes"] = fold_hashes
+    inputs = {**{key: str(path) for key, path in pair.paths.items()}, **fold_inputs}
+    input_hashes = {**pair.input_hashes, **fold_hashes}
     if summary_only:
         diagnostic_config["output_mode"] = "summary"
         if slices_raw is not None:
@@ -234,6 +344,8 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
         "clipped_log_loss" if metric == "binary_log_loss" else "absolute_error",
         "largest_candidate_errors": worst, "largest_regressions": regressions, "slices": slice_results,
         **({"blend_direction": blend_report} if check_blend else {}),
+        **({"influence": influence_report} if check_influence else {}),
+        **({"fold_comparison": fold_report} if fold_report is not None else {}),
         "configuration": diagnostic_config, "config_hash": evaluator.object_hash(diagnostic_config),
         "analyzer_hash": evaluator.object_hash({name: evaluator.byte_hash(pathlib.Path(__file__).with_name(name).read_bytes())
                                                 for name in ["analyze_prediction_errors.py", "prediction_evidence.py", "evaluate_predictions.py",
@@ -253,6 +365,8 @@ def make_parser() -> argparse.ArgumentParser:
         parser.add_argument(f"--{name}", required=True, type=pathlib.Path)
     parser.add_argument("--slices", type=pathlib.Path, help="optional full-split ID/categorical metadata CSV")
     parser.add_argument("--slice-column", action="append", help="categorical column to diagnose; repeat for separate slices")
+    parser.add_argument("--baseline-fit", type=pathlib.Path, help="baseline's sealed tabular training fit.json")
+    parser.add_argument("--candidate-fit", type=pathlib.Path, help="candidate's sealed tabular training fit.json")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--max-groups", type=int, default=100)
     parser.add_argument("--error-tie-epsilon", type=float, default=1e-12)
@@ -260,6 +374,10 @@ def make_parser() -> argparse.ArgumentParser:
                         help="same diagnostic scores/top cases; skip full cases CSV and copied input snapshots")
     parser.add_argument("--check-blend-direction", action="store_true",
                         help="RMSE/MAE convex-loss endpoint signs; no weight search or recipe score")
+    parser.add_argument("--check-influence", action="store_true",
+                        help="RMSE sign sensitivity to deleting rows; no refitting or promotion gate")
+    parser.add_argument("--influence-max-removals", type=int, default=5,
+                        help="maximum rows for the optional influence diagnostic (default: 5)")
     return parser
 
 

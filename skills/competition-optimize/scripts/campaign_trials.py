@@ -12,8 +12,8 @@ from typing import Any
 
 import scoped_learning
 from candidate_evidence import (
-    ArchiveFailure, DEVELOPMENT_ROLES, canonical, directed_score, executed_snapshot, implementation_identity,
-    observed_snapshot, proposal_identity_checks, sha256, validate_construction_targets,
+    ArchiveFailure, DEVELOPMENT_ROLES, canonical, descriptive_diagnostic, directed_score, executed_snapshot, implementation_identity,
+    observed_snapshot, proposal_identity_checks, proposal_prediction_status, sha256, validate_construction_targets,
 )
 from evidence_files import EvidenceReads, verify_artifacts, verify_result, verify_proposal_targets
 
@@ -31,6 +31,8 @@ def _retrieval_identity(archive_path: str, comparison_key: str | None,
             **({"construction_mode": trial["construction_mode"]} if "construction_mode" in trial else {}),
             **({"learning_from": trial["learning_from"]} if "learning_from" in trial else {}),
             "evidence": {candidate_id: {**{key: card[key] for key in _IDENTITY_FIELDS},
+                                        **({"diagnostic_scope": card["diagnostic_scope"]}
+                                           if "diagnostic_scope" in card else {}),
                                         **({"implementation_review": card["implementation_review"]}
                                            if "implementation_review" in card else {}),
                                         **({"learning": card["learning"]} if "learning" in card else {})}
@@ -115,9 +117,13 @@ def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
                                         "snapshot_bytes": "checked" if entry["artifact_paths"] else "not_recorded"}}
             if matches and observed[candidate_id]:
                 card["objective"] = entry["objective"]
+            if descriptive_diagnostic(entry):
+                card["diagnostic_scope"] = "descriptive"
+                card["requires_revalidation"] = True
             if matches and "implementation_review" in entry:
                 card["implementation_review"] = entry["implementation_review"]
-            if matches and "learning" in entry:
+            if (matches and "learning" in entry
+                    and not scoped_learning.uses_descriptive(entry["learning"], candidates)):
                 scoped_learning.verify_evidence(entry["learning"], candidates, reads=reads)
                 card["learning"] = entry["learning"]
             cards[candidate_id] = card
@@ -146,7 +152,8 @@ def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
         trial.update(input_sha256=proposal.get("input_sha256"), candidate_id=outcome_id, outcome_role=outcome["role"],
                      state="measured" if observed[outcome_id] else "failed_or_unscored",
                      outcome_comparison_matches=matches,
-                     prediction_status=outcome.get("prediction_status") if matches else None,
+                     prediction_status=(proposal_prediction_status(outcome)
+                                        if matches and not descriptive_diagnostic(outcome) else None),
                      last_exposed_turn=seen.get(proposal["proposal_id"]), retrieval_reason=reason,
                      evidence={candidate_id: evidence(candidate_id) for candidate_id in evidence_ids},
                      feedback=outcome.get("feedback") if matches else None,
@@ -155,7 +162,8 @@ def trial_history(archive_path: pathlib.Path, records: list[dict[str, Any]],
                      scope="Original prospective prediction and actual outcome. Diagnostic outcomes inform design "
                            "without ranking or candidate gains. Measured means a scored "
                            "observation under the outcome's own contract; outcome_comparison_matches states whether "
-                           "it matches the current contract. Prediction status and "
+                           "it matches the current contract. A reviewed departure leaves the original prediction "
+                           "unresolved without removing the actual score. Prediction status and "
                            "feedback are agent reports, not causal findings. Missing or failed measurements do not "
                            "disprove an algorithm. Foreign-contract cards supply identities only and require "
                            "revalidation; compare scores only within the complete current contract. Retrieve full "

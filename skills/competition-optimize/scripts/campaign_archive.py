@@ -91,6 +91,9 @@ class CampaignArchive:
     @staticmethod
     def _verify_candidates(records: list[dict[str, Any]]) -> None:
         for entry in records:
+            if entry["event"] == "score_invalidation":
+                if archive_tools.hash_path(pathlib.Path(entry["evidence_path"])) != entry["evidence_sha256"]:
+                    raise CampaignError(f"Score exclusion evidence changed: {entry['candidate_id']}")
             if entry["event"] != "candidate":
                 continue
             archive_tools.verify_result(entry)
@@ -130,6 +133,17 @@ class CampaignArchive:
         self._verify_candidates(records)
         self._require_prefix(expected)
         return ArchiveHead(dict(expected), CampaignEvidence(records))
+
+    def verified_score_invalidations(self, before: ArchivePrefix) -> ArchiveHead:
+        """Accept only explicit score corrections appended between turns."""
+        self._require_prefix(before)
+        previous = self._prefix_records(before["size"])
+        head = self.verified()
+        self._require_prefix(before)
+        suffix = head.evidence.records[len(previous):]
+        if any(event["event"] != "score_invalidation" for event in suffix):
+            raise CampaignError("Only score invalidations may be accepted outside a campaign turn")
+        return head
 
     @contextmanager
     def confirmed(self, expected: ArchivePrefix) -> Iterator[CampaignEvidence]:
@@ -197,5 +211,6 @@ class CampaignArchive:
         evidence = CampaignEvidence(records)
         previous_counts, current_counts = CampaignEvidence(old_records).counts, evidence.counts
         delta = {key: current_counts[key] - previous_counts[key] for key in current_counts}
+        delta["new_implementation_attempts"] = evidence.new_implementation_attempts(len(old_records))
         return ReceivedArchive(self._snapshot(), evidence, records[len(old_records):], delta,
                                quarantined, quarantine_event)

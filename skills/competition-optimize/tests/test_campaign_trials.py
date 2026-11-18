@@ -72,6 +72,8 @@ class CampaignTrialTests(unittest.TestCase):
             args += ["--source", str(source)]
         if executed:
             args += ["--result", str(result)]
+            if scope == "prediction_csv":
+                args += ["--prediction-boundary", "Synthetic fixture with a fixed development boundary."]
         if not executed or not adapter_score:
             # These explicit flags keep a complete claimed comparison, but a
             # missing adapter score must never become an observed objective.

@@ -40,6 +40,40 @@ class SplitContractTests(unittest.TestCase):
                 adapter.check_boundary(spec, earlier, {"b": {"time": next_time}})
         adapter.check_boundary(spec, earlier, {"b": {"time": "7"}})
 
+    def test_plan_cost_counts_actual_folds_across_partitions_before_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ids = [str(i) for i in range(10)]
+            paths = []
+            for number in range(5):
+                folds = []
+                for index in range(5):
+                    validation = [key for key in ids if (int(key) + number * (int(key) % 2)) % 5 == index]
+                    folds.append({"id": str(index), "seed": index,
+                                  "train_ids": [key for key in ids if key not in validation],
+                                  "validation_ids": validation})
+                path = root / f"partition-{number}.json"
+                adapter.write_json(path, {"schema_version": 1, "task_id": "cost-fixture", "task": "regression",
+                                          "metric": "rmse", "features": ["x"], "split": {"kind": "iid"},
+                                          "expected_oof_ids": ids, "folds": folds})
+                paths.append(path)
+            cmd = [sys.executable, "-B", str(SCRIPTS / "tabular_training.py"), "plan-cost"]
+            for path in paths:
+                cmd += ["--protocol", str(path)]
+            mismatch = subprocess.run(cmd + ["--expected-fit-calls", "15"], capture_output=True, text=True)
+            self.assertEqual(mismatch.returncode, 2)
+            self.assertIn("supplied protocols require 25", json.loads(mismatch.stderr)["error"]["message"])
+            ok = subprocess.run(cmd + ["--expected-fit-calls", "25"], capture_output=True, text=True, check=True)
+            result = json.loads(ok.stdout)
+            self.assertEqual(result["fit_calls"], 25)
+            self.assertEqual([row["fit_calls"] for row in result["requests"]], [5] * 5)
+
+            with patch.object(adapter, "runtime", side_effect=AssertionError("no runtime before cost check")):
+                with self.assertRaisesRegex(adapter.TrainingFailure, "require 5"):
+                    adapter.train(root / "unused-data.csv", paths[0], root / "unused-candidate.py", root / "run",
+                                  expected_fit_calls=3)
+            self.assertFalse((root / "run").exists())
+
 
 @unittest.skipUnless(ML_AVAILABLE, "Optional dependencies: scripts/requirements-tabular.txt")
 class TabularTrainingTests(unittest.TestCase):
@@ -104,6 +138,72 @@ class TabularTrainingTests(unittest.TestCase):
         receipt = adapter.read_json(first / "recipe.json")
         self.assertIn("candidate_source", receipt)
         self.assertNotIn("fit_seconds", receipt)
+
+    def test_recompose_uses_the_added_members_saved_fit_and_scores_new_oof(self):
+        import numpy as np
+
+        control = self.train("control")
+        self.spec["features"] = ["group", "x"]
+        self.protocol.write_text(json.dumps(self.spec))
+        self.candidate.write_text("""import numpy as np
+
+class LocalMember:
+    def fit(self, X, y):
+        self.train_prediction_ = y - 3 * X[:, 1]
+        return self
+    def predict(self, X):
+        return X[:, 0] + 3 * X[:, 1]
+
+def build_model(seed, task):
+    return LocalMember()
+""")
+        member = self.train("extra-member")
+        composition = self.root / "composition.py"
+        composition.write_text("""import numpy as np
+
+def predict_fold(control, member, x_fit, x_score, member_x_fit, member_x_score, *, include_member):
+    centre = control.predict(x_score)
+    scale = np.mean(member.train_prediction_)
+    return centre + include_member * np.clip(member.predict(member_x_score) - centre, -scale, scale) / 4
+""")
+        output = self.root / "recomposed"
+        received = subprocess.run([sys.executable, "-B", str(SCRIPTS / "tabular_training.py"), "recompose",
+                                   "--control", str(control), "--member", str(member),
+                                   "--composition", str(composition), "--output-dir", str(output)],
+                                  capture_output=True, text=True, check=True)
+        report = json.loads(received.stdout)
+        self.assertEqual(report["new_fit_calls"], 0)
+        self.assertEqual(report["inputs"]["control"]["originating_cost"], fit_cost(control))
+        self.assertEqual(report["inputs"]["member"]["originating_cost"]["completed_fit_calls"], 3)
+        self.assertTrue(all(row["control_max_abs_error"] == 0 for row in report["folds"]))
+        _, rows = adapter.csv_rows(output / "oof.csv", ["id", "prediction"])
+        expected = [3 * i + 2 + np.clip(i // 2 - 2, -2, 2) / 4 for i in range(12)]
+        np.testing.assert_allclose([float(rows[str(i)]["prediction"]) for i in range(12)], expected, rtol=0, atol=1e-14)
+        baseline = load_result(control / "evaluation/result.json")
+        combined = load_result(output / "evaluation/result.json")
+        compare(baseline, combined, 0)
+        self.assertNotEqual(combined["candidate_hash"], baseline["candidate_hash"])
+        self.assertNotIn("training_execution", combined)
+        self.assertGreater(combined["score"]["value"], baseline["score"]["value"])
+        self.assertEqual(adapter.verified_manifest(output, "tabular_recomposition")["seal"], report["seal"])
+
+        composition.write_text("def predict_fold(control, member, x_fit, x_score, *_, include_member):\n"
+                               "    return control.predict(x_score) + 1\n")
+        invalid = self.root / "wrong-control"
+        with self.assertRaisesRegex(adapter.TrainingFailure, "Control reproduction failed on fold"):
+            adapter.recompose(control, member, composition, invalid)
+        self.assertFalse(invalid.exists())
+
+    def test_recompose_refuses_mismatched_folds_before_importing_composition(self):
+        control = self.train("control")
+        self.spec["folds"][0]["seed"] += 1
+        self.protocol.write_text(json.dumps(self.spec))
+        mismatched = self.train("mismatched")
+        never_import = self.root / "must-not-open.py"
+        output = self.root / "recomposed"
+        with self.assertRaisesRegex(adapter.TrainingFailure, "including fold IDs, row order and seeds"):
+            adapter.recompose(control, mismatched, never_import, output)
+        self.assertFalse(output.exists())
 
     def test_identical_request_reuses_completed_fit_in_new_or_existing_directory(self):
         from sklearn.linear_model import LinearRegression
@@ -198,6 +298,51 @@ class TabularTrainingTests(unittest.TestCase):
         copied = adapter.train(self.data, self.protocol, self.candidate, self.root / "after-archive",
                                archive=archive, proposal_id="change")
         self.assertEqual(copied["new_fit_calls"], 0)
+
+    def test_managed_paired_measurement_binds_protocol_and_seals_result(self):
+        challenger = self.train("challenger")
+        challenger_entry = self.archive_run(challenger, "challenger")
+        source = self.root / "baseline.py"
+        source.write_text("from sklearn.dummy import DummyRegressor\n"
+                          "def build_model(seed, task): return DummyRegressor()\n")
+        baseline = self.root / "baseline"
+        adapter.train(self.data, self.protocol, source, baseline)
+        leader = self.archive_run(baseline, "baseline")
+        archive = self.root / "archive.jsonl"
+        protocol = adapter.plan_cost([self.protocol], 3)["requests"][0]
+        plan = self.root / "plan.json"
+        adapter.write_json(plan, {"plan_id": "adoption", "comparison": leader["comparison"],
+                                  "leader_candidate": "baseline", "challenger_candidate": "challenger",
+                                  "runs": [{"run_id": "fixed", "seeds": [], "repetitions": 1,
+                                            "leader_result": "baseline", "protocol_sha256": protocol["protocol_sha256"]}],
+                                  "decision_rule": {"requirements": [{"statistic": "mean_improvement",
+                                                                        "operator": ">", "threshold": 1}]}})
+        plan_entry = candidate_archive.record_measurement_plan(candidate_archive.parser().parse_args([
+            "measure-plan", "--archive", str(archive), "--plan", str(plan)]))
+        planned = self.root / "paired"
+        kwargs = {"measurement_archive": archive, "measurement_plan_id": "adoption", "measurement_run_id": "fixed",
+                  "expected_fit_calls": 3}
+        wrong_protocol = self.root / "not-frozen.json"
+        wrong_protocol.write_bytes(self.protocol.read_bytes() + b"\n")
+        with self.assertRaisesRegex(adapter.TrainingFailure, "exact protocol bytes"):
+            adapter.train(self.data, wrong_protocol, self.candidate, planned, **kwargs)
+        with self.assertRaisesRegex(adapter.TrainingFailure, "unfilled side"):
+            adapter.train(self.data, self.protocol, source, planned, **kwargs)
+        self.assertFalse(planned.exists())
+
+        fitted = adapter.train(self.data, self.protocol, self.candidate, planned, **kwargs)
+        self.assertEqual(fitted["new_fit_calls"], 3)
+        paired = self.archive_run(planned, "measured-challenger", "--reuse-reason", "Frozen paired measurement")
+        self.assertEqual(paired["result"]["measurement_run_id"], "fixed")
+        self.assertEqual(paired["cost"]["training_execution"]["completed_fit_calls"], 3)
+        view = candidate_archive.measurement_plans.status(plan_entry, candidate_archive.read_records(archive))
+        self.assertEqual(view["rule_result"]["state"], "passed")
+        decision = self.root / "decision.json"
+        adapter.write_json(decision, {"plan_id": "adoption", "outcome": "qualified", "conclusion": "Passed the frozen margin",
+                                      "reason": "Matched RMSE improved by more than one", "next_action": "Retain the evidence"})
+        candidate_archive.record_measurement_decision(candidate_archive.parser().parse_args([
+            "measure-decide", "--archive", str(archive), "--decision", str(decision)]))
+        candidate_archive.measurement_plans.validate_selection(challenger_entry, candidate_archive.read_records(archive))
 
     def test_managed_costs_are_automatic_and_manual_override_gives_recovery(self):
         run = self.train()

@@ -577,8 +577,65 @@ def preview(source, args):
             "comments": [item(row) for row in shown], "returned_comments": len(rows), "omitted_comments": len(rows)-len(shown)}
 
 
+def cached_source(index, saved):
+    snapshot = Path(saved["snapshot"]).resolve()
+    path, body = snapshot / "source.json", snapshot / "body.md"
+    if (saved.get("status") != "ok" or snapshot.parent != index.parent.resolve()
+            or saved.get("source_path") != str(path) or saved.get("body_path") != str(body)):
+        raise SourceError(f"Invalid cached snapshot in {index}; inspect or explicitly refresh")
+    raw = path.read_bytes()
+    if digest(raw) != saved["sha256"]:
+        raise SourceError("Cached source bytes changed; inspect or explicitly refresh")
+    source = mapping(json.loads(raw))
+    if body.read_bytes() != source.get("body", "").encode("utf-8"):
+        raise SourceError("Cached body bytes changed; inspect or explicitly refresh")
+    return source
+
+
+def find_cached_read(root, cache, key):
+    target = key["target"]
+    pins = {name: target[name] for name in ("version_number", "script_version_id") if target.get(name)}
+    candidates = []
+    for index in root.rglob("cache-*.json" if pins else cache.name):
+        if index.is_symlink():
+            continue
+        exact = index.name == cache.name
+        try:
+            saved = mapping(json.loads(index.read_bytes()))
+            old_key = mapping(saved["request_identity"])
+            old_target = mapping(old_key["target"])
+            if not isinstance(saved.get("fetched_at"), str):
+                raise SourceError("Missing cache acquisition time")
+        except (OSError, ValueError, KeyError):
+            if exact:
+                raise SourceError(f"Invalid cache index {index}; inspect or explicitly refresh") from None
+            continue
+        if exact and old_key != key:
+            raise SourceError(f"Cached request identity changed in {index}; inspect or explicitly refresh")
+        if exact or (pins and old_target.get("url") == target["url"]
+                     and old_target.get("kind") == "notebook"
+                     and all(old_target.get(name) in (None, value) for name, value in pins.items())):
+            candidates.append((exact, index, saved))
+
+    candidates.sort(key=lambda row: (row[0], row[2]["fetched_at"]), reverse=True)
+    for exact, index, saved in candidates:
+        try:
+            source = cached_source(index, saved)
+        except (OSError, ValueError, KeyError):
+            if exact:
+                raise
+            continue
+        # An explicitly pinned body can be reused by either verified notebook ID.
+        # The acquisition's historical competition request is not proof of association.
+        if exact or (all(source.get(name) == value for name, value in pins.items())
+                     and source.get("kind") == "notebook"
+                     and source.get("url") == target["url"] + "?scriptVersionId=" + str(source.get("script_version_id"))
+                     and (not key["competition"] or source.get("competition") in (None, key["competition"]))):
+            return saved, source
+    return None
+
+
 def run(args, client=None):
-    client = client or Client(args.timeout, direct=args.direct, retries=args.retries, tcp_mss=args.tcp_mss)
     if args.command == "discover":
         args.competition = competition_slug(args.competition)
         target = {"kind": "discovery", "competition": args.competition, "question": args.question}
@@ -598,18 +655,25 @@ def run(args, client=None):
     if args.command == "discover":
         key["search_page"] = args.search_page
     output = args.output_dir.expanduser().resolve()
-    output.mkdir(parents=True, exist_ok=True)
     key_hash = digest(encoded(key))
     cache = output / ("cache-" + key_hash + ".json")
-    if cache.exists() and not args.refresh:
-        saved = json.loads(cache.read_text())
-        snapshot = Path(saved["snapshot"])
-        raw = (snapshot / "source.json").read_bytes()
-        if digest(raw) != saved["sha256"]:
-            raise SourceError("Cached source bytes changed; inspect or explicitly refresh")
-        source = json.loads(raw)
-        return {**saved, "cache_hit": True, "source": source_summary(source, args),
-                "view": preview(source, args)}
+    if not args.refresh:
+        hit = None
+        if cache.exists():
+            saved = mapping(json.loads(cache.read_bytes()))
+            if saved.get("request_identity") != key:
+                raise SourceError(f"Cached request identity changed in {cache}; inspect or explicitly refresh")
+            hit = saved, cached_source(cache, saved)
+        elif args.command == "read" and args.cache_root:
+            hit = find_cached_read(args.cache_root.expanduser().resolve(), cache, key)
+        if hit is not None:
+            saved, source = hit
+            return {**saved, "cache_hit": True, "source": source_summary(source, args),
+                    "view": preview(source, args)}
+        if args.command == "read" and args.cache_only:
+            raise SourceError("No matching successful local source snapshot; no network request was made")
+    client = client or Client(args.timeout, direct=args.direct, retries=args.retries, tcp_mss=args.tcp_mss)
+    output.mkdir(parents=True, exist_ok=True)
     snapshot = output / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + key_hash[:12])
     snapshot.mkdir()
     try:
@@ -624,7 +688,7 @@ def run(args, client=None):
         source, status = {"kind": target["kind"], "body": "", "comments": [], "errors": [{"message": str(exc)}]}, "error"
     source_raw = encoded(source)
     (snapshot / "source.json").write_bytes(source_raw)
-    (snapshot / "body.md").write_text(source.get("body", ""))
+    (snapshot / "body.md").write_bytes(source.get("body", "").encode("utf-8"))
     (snapshot / "requests.json").write_bytes(encoded(client.requests))
     for entry, raw in zip(client.requests, client.responses):
         (snapshot / entry["response_file"]).write_bytes(raw)
@@ -663,7 +727,8 @@ def parse_args(argv=None):
         cli.add_argument("--competition", required=command == "discover")
         cli.add_argument("--page-size", type=positive, default=20 if command == "discover" else 200,
                          help="Local search-lead display limit" if command == "discover" else "Requested comment/version page size")
-        cli.add_argument("--refresh", action="store_true")
+        cache_mode = cli.add_mutually_exclusive_group()
+        cache_mode.add_argument("--refresh", action="store_true", help="Fetch a new snapshot without cache lookup")
         cli.add_argument("--format", choices=("json", "source"), default="json",
                          help="json: status, paths, source summary and view; source: full normalized source at the JSON root")
         cli.add_argument("--timeout", type=positive, default=30)
@@ -676,6 +741,8 @@ def parse_args(argv=None):
             cli.add_argument("--search-page", type=positive, default=1, help="Explicit forum search page")
         else:
             cli.add_argument("--url", required=True)
+            cli.add_argument("--cache-root", type=Path, help="Search existing read caches under this task's research directory")
+            cache_mode.add_argument("--cache-only", action="store_true", help="Require a matching local cache; never request the source")
             cli.add_argument("--version", type=positive, help="Notebook version NUMBER, not scriptVersionId")
             cli.add_argument("--script-version-id", type=positive, help="Notebook session ID, as in the URL")
             cli.add_argument("--version-page-token")

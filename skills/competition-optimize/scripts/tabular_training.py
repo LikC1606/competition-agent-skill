@@ -33,9 +33,13 @@ class TrainingFailure(ValueError):
     pass
 
 
+def json_text(value: object) -> str:
+    return json.dumps(value, indent=2, allow_nan=False) + "\n"
+
+
 def write_json(path: Path, value: object) -> None:
     with path.open("x", encoding="utf-8") as stream:
-        stream.write(json.dumps(value, indent=2, allow_nan=False) + "\n")
+        stream.write(json_text(value))
         stream.flush()
         os.fsync(stream.fileno())
 
@@ -137,6 +141,73 @@ def validate_spec(spec: dict) -> None:
         raise TrainingFailure("Declare at least one fold")
 
 
+def protocol_folds(spec: dict) -> list[dict]:
+    if not isinstance(spec, dict):
+        raise TrainingFailure("Protocol must be a JSON object")
+    validate_spec(spec)
+    fold_ids = set()
+    for fold in spec["folds"]:
+        if (not isinstance(fold, dict) or not isinstance(fold.get("id"), str)
+                or not fold["id"] or fold["id"] in fold_ids):
+            raise TrainingFailure("Fold IDs must be nonempty and unique")
+        if type(fold.get("seed")) is not int:
+            raise TrainingFailure("Each fold requires an integer seed")
+        unique_ids(fold.get("train_ids"), "train_ids")
+        unique_ids(fold.get("validation_ids"), "validation_ids")
+        fold_ids.add(fold["id"])
+    return spec["folds"]
+
+
+def check_fit_count(actual: int, expected: int | None) -> None:
+    if expected is not None and (type(expected) is not int or expected != actual):
+        raise TrainingFailure(f"Declared {expected} adapter fit calls; supplied protocols require {actual}. "
+                              "Correct the plan or schedule fewer fits before training.")
+
+
+def plan_cost(protocols: list[Path], expected_fit_calls: int | None = None) -> dict:
+    """Count planned adapter fits from actual protocol files without loading data or candidates."""
+    if not protocols:
+        raise TrainingFailure("Supply at least one training protocol")
+    requests = []
+    for path in protocols:
+        path = path.expanduser().resolve(strict=True)
+        raw = path.read_bytes()
+        count = len(protocol_folds(json.loads(raw)))
+        requests.append({"protocol": str(path), "protocol_sha256": byte_hash(raw), "fit_calls": count})
+    total = sum(request["fit_calls"] for request in requests)
+    check_fit_count(total, expected_fit_calls)
+    return {"status": "planned", "fit_calls": total, "requests": requests,
+            "scope": "One adapter estimator.fit call per fold per requested new execution. "
+                     "Excludes reuse, retries and nested estimator fits."}
+
+
+def measurement_binding(archive: Path, plan_id: str, run_id: str, *, protocol: bytes,
+                        folds: list[dict], recipe: dict) -> dict:
+    from candidate_archive import candidate_index, measurement_plans, read_records
+
+    records = read_records(archive.expanduser().resolve(strict=True))
+    plan = next((row for row in records if row["event"] == "measurement_plan" and row["plan_id"] == plan_id), None)
+    if plan is None:
+        raise TrainingFailure("Record the measurement plan before training")
+    view = measurement_plans.status(plan, records)
+    if view["decision"] is not None or view["stop"] is not None or view["rule_result"]["state"] == "unresolved":
+        raise TrainingFailure("Measurement plan is closed or unresolved; inspect measure-status before training")
+    run = next((row for row in view["runs"] if row["run_id"] == run_id), None)
+    if run is None or run.get("protocol_sha256") != byte_hash(protocol):
+        raise TrainingFailure("The measurement run must bind these exact protocol bytes with protocol_sha256")
+    fold_seeds = list(dict.fromkeys(fold["seed"] for fold in folds))
+    if run["repetitions"] != 1 or run["seeds"] not in ([], fold_seeds):
+        raise TrainingFailure("Managed measurement requires one repetition and seeds empty or equal to the protocol's ordered fold seeds")
+    candidates = candidate_index(records)
+    recipe_hash = byte_hash(json_text(recipe).encode("utf-8"))
+    sides = [side for side in ("leader", "challenger")
+             if candidates[plan[side + "_candidate"]]["artifacts"].get("configuration") == recipe_hash]
+    if len(sides) != 1 or run[sides[0]] is not None:
+        raise TrainingFailure("Recipe must match exactly one unfilled side of the frozen run")
+    return {"measurement_plan_id": plan_id, "measurement_run_id": run_id,
+            "seeds": run["seeds"], "repetitions": run["repetitions"], "plan_sha256": object_hash(plan)}
+
+
 def metadata_columns(spec: dict, *, training: bool = True) -> list[str]:
     split = spec["split"]
     names = ["group_column", "time_column"] + (["available_time_column"] if training else [])
@@ -205,7 +276,12 @@ def predictions(np, model, values, task: str):
         result = np.asarray(model.predict_proba(values))[:, classes.index(1)]
     else:
         result = np.asarray(model.predict(values))
-    if result.shape != (len(values),) or not np.isfinite(result).all():
+    return checked_predictions(np, result, len(values), task)
+
+
+def checked_predictions(np, result, count: int, task: str):
+    result = np.asarray(result)
+    if result.shape != (count,) or not np.isfinite(result).all():
         raise TrainingFailure("Estimator must produce one finite scalar per row")
     if task == "binary" and ((result < 0).any() or (result > 1).any()):
         raise TrainingFailure("Binary predictions must be probabilities")
@@ -312,30 +388,115 @@ def score(spec: dict, truth: Path, predicted: Path, stage: str, root: Path, spli
     return result
 
 
+def recompose(control: Path, member: Path, composition: Path, output: Path, *, control_atol: float = 0) -> dict:
+    """Score a declared addition using two sealed fold-model runs; no adapter fits."""
+    started = time.perf_counter()
+    np, _, limits = runtime()
+    if not np.isfinite(control_atol) or control_atol < 0:
+        raise TrainingFailure("Control tolerance must be finite and nonnegative")
+    if output.exists():
+        raise FileExistsError("Recomposition output already exists: " + str(output))
+    base = SavedTabularRun(control, kind="tabular_training")
+    added = SavedTabularRun(member, kind="tabular_training")
+    spec = base.protocol
+    if base.fit["cost"]["execution_id"] == added.fit["cost"]["execution_id"]:
+        raise TrainingFailure("Use a separate trained member, not a copy of the control execution")
+    if any(base.manifest["files"].get(name) != added.manifest["files"].get(name)
+           for name in ("training.csv", "inference.csv")):
+        raise TrainingFailure("Saved runs must use matching training and inference data")
+    if ({k: v for k, v in spec.items() if k != "features"} !=
+            {k: v for k, v in added.protocol.items() if k != "features"}):
+        raise TrainingFailure("Saved runs must match protocols apart from feature columns, including fold IDs, row order and seeds")
+    identifier, column = spec.get("id_column", "id"), spec.get("prediction_column", "prediction")
+    features = list(dict.fromkeys(base.protocol["features"] + added.protocol["features"]))
+    _, rows = csv_rows(base.root / "training.csv", [identifier, *features], raw=base._bytes("training.csv"))
+    _, recorded = csv_rows(base.root / "oof.csv", [identifier, column], raw=base._bytes("oof.csv"))
+    source = composition.read_bytes()
+    namespace = {"__name__": "competition_composition", "__file__": str(composition)}
+    exec(compile(source, str(composition), "exec"), namespace)
+    predict_fold = namespace.get("predict_fold")
+    if not callable(predict_fold):
+        raise TrainingFailure("Composition must define predict_fold(control, member, x_fit, x_score, "
+                              "member_x_fit, member_x_score, *, include_member)")
+    oof, comparisons = {}, []
+    with limits(limits=1):
+        for fold in spec["folds"]:
+            fold_id, train_ids, valid_ids = fold["id"], fold["train_ids"], fold["validation_ids"]
+            model = base.load_model(fold_id)
+            x_fit = matrix(np, rows, train_ids, spec["features"])
+            x_score = matrix(np, rows, valid_ids, spec["features"])
+            new_model = added.load_model(fold_id)
+            member_x_fit = matrix(np, rows, train_ids, added.protocol["features"])
+            member_x_score = matrix(np, rows, valid_ids, added.protocol["features"])
+
+            def composed(include_member):
+                values = predict_fold(model, new_model, x_fit, x_score, member_x_fit, member_x_score,
+                                      include_member=include_member)
+                return checked_predictions(np, values, len(valid_ids), spec["task"])
+
+            unthresholded = composed(False)
+            reproduced = decision_values(np, unthresholded, spec)
+            saved = np.array([float(recorded[key][column]) for key in valid_ids])
+            error = float(np.max(np.abs(reproduced - saved)))
+            if spec["metric"] == "accuracy":
+                probabilities = predictions(np, model, x_score, spec["task"])
+                error = max(error, float(np.max(np.abs(unthresholded - probabilities))))
+            if not np.isfinite(error) or error > control_atol:
+                raise TrainingFailure(f"Control reproduction failed on fold {fold_id}: max absolute error {error:.17g} "
+                                      f"exceeds {control_atol:.17g}")
+            values = decision_values(np, composed(True), spec)
+            oof.update(zip(valid_ids, map(float, values)))
+            comparisons.append({"fold_id": fold_id, "control_max_abs_error": error,
+                                "changed_cases": int(np.count_nonzero(values != reproduced))})
+    truth = base._bytes("truth.csv")
+    output.mkdir()
+    (output / "composition.py").write_bytes(source)
+    write_json(output / "recipe.json", {"schema_version": 1, "kind": "tabular_recomposition",
+               "composition_source": source.decode("utf-8-sig"),
+               "control_recipe_sha256": byte_hash(base._bytes("recipe.json")),
+               "member_recipe_sha256": byte_hash(added._bytes("recipe.json"))})
+    save_csv(output / "oof.csv", [identifier, column], [(key, repr(oof[key])) for key in spec["expected_oof_ids"]])
+    (output / "truth.csv").write_bytes(truth)
+    result = score(spec, output / "truth.csv", output / "oof.csv", "development", output / "evaluation",
+                   base.manifest["protocol_hash"])
+    report = {"new_fit_calls": 0, "recomposition_seconds": time.perf_counter() - started,
+              "inputs": {name: {"run": str(run.root), "seal": run.manifest["seal"], "originating_cost": run.fit["cost"]}
+                         for name, run in (("control", base), ("member", added))},
+              "control_atol": control_atol, "folds": comparisons,
+              "scope": "Development predictions. No adapter fits during recomposition; arbitrary composition code and "
+                       "its information flow are not certified."}
+    write_json(output / "recomposition.json", report)
+    manifest = seal(output, {"kind": "tabular_recomposition", "task_id": spec["task_id"],
+                            "score": result["score"], "protocol_hash": base.manifest["protocol_hash"]})
+    return {"status": "success", "manifest": str(output / "manifest.json"), "seal": manifest["seal"],
+            "result": str(output / "evaluation/result.json"), "score": result["score"], **report}
+
+
 def train(data: Path, protocol: Path, candidate: Path, output: Path, *, archive: Path | None = None,
           proposal_id: str | None = None, inference_data: Path | None = None,
-          retry_reason: str | None = None) -> dict:
+          retry_reason: str | None = None, expected_fit_calls: int | None = None,
+          measurement_archive: Path | None = None, measurement_plan_id: str | None = None,
+          measurement_run_id: str | None = None) -> dict:
     data, protocol, candidate, output = [path.expanduser().resolve()
                                          for path in [data, protocol, candidate, output]]
     archive = archive.expanduser().resolve() if archive is not None else None
     inference_data = inference_data.expanduser().resolve() if inference_data is not None else None
     workflow_started = time.perf_counter()
+    protocol_raw = protocol.read_bytes()
+    spec = json.loads(protocol_raw)
+    folds = protocol_folds(spec)
+    check_fit_count(len(folds), expected_fit_calls)
+    measuring = any(value is not None for value in (measurement_archive, measurement_plan_id, measurement_run_id))
+    if measuring and (not all((measurement_archive, measurement_plan_id, measurement_run_id)) or expected_fit_calls is None):
+        raise TrainingFailure("Managed measurement needs its archive, plan ID, run ID and expected fit count")
     np, joblib, limits = runtime()
-    inputs = {"training.csv": data.read_bytes(), "protocol.json": protocol.read_bytes(),
+    inputs = {"training.csv": data.read_bytes(), "protocol.json": protocol_raw,
               "candidate.py": candidate.read_bytes()}
-    spec = json.loads(inputs["protocol.json"])
-    validate_spec(spec)
     identifier, target = spec.get("id_column", "id"), spec.get("target_column", "target")
     _, rows = csv_rows(data, [identifier, target, *spec["features"], *metadata_columns(spec)], raw=inputs["training.csv"])
-    used, evaluated, fold_ids = set(), set(), set()
-    for fold in spec["folds"]:
-        if not isinstance(fold.get("id"), str) or not fold["id"] or fold["id"] in fold_ids:
-            raise TrainingFailure("Fold IDs must be nonempty and unique")
-        if type(fold.get("seed")) is not int:
-            raise TrainingFailure("Each fold requires an integer seed")
-        fold_ids.add(fold["id"])
-        training = unique_ids(fold.get("train_ids"), "train_ids")
-        validation = unique_ids(fold.get("validation_ids"), "validation_ids")
+    used, evaluated = set(), set()
+    for fold in folds:
+        training, validation = fold["train_ids"], fold["validation_ids"]
         if not set(training + validation) <= rows.keys() or evaluated & set(validation):
             raise TrainingFailure("Fold references unknown IDs or duplicates OOF coverage")
         check_boundary(spec, {key: rows[key] for key in training}, {key: rows[key] for key in validation})
@@ -346,7 +507,7 @@ def train(data: Path, protocol: Path, candidate: Path, output: Path, *, archive:
     if spec["split"]["kind"] in {"iid", "group"} and evaluated != rows.keys():
         raise TrainingFailure("Non-temporal OOF must cover every training data row exactly once")
     matrix(np, rows, list(rows), spec["features"])
-    for fold in spec["folds"]:
+    for fold in folds:
         labels = np.array([float(rows[key][target]) for key in fold["train_ids"]])
         if not np.isfinite(labels).all() or (spec["task"] == "binary" and set(labels) != {0, 1}):
             raise TrainingFailure("Training labels must be finite; binary folds require both 0 and 1")
@@ -360,9 +521,22 @@ def train(data: Path, protocol: Path, candidate: Path, output: Path, *, archive:
     execution_environment = environment()
     adapter_hash = object_hash({name: byte_hash(Path(__file__).with_name(name).read_bytes()) for name in
                                ["tabular_training.py", "training_execution.py", "audit_data_split.py"]})
+    # Stable implementation identity excludes output bytes, timing and fold measurement seeds.
+    recipe = {"schema_version": 1, "task": spec["task"], "features": spec["features"],
+              "id_column": identifier, "target_column": target,
+              "candidate_source": inputs["candidate.py"].decode("utf-8-sig"),
+              "training_data_sha256": byte_hash(inputs["training.csv"]),
+              "prediction_rule": ({"operation": "mean_probability_then_greater_equal",
+                                   "threshold": spec.get("decision_threshold", 0.5)}
+                                  if spec["metric"] == "accuracy" else {"operation": "mean"}),
+              "environment": execution_environment, "adapter_hash": adapter_hash}
     identity = {"inputs": {name: byte_hash(raw) for name, raw in inputs.items()},
                 "environment": execution_environment, "adapter_hash": adapter_hash,
                 "evaluator_hash": evaluator_fingerprint()}
+    if measuring:
+        measurement = measurement_binding(measurement_archive, measurement_plan_id, measurement_run_id,
+                                          protocol=protocol_raw, folds=folds, recipe=recipe)
+        identity["measurement"] = measurement
     identity_hash = object_hash(identity)
     binding = proposal_binding(archive, proposal_id, allow_closed=True)
     if retry_reason is not None and not retry_reason.strip():
@@ -405,16 +579,7 @@ def train(data: Path, protocol: Path, candidate: Path, output: Path, *, archive:
     output.mkdir()
     for name, raw in inputs.items():
         (output / name).write_bytes(raw)
-    # Stable archive implementation identity: source/data/features/dependencies,
-    # without output bytes, timing or fold measurement seeds.
-    write_json(output / "recipe.json", {"schema_version": 1, "task": spec["task"],
-               "features": spec["features"], "id_column": identifier, "target_column": target,
-               "candidate_source": inputs["candidate.py"].decode("utf-8-sig"),
-               "training_data_sha256": byte_hash(inputs["training.csv"]),
-               "prediction_rule": ({"operation": "mean_probability_then_greater_equal",
-                                    "threshold": spec.get("decision_threshold", 0.5)}
-                                   if spec["metric"] == "accuracy" else {"operation": "mean"}),
-               "environment": execution_environment, "adapter_hash": adapter_hash})
+    write_json(output / "recipe.json", recipe)
     launch = {"schema_version": 1, "execution_id": uuid.uuid4().hex,
               **identity, "identity_hash": identity_hash, "proposal": binding,
               "retry_reason": retry_reason, "previous_attempts": [str(path) for path in matching],
@@ -429,7 +594,7 @@ def train(data: Path, protocol: Path, candidate: Path, output: Path, *, archive:
     oof, receipts = {}, []
     (output / "models").mkdir()
     with limits(limits=1):
-        for index, fold in enumerate(spec["folds"]):
+        for index, fold in enumerate(folds):
             train_ids, valid_ids = fold["train_ids"], fold["validation_ids"]
             features = matrix(np, rows, train_ids, spec["features"])
             labels = np.array([float(rows[key][target]) for key in train_ids])
@@ -462,6 +627,8 @@ def train(data: Path, protocol: Path, candidate: Path, output: Path, *, archive:
     save_csv(output / "truth.csv", [identifier, target], [(key, rows[key][target]) for key in ordered])
     result = score(spec, output / "truth.csv", output / "oof.csv", "development", output / "evaluation",
                    object_hash(spec))
+    if measuring:
+        result["evaluation"].update({name: value for name, value in measurement.items() if name != "plan_sha256"})
     append_event(journal, {"event": "run_completed", "elapsed_seconds": time.perf_counter() - workflow_started})
     result["training_execution"] = execution_descriptor(output)
     # Bind the completed fitting receipt before sealing this new result.
@@ -672,12 +839,25 @@ def main() -> int:
     fit.add_argument("--proposal-id")
     fit.add_argument("--inference-data", type=Path, help="Unlabeled inference CSV for relation availability checks")
     fit.add_argument("--retry-reason", help="Explicit intentional repeat, including after an interrupted fit")
+    fit.add_argument("--expected-fit-calls", type=int, help="Reject a protocol with a different number of folds before fitting")
+    fit.add_argument("--measurement-archive", type=Path, help="Archive containing the frozen paired run")
+    fit.add_argument("--measurement-plan-id")
+    fit.add_argument("--measurement-run-id")
+    plan = commands.add_parser("plan-cost", help="Count prospective fits from the exact protocol files; zero fits")
+    plan.add_argument("--protocol", type=Path, action="append", required=True,
+                      help="Repeat once for every planned new execution")
+    plan.add_argument("--expected-fit-calls", type=int, help="Reject a mismatch with the total declared fit count")
     costs = commands.add_parser("cost")
     costs.add_argument("--run", type=Path, action="append", required=True,
                        help="Repeat for all attempts/copies; each execution is counted once")
     rescoring = commands.add_parser("rescore", help="Reuse sealed OOF with a saved reference evaluator; zero fits")
     for name in ["run", "evaluator", "reference-result"]:
         rescoring.add_argument("--" + name, type=Path, required=True)
+    recomposing = commands.add_parser("recompose", help="Reuse a sealed control and separately trained member on matched folds")
+    for name in ["control", "member", "composition"]:
+        recomposing.add_argument("--" + name, type=Path, required=True)
+    recomposing.add_argument("--control-atol", type=float, default=0,
+                             help="Declared absolute reproduction tolerance; defaults to exact")
     frozen = commands.add_parser("freeze")
     frozen.add_argument("--run", type=Path, required=True)
     frozen.add_argument("--decision-rule", required=True)
@@ -689,17 +869,24 @@ def main() -> int:
         p.add_argument("--frozen", type=Path, required=True)
         p.add_argument("--data", type=Path, required=True)
         p.add_argument("--truth" if command == "confirm" else "--sample-submission", type=Path, required=True)
-    for p in [fit, rescoring, frozen, *[commands.choices[name] for name in ["confirm", "predict"]]]:
+    for p in [fit, rescoring, recomposing, frozen, *[commands.choices[name] for name in ["confirm", "predict"]]]:
         p.add_argument("--output-dir", type=Path, required=True, help="New directory; parent must exist")
     args = parser.parse_args()
     try:
         if args.operation == "train":
             report = train(args.data, args.protocol, args.candidate, args.output_dir, archive=args.archive,
-                           proposal_id=args.proposal_id, inference_data=args.inference_data, retry_reason=args.retry_reason)
+                           proposal_id=args.proposal_id, inference_data=args.inference_data, retry_reason=args.retry_reason,
+                           expected_fit_calls=args.expected_fit_calls, measurement_archive=args.measurement_archive,
+                           measurement_plan_id=args.measurement_plan_id, measurement_run_id=args.measurement_run_id)
+        elif args.operation == "plan-cost":
+            report = plan_cost(args.protocol, args.expected_fit_calls)
         elif args.operation == "cost":
             report = cost_report(args.run)
         elif args.operation == "rescore":
             report = rescore(args.run, args.evaluator, args.reference_result, args.output_dir)
+        elif args.operation == "recompose":
+            report = recompose(args.control, args.member, args.composition, args.output_dir,
+                               control_atol=args.control_atol)
         elif args.operation == "freeze":
             report = freeze(args.run, args.output_dir, args.decision_rule,
                             submission_column=args.submission_column, inverse_transform=args.inverse_transform)

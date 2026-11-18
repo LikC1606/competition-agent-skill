@@ -71,6 +71,35 @@ class EvidenceSnapshotTests(unittest.TestCase):
         self.assertEqual(error.exception.kind, "result_changed")
         self.assertEqual(f.path.read_bytes(), before)
 
+    def test_requested_control_uses_complete_checked_card_under_the_active_contract(self) -> None:
+        f = self.fixture
+        f.record("control", 10)
+        for index in range(6):
+            f.record(f"newer-{index}", 20 + index)
+        snapshot = self.snapshot()
+        self.assertNotIn("control", snapshot.brief(BriefQuery(frontier=0))["candidates"])
+        brief = snapshot.brief(BriefQuery(frontier=0, include_candidates=("control",)))
+        card = brief["candidates"]["control"]
+        self.assertEqual(card["artifact_paths"], f.records["control"]["artifact_paths"])
+        self.assertEqual(card["result"]["result_path"], f.records["control"]["result"]["result_path"])
+        self.assertEqual(card["identity_checks"], {"result_bytes": "checked", "snapshot_bytes": "checked"})
+        self.assertEqual(card["comparison_sha256"], archive.sha256(archive.canonical(brief["comparison"])))
+        result = Path(card["result"]["result_path"])
+        result.write_bytes(result.read_bytes() + b" ")
+        with self.assertRaises(ArchiveFailure) as error:
+            snapshot.brief(BriefQuery(frontier=0, include_candidates=("control",)))
+        self.assertEqual(error.exception.kind, "result_changed")
+
+    def test_requested_control_cannot_expose_confirmation_or_other_contract(self) -> None:
+        f = self.fixture
+        f.record("control", 10)
+        f.record("foreign", 100, comparison={"workload_hash": "foreign"})
+        f.record("confirmation", 101, role="confirmation")
+        for candidate_id in ("foreign", "confirmation", "missing"):
+            with self.subTest(candidate_id=candidate_id), self.assertRaises(ArchiveFailure) as error:
+                self.snapshot().brief(BriefQuery(anchor="control", include_candidates=(candidate_id,)))
+            self.assertEqual(error.exception.kind, "invalid_brief_candidate")
+
     def test_query_module_and_trial_reader_do_not_import_archive_cli(self) -> None:
         scripts = Path(__file__).resolve().parents[1] / "scripts"
         program = ("import sys; sys.path.insert(0, sys.argv[1]); "

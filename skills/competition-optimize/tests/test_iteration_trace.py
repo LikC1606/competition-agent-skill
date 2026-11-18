@@ -55,6 +55,7 @@ class IterationTraceTests(unittest.TestCase):
                expected: int = 0) -> dict:
         return self.call("record", "--candidate-id", name, "--source", str(candidate["source"]),
                          "--configuration", str(candidate["pipeline"]), "--result", str(candidate["result"]),
+                         "--prediction-boundary", "Synthetic fixed truth and independent predictions in the fixture.",
                          "--route", "representation", "--mechanism", name, "--status", status, *extra,
                          expected=expected)
 

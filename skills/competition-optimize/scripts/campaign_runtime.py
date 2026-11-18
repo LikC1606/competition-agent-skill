@@ -203,9 +203,9 @@ def turn_directory(campaign: pathlib.Path, number: int) -> pathlib.Path:
 
 def job_directory(campaign: pathlib.Path, number: int, kind: str = "agent") -> pathlib.Path:
     directory = turn_directory(campaign, number)
-    if kind not in {"agent", "completion"}:
+    if kind not in {"agent", "completion", "receipt"}:
         raise CampaignError(f"Unsupported job kind: {kind}")
-    return directory / "completion" if kind == "completion" else directory
+    return directory if kind == "agent" else directory / kind
 
 
 def boot_id() -> str:
@@ -295,6 +295,9 @@ def run_worker(campaign: pathlib.Path, number: int, resource_fds: list[int],
                 environment = dict(os.environ)
                 environment.pop(WORKER_TOKEN, None)
                 environment[AGENT_TOKEN] = token
+                # Provider wrappers can retain native schema decoding when no
+                # tool work is requested, without restricting ordinary turns.
+                environment["COMPETITION_RECEIPT_ONLY"] = "1" if kind == "receipt" else "0"
                 inherited = tuple([turn_lock.fileno(), *resource_fds])
                 with (directory / "prompt.txt").open("rb") as stdin, \
                         (directory / "events.jsonl").open("wb") as stdout, \
@@ -315,7 +318,8 @@ def run_worker(campaign: pathlib.Path, number: int, resource_fds: list[int],
                         stop_path = campaign / "stop.request.json"
                         stop_now = stop_path.exists() and read_json(stop_path).get("immediate", False)
                         timeout = request.get("timeout_seconds")
-                        if cancelled or stop_now or timeout is not None and now - started >= timeout:
+                        if (cancelled or stop_now or timeout is not None and
+                                time.time() >= request["started_unix"] + timeout):
                             error = (cancelled[0] if cancelled else "User requested immediate stop" if stop_now
                                      else "Per-turn watchdog expired")
                             break

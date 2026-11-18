@@ -82,12 +82,22 @@ class CampaignEvidence:
         return {entry["conflict_signature"] for entry in self.records if entry["event"] == "measurement_plan"}
 
     @cached_property
+    def _pending_proposals(self) -> dict[str, dict[str, Any]]:
+        closed = {entry.get("proposal_id") for entry in self.records
+                  if entry["event"] in {"candidate", "proposal_stop"}}
+        return {entry["proposal_id"]: entry for entry in self.records
+                if entry["event"] == "proposal" and entry["proposal_id"] not in closed}
+
+    def pending_in_comparison(self, proposal_id: str | None, comparison: Mapping[str, Any] | None) -> bool:
+        proposal = self._pending_proposals.get(proposal_id) if proposal_id else None
+        return bool(proposal and comparison is not None and
+                    self._index[proposal["parent_ids"][0]]["comparison"] == comparison)
+
+    @cached_property
     def counts(self) -> dict[str, int]:
         candidates = [entry for entry in self.records if entry["event"] == "candidate"]
         identities = [executed_implementation(entry) for entry in candidates]
         proposals = {entry["proposal_id"] for entry in self.records if entry["event"] == "proposal"}
-        closed = {entry["proposal_id"] for entry in self.records
-                  if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
         return {
             "events": len(self.records), "candidates": len(candidates),
             "executed_implementations": len({identity for identity in identities if identity}),
@@ -97,8 +107,36 @@ class CampaignEvidence:
                                                 entry["result"].get("result_path") and
                                                 entry["result"].get("execution_status")) for entry in candidates),
             "measurable_candidates": sum(archive_tools.measurable(entry) for entry in candidates),
-            "proposals": len(proposals), "pending_proposals": len(proposals - closed),
+            "proposals": len(proposals), "pending_proposals": len(self._pending_proposals),
         }
+
+    def new_implementation_attempts(self, prefix_length: int, *,
+                                    reads: archive_tools.EvidenceReads | None = None) -> int:
+        """Count new development attempts in the suffix, irrespective of score.
+
+        Raw execution accounting and score ranking keep their existing identity.
+        Only this scheduler projection looks through a managed recipe's adapter
+        hash; the recipe already excludes fold assignments and measurement seeds.
+        """
+        if not any(entry["event"] == "candidate" and entry["role"] == "development"
+                   for entry in self.records[prefix_length:]):
+            return 0
+        reads = self._reads if reads is None else reads
+        fingerprints: set[str] = set()
+        recipes: set[str] = set()
+        attempts = 0
+        for position, entry in enumerate(self.records):
+            fingerprint = executed_implementation(entry)
+            if fingerprint is None or fingerprint in fingerprints:
+                continue
+            fingerprints.add(fingerprint)
+            recipe = _tabular_attempt_identity(entry, reads)
+            new = recipe is None or recipe not in recipes
+            if recipe is not None:
+                recipes.add(recipe)
+            if position >= prefix_length and entry["role"] == "development" and new:
+                attempts += 1
+        return attempts
 
     def signals(self, checkpoint: Mapping[str, Any] | None = None, *,
                 objective_anchor: str | None = None) -> dict[str, Any]:
@@ -122,6 +160,44 @@ class CampaignEvidence:
             "measurement_signatures": self._measurement_signatures,
         }
 
+    def validate_working_selection(self, selection: Mapping[str, Any], *,
+                                   objective_anchor: str | None = None, require_eligibility: bool = False) -> None:
+        """Bind an agent's choice to measured primary development evidence.
+
+        Identity checks do not establish the scientific quality of its reason.
+        The selection never changes the raw-score ranking.
+        """
+        entry = self._index.get(selection["candidate_id"])
+        progress = self.signals(objective_anchor=objective_anchor)["objective_progress"]
+        if (entry is None or not observed_implementation(entry)
+                or entry["comparison"] != progress["comparison"]):
+            raise archive_tools.ArchiveFailure(
+                "invalid_working_selection", "Working selection must name a measured development implementation "
+                "under the primary comparison; retain the previous choice or correct the receipt")
+        if require_eligibility:
+            archive_tools.measurement_plans.validate_selection(entry, self.records, reads=self._reads)
+
+    def selection_excluded(self, selection: Mapping[str, Any] | None) -> bool:
+        return bool(selection and "score_invalidation" in self._index.get(selection["candidate_id"], {}))
+
+    def with_strategy_reference(self, progress: dict[str, Any],
+                                selection: Mapping[str, Any] | None) -> dict[str, Any]:
+        """Expose stagnation relative to the first valid observation of the adopted implementation."""
+        if not selection or selection["comparison_key"] != progress["comparison_key"]:
+            return progress
+        entry = self._index.get(selection["candidate_id"])
+        if entry is None or not observed_implementation(entry) or entry["comparison"] != progress["comparison"]:
+            return progress
+        view = self._comparisons.for_candidate(entry["candidate_id"])
+        identity = archive_tools.implementation_identity(entry)["fingerprint"]
+        representative = view.observations[identity][0]
+        position = view.representatives.index(representative)
+        return {**progress, "strategy_review": {
+            "reference_candidate": representative["candidate_id"],
+            "basis": "working_selection",
+            "implementations_since_reference": len(view.representatives) - position - 1,
+        }}
+
 
 def executed_implementation(entry: dict[str, Any]) -> str | None:
     if entry["event"] != "candidate" or entry["role"] not in archive_tools.DEVELOPMENT_ROLES:
@@ -137,16 +213,35 @@ def executed_implementation(entry: dict[str, Any]) -> str | None:
     return identity["fingerprint"]
 
 
+def _tabular_attempt_identity(entry: dict[str, Any], reads: archive_tools.EvidenceReads) -> str | None:
+    if not archive_tools.prediction_result(entry["result"]):
+        return None
+    name = entry["artifact_paths"].get("configuration")
+    if not name or pathlib.Path(name).name != "recipe.json":
+        return None
+    try:
+        raw = reads.read_bytes(pathlib.Path(name))
+        if archive_tools.sha256(raw) != entry["artifacts"]["configuration"]:
+            return None
+        recipe = archive_tools.load_json(raw, name)
+    except (archive_tools.ArchiveFailure, OSError):
+        # Unavailable or opaque historical snapshots still have a raw identity.
+        return None
+    if (not isinstance(recipe, dict) or recipe.get("schema_version") != 1
+            or not all(isinstance(recipe.get(key), str) and recipe[key]
+                       for key in ("adapter_hash", "candidate_source", "training_data_sha256"))
+            or not isinstance(recipe.get("features"), list) or not isinstance(recipe.get("prediction_rule"), dict)):
+        return None
+    return archive_tools.sha256(archive_tools.canonical({key: value for key, value in recipe.items()
+                                                         if key != "adapter_hash"}))
+
+
 def observed_implementation(entry: dict[str, Any]) -> bool:
     # Explicit archive flags may describe a known score, but they cannot invent
     # a measured gain when the adapter result contains no objective.
     if entry["event"] != "candidate" or entry["role"] != "development":
         return False
-    result, objective = entry["result"], entry["objective"]
-    return bool(archive_tools.measurable(entry) and executed_implementation(entry) and all(
-        result.get(result_key) == objective.get(objective_key)
-        for result_key, objective_key in (("objective_value", "value"), ("objective_direction", "direction"),
-                                          ("objective_kind", "kind"), ("objective_name", "name"))))
+    return archive_tools._observed_snapshot(entry, archive_tools.implementation_identity(entry))
 
 
 def objective_progress(records: list[dict[str, Any]], *,
@@ -156,13 +251,17 @@ def objective_progress(records: list[dict[str, Any]], *,
     if objective_anchor is not None:
         reference = next((entry for entry in records if entry["event"] == "candidate" and
                           entry["candidate_id"] == objective_anchor), None)
-        if reference is None or not observed_implementation(reference):
+        if reference is None or (not observed_implementation(reference) and "score_invalidation" not in reference):
             raise archive_tools.ArchiveFailure(
                 "invalid_objective_anchor", "Objective anchor must name a valid scored development implementation")
         context = reference["comparison"]
     anchor = next((entry for entry in reversed(records)
                    if entry["event"] == "candidate" and entry["role"] == "development" and
+                   "score_invalidation" not in entry and
                    (context is None or entry["comparison"] == context)), None)
+    if anchor is None and context is not None:
+        # The pinned reference can still identify the contract after its score is excluded.
+        anchor = reference
     if anchor is None:
         return {"comparison_key": None, "comparison": None, "anchor_candidate": None,
                 "objective_anchor": objective_anchor,
@@ -185,6 +284,9 @@ def objective_progress(records: list[dict[str, Any]], *,
             "objective_anchor": objective_anchor,
             "best_candidate": best["candidate_id"] if best else None,
             "best_value": best["objective"]["value"] if best else None,
+            "best_archive_status": best["status"] if best else None,
+            "scope": "Historical eligible raw-score progress, not adoption or independent confirmation. "
+                     "Nonimproving means no new raw best; a working selection may still improve its own control.",
             "comparable_implementations": len(measured),
             "implementations_since_best": len(measured) - best_position - 1 if best else 0,
             "latest_eligible": observed_implementation(anchor),
@@ -193,16 +295,19 @@ def objective_progress(records: list[dict[str, Any]], *,
 
 
 def review_due(progress: dict[str, Any], previous: dict[str, Any] | None, window: int) -> bool:
-    """Count new implementations since both the best and the last review.
+    """Count new implementations since the strategy reference and last review.
 
-    Route labels and promising/unresolved declarations cannot reset objective
-    history. A review is a context boundary, never an experiment allowance.
+    Without a working selection, fall back to historical raw-score progress.
+    A review is a context boundary, never an experiment allowance.
     """
+    strategy = progress.get("strategy_review")
+    since_reference = (strategy["implementations_since_reference"] if strategy else
+                       progress["implementations_since_best"])
     if (not progress["latest_eligible"] or not progress["best_candidate"] or
-            progress["implementations_since_best"] < window):
+            since_reference < window):
         return False
-    if previous and (previous["comparison_key"], previous["best_candidate"]) == (
-            progress["comparison_key"], progress["best_candidate"]):
+    if (previous and previous["comparison_key"] == progress["comparison_key"]
+            and (strategy or previous["best_candidate"] == progress["best_candidate"])):
         return progress["comparable_implementations"] - previous["comparable_implementations"] >= window
     return True
 
@@ -323,7 +428,7 @@ def execution_health(records: list[dict[str, Any]]) -> dict[str, Any]:
     seen = set()
     for entry in records:
         identity = executed_implementation(entry)
-        if identity is None:
+        if identity is None or "score_invalidation" in entry:
             continue
         result = entry["result"]
         reference = (identity, result["result_path"], result.get("result_sha256"))
@@ -555,6 +660,21 @@ class Handoff:
     delivery: dict[str, Any]
 
 
+def current_research_state(memory: Mapping[str, Any], comparison_key: str | None) -> dict[str, Any] | None:
+    research = memory.get("research_state")
+    if not research or research["comparison_key"] != comparison_key:
+        return None
+    finding = research.get("finding")
+    if finding:
+        corrections = memory.get("research_corrections", {}).get(comparison_key or "null", {})
+        replacement = corrections.get(finding["premise_id"])
+        if replacement and replacement["turn"] >= research["turn"]:
+            # The question's proposed actions may still depend on this finding.
+            # Keep the old receipt for history and use the keyed correction instead.
+            return None
+    return research
+
+
 def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: CampaignEvidence,
                     task_sha256: str) -> Handoff:
     """Prepare bounded evidence and its schema-v2 delivery intent together.
@@ -564,13 +684,14 @@ def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: Campaig
     """
     facts = view.signals(memory["comparison_review_checkpoint"], objective_anchor=memory.get("objective_anchor"))
     key = facts["objective_progress"]["comparison_key"]
-    research = memory.get("research_state")
-    if research and research["comparison_key"] != key:
-        research = None
+    research = current_research_state(memory, key)
     corrections = sorted(memory.get("research_corrections", {}).get(key or "null", {}).values(),
                          key=lambda row: (-row["turn"], row["report"]["key"]))
+    selection = memory.get("working_selection")
+    if selection and selection["comparison_key"] != key:
+        selection = None
     decision_context = ({"research_state": research, "corrections": corrections,
-                         "scope": "Agent interpretations under the current development comparison. "
+                         "scope": "Agent interpretations and maintenance audits under the current development comparison. "
                                   "A status=withdrawn report retracts that key; do not reuse its older claim. "
                                   "Other corrections supersede the same key in older receipts, not sealed observations. "
                                   "Recheck source entities and premises before relying on a report; "
@@ -578,10 +699,11 @@ def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: Campaig
                         if research or corrections else None)
     packet = handoff_packet(
         pathlib.Path(memory["archive"]), view.records, memory["archive_snapshot"], task_sha256,
-        progress=facts["objective_progress"], health=facts["execution_health"],
+        progress=prepared.updates["objective_progress"], health=facts["execution_health"],
         continuity=facts["comparison_continuity"], _view=view,
         measurement_plan=facts["measurement_plan"], mode=prepared.updates["next_mode"],
         decision_context=decision_context,
+        working_selection=selection,
         frontier_seen=memory["frontier_exposures"].get(key, {}),
         pending_seen=memory["pending_proposal_exposures"].get(key, {}),
         trial_seen=memory["trial_exposures"].get(key, {}),
@@ -614,6 +736,7 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
                    evidence: archive_tools.ComparisonEvidence | None = None,
                    measurement_plan: dict[str, Any] | None = None,
                    decision_context: dict[str, Any] | None = None,
+                   working_selection: dict[str, Any] | None = None,
                    _view: CampaignEvidence | None = None, mode: str = "work") -> dict[str, Any]:
     view = _view if _view is not None else CampaignEvidence(records, comparisons=evidence)
     reads, evidence = view._reads, view._comparisons
@@ -644,15 +767,20 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
                                "result_sha256": entry["result"]["result_sha256"],
                                "identity_checks": {"result_bytes": "checked", "snapshot_bytes": "checked"}}
             repeat_conflict["cards"] = cards
-    related = {identity for candidate_id in (progress["anchor_candidate"], progress["best_candidate"])
+    related = {identity for candidate_id in (progress["anchor_candidate"], progress["best_candidate"],
+                                            (working_selection or {}).get("candidate_id"))
                if candidate_id and (identity := executed_implementation(index[candidate_id]))}
     brief = None
     if progress["anchor_candidate"]:
-        brief = archive_tools.optimization_brief(
-            argparse.Namespace(archive=archive, anchor=progress["anchor_candidate"], recent=4, routes=4, frontier=2),
-            records, rankable=observed_implementation, frontier_seen=frontier_seen,
-            pending_seen=pending_seen, learning_seen={} if learning_seen is None else learning_seen,
-            reads=reads, evidence=evidence)
+        if working_selection:
+            view.validate_working_selection(working_selection, objective_anchor=progress.get("objective_anchor"))
+        brief = archive_tools.EvidenceSnapshot._from_views(
+            archive, records, rankable=observed_implementation, reads=reads, comparisons=evidence).brief(
+                archive_tools.BriefQuery(anchor=progress["anchor_candidate"], recent=4, routes=4, frontier=2,
+                                         frontier_seen=frontier_seen, pending_seen=pending_seen,
+                                         learning_seen={} if learning_seen is None else learning_seen,
+                                         include_candidates=((working_selection["candidate_id"],)
+                                                             if working_selection else ())))
         brief["scope"] += " Best representatives in this packet additionally require a scored adapter result and code/recipe snapshot."
         # Other comparison contracts remain in the archive for reconciliation;
         # they must not become the new session's active proposal list.
@@ -681,10 +809,11 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
                                     "remaining_slots": sum(item[name] is None for item in measurement_plan["runs"]
                                                            for name in ("leader", "challenger")),
                                     "pairs_complete": measurement_plan["complete"],
+                                    "rule_state": measurement_plan["rule_result"]["state"],
                                     "next_run_id": next((item["run_id"] for item in measurement_plan["runs"]
                                                          if item["leader"] is None or item["challenger"] is None), None),
                                     "scope": "Read the full frozen protocol and paired outcomes with candidate_archive.py "
-                                             "measure-status --archive PATH --plan-id ID; complete its unmatched slots."}
+                                             "measure-status --archive PATH --plan-id ID."}
                                    if measurement_plan else None),
               "measurement_decision": archive_tools.measurement_plans.latest_decision(
                   records, progress["comparison"], reads=reads),
@@ -692,6 +821,7 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
                   records, progress["comparison"], reads=reads),
               "trial_history": trial_history(archive, records, progress["comparison"], related, seen=trial_seen, reads=reads),
               "development_brief": brief,
+              "working_selection": working_selection,
               "scope": "Matched development evidence only. Best scores are observations, not certified promotion. "
                        "Read the cited code/results for the next decision. Truncated fields are retrieval hints, "
                        "not complete identifiers or executable paths. Confirmation scores never guide the next proposal."}
@@ -701,6 +831,13 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
     if repeat_conflict:
         repeat_conflict["retrieval_sha256"] = archive_tools.sha256(
             archive_tools.canonical(_repeat_conflict_identity(packet)))
+    exclusions = {entry["score_invalidation"]["candidate_id"]
+                  for entry in index.values() if "score_invalidation" in entry
+                  and entry["comparison"] == progress["comparison"]}
+    if exclusions:
+        packet["score_invalidations"] = [entry for entry in records
+                                         if entry["event"] == "score_invalidation"
+                                         and entry["candidate_id"] in exclusions][-2:][::-1]
     if decision_context:
         packet["decision_context"] = decision_context
     return bound_packet(packet, budget=HANDOFF_BYTES, mode=mode)

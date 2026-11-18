@@ -60,6 +60,8 @@ class ScopedLearningTests(unittest.TestCase):
             args += ["--source", str(source)]
         if executed:
             args += ["--result", str(result)]
+            if scope == "prediction_csv":
+                args += ["--prediction-boundary", "Synthetic fixture with a fixed development boundary."]
         if not executed or not scored:
             args += ["--valid", "--objective-value", str(score), "--objective-direction", "maximize",
                      "--objective-kind", "official_metric", "--objective-name", "quality"]
@@ -192,6 +194,51 @@ class ScopedLearningTests(unittest.TestCase):
         diagnostic = self.learned("diagnostic", role="diagnostic")
         self.assertEqual(diagnostic["learning"]["candidate_id"], "diagnostic")
         self.assertEqual(self.brief()["best_development"], "control")
+
+    def test_descriptive_diagnostic_keeps_observation_but_cannot_supply_learning(self) -> None:
+        self.propose("probe")
+        args, _ = self.arguments("sensitivity", 999, proposal="probe", role="diagnostic")
+        args.descriptive = True
+        entry = archive.record_candidate(args)
+        self.assertEqual(entry["diagnostic_scope"], "descriptive")
+        card = self.brief()["candidates"]["sensitivity"]
+        self.assertEqual(card["objective"]["value"], 999)
+        self.assertEqual(card["diagnostic_scope"], "descriptive")
+        self.assertIsNone(card["prediction_status"])
+        trial = self.packet()["trial_history"]["selection"][0]
+        diagnostic = trial["evidence"]["sensitivity"]
+        self.assertTrue(diagnostic["requires_revalidation"])
+        self.assertEqual(diagnostic["diagnostic_scope"], "descriptive")
+        self.assertIsNone(trial["prediction_status"])
+        self.propose("new-test")
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(archive.ArchiveFailure, "Descriptive diagnostics"):
+            self.record("unsupported-lesson", proposal="new-test",
+                        learning=self.lesson(evidence=["sensitivity"]))
+        self.assertEqual(self.path.read_bytes(), before)
+        self.record("fresh-test", proposal="new-test", learning=self.lesson(evidence=["control"]))
+        self.assertEqual(self.brief()["scoped_learning"]["selection"][0]["candidate_id"], "fresh-test")
+
+    def test_untraced_prediction_probe_cannot_reenter_from_legacy_learning(self) -> None:
+        args, _ = self.arguments("oof-probe", role="diagnostic", scope="prediction_csv")
+        args.parent = ["control"]
+        args.configuration = args.source
+        # Construct an archive a prior version could have written with an untraced probe.
+        entry = archive.record_candidate(args)
+        self.assertNotIn("diagnostic_scope", entry)
+        self.learned("legacy-report", lesson=self.lesson(evidence=["oof-probe"]))
+        history = [json.loads(line) for line in self.path.read_text().splitlines()]
+        history[1].pop("prediction_boundary")
+        self.path.write_text("".join(json.dumps(row) + "\n" for row in history))
+        self.assertEqual(len(archive.read_records(self.path)), len(history))
+        brief = self.brief()
+        self.assertEqual(brief["scoped_learning"]["selection"], [])
+        self.assertEqual(brief["candidates"]["oof-probe"]["diagnostic_scope"], "descriptive")
+        self.assertNotIn("learning", brief["candidates"]["legacy-report"])
+        with self.assertRaisesRegex(archive.ArchiveFailure, "current learning"):
+            self.propose("repeat-legacy", learning_from=["legacy-report"])
+        self.learned("revalidated", lesson=self.lesson(evidence=["control"], revises="legacy-report"))
+        self.assertEqual(self.brief()["scoped_learning"]["selection"][0]["candidate_id"], "revalidated")
 
     def test_revision_must_name_and_retain_the_current_head(self) -> None:
         self.learned()

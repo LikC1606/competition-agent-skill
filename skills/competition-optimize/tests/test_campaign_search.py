@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib
 import json
 import sys
@@ -31,7 +32,7 @@ class CampaignSearchTests(unittest.TestCase):
                role: str = "development", parent: str | None = None, feedback: str = "",
                failure: str = "", comparison: dict | None = None,
                reuse: str | None = None, scope: str = "program_source",
-               recipe: str | None = None, executed: bool = True,
+               recipe: str | dict | None = None, executed: bool = True,
                snapshot: bool = True, result_score: bool = True,
                execution_status: str | None = None, result_error: dict | str | None = None,
                result_artifacts: list | None = None, partial: bool = False,
@@ -73,11 +74,13 @@ class CampaignSearchTests(unittest.TestCase):
         if snapshot:
             arguments += ["--source", str(source)]
         if recipe is not None:
-            pipeline = folder / "pipeline.py"
-            pipeline.write_text(recipe + "\n", encoding="utf-8")
+            pipeline = folder / ("recipe.json" if isinstance(recipe, dict) else "pipeline.py")
+            pipeline.write_text((json.dumps(recipe) if isinstance(recipe, dict) else recipe) + "\n", encoding="utf-8")
             arguments += ["--configuration", str(pipeline)]
         if executed:
             arguments += ["--result", str(result_path)]
+            if scope == "prediction_csv" or result_reference and archive.prediction_result(self.entries[result_reference]["result"]):
+                arguments += ["--prediction-boundary", "Synthetic fixture with a fixed development boundary."]
             if not result_score and objective_flags:
                 arguments += ["--objective-direction", direction, "--objective-kind", kind,
                               "--objective-name", metric]
@@ -779,6 +782,42 @@ class CampaignSearchTests(unittest.TestCase):
         self.assertEqual(packet["archive_path"], str(self.path))
         self.assertEqual(packet["task_sha256"], "t" * 64)
         self.assertEqual(self.records()[-1]["feedback"], "实测失败原因" * 20000)
+
+    def test_correction_history_cannot_displace_current_question_and_score_controls(self) -> None:
+        self.record("baseline", 10, route="baseline-route")
+        self.record("alternative-a", 9, route="alternative-a", parent="baseline")
+        self.record("alternative-b", 8, route="alternative-b", parent="baseline")
+        self.record("challenger", 7, route="challenger-route", parent="baseline")
+        corrections = [{"turn": n, "receipt_path": f"/saved/{n}/message.json", "report": {
+            "key": f"claim-{n}", "claim": "Conditional interpretation. " * 150,
+            "conditions": "Only the measured implementation.", "limitations": "Other routes remain open.",
+            "reopen_when": "A different mechanism.", "evidence": [f"/saved/{n}/result.json"]}}
+                       for n in range(30, 0, -1)]
+        corrections[0]["report"] = {"key": "withdrawn-ceiling", "status": "withdrawn",
+                                    "reason": "The evidence does not identify a ceiling. " * 100,
+                                    "evidence": ["/saved/30/result.json"]}
+        research = {"turn": 31, "receipt_path": "/saved/31/message.json", "report": {
+            "status": "open", "route": "diagnostic", "question": "Does this change improve the selected control?",
+            "alternatives": ["Useful channel", "Partition-specific effect"],
+            "missing_evidence": "A matched comparison.", "answer_actions": [], "evidence": []}}
+        decision = {"scope": "Conditional agent reports", "research_state": research, "corrections": corrections}
+        original = copy.deepcopy(decision)
+        packet = self.packet(decision_context=decision)
+        self.assertEqual(packet["objective_progress"]["best_candidate"], "baseline")
+        self.assertEqual(set(packet["development_brief"]["candidates"]),
+                         {"baseline", "challenger", "alternative-a", "alternative-b"})
+        self.assertEqual(len(packet["development_brief"]["routes"]), 4)
+        self.assertEqual(packet["decision_context"]["research_state"], research)
+        rows = packet["decision_context"]["corrections"]
+        self.assertEqual(len(rows), len(corrections))
+        for delivered, original_row in zip(rows, corrections):
+            if delivered["report"] is None:
+                self.assertEqual(delivered["report_sha256"], archive.sha256(archive.canonical(original_row["report"])))
+                self.assertEqual(delivered["report_status"], original_row["report"].get("status", "active"))
+            else:
+                self.assertEqual(delivered, original_row)
+        self.assertLessEqual(len(json.dumps(packet, ensure_ascii=False).encode()), search.HANDOFF_BYTES)
+        self.assertEqual(decision, original)
 
     def test_handoff_hard_byte_bound_survives_oversized_unicode_identifiers(self) -> None:
         self.record("候选" * 20000, 10, feedback="证据" * 20000)

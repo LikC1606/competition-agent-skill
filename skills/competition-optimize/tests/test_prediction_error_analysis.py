@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import csv
 import importlib
+import itertools
 import json
 import math
 import random
@@ -68,6 +69,66 @@ class PredictionErrorAnalysisTests(unittest.TestCase):
         output.mkdir()
         args = analyzer.make_parser().parse_args(self.arguments(output, *extra))
         return analyzer.analyze(args, output), output
+
+    def fit_receipt(self, result: Path, folds: list[dict]) -> Path:
+        self.sequence += 1
+        run = self.root / f"run-{self.sequence}"
+        run.mkdir()
+        fit = run / "fit.json"
+        fit.write_text(json.dumps({"folds": folds}), encoding="utf-8")
+        manifest = {"schema_version": 1, "kind": "tabular_training", "files": {
+            "fit.json": evaluator.byte_hash(fit.read_bytes()),
+            "oof.csv": evaluator.byte_hash((result.parent / "predictions.csv").read_bytes()),
+            "truth.csv": evaluator.byte_hash(self.truth.read_bytes())}}
+        manifest["seal"] = evaluator.object_hash(manifest)
+        (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return fit
+
+    def test_real_fold_wins_and_second_layer_overlap_are_reported_separately(self) -> None:
+        # Sorted-ID blocks would put both easy cases and both hard cases together,
+        # showing one win and one loss instead of two wins on the real folds.
+        folds = [{"fold_id": "A", "train_ids": ["1", "b"], "validation_ids": ["a", "001"]},
+                 {"fold_id": "B", "train_ids": ["a", "001"], "validation_ids": ["1", "b"]}]
+        before = self.fit_receipt(self.baseline, folds)
+        after = self.fit_receipt(self.candidate, list(reversed(folds)))
+        report, _ = self.analyze("--summary-only", "--baseline-fit", str(before), "--candidate-fit", str(after))
+        fold = report["fold_comparison"]
+        self.assertEqual(fold["fold_preference_counts"], {"baseline": 0, "candidate": 2, "tie": 0, "unavailable": 0})
+        self.assertAlmostEqual(fold["folds"][0]["objective_improvement"], math.sqrt(8.5) - math.sqrt(2))
+        self.assertEqual(report["input_hashes"]["candidate_fit"], evaluator.byte_hash(after.read_bytes()))
+        boundary = fold["pooled_oof_second_layer_boundary"]
+        self.assertEqual(boundary["status"], "held_out_label_overlap")
+        self.assertEqual([row["held_out_labels_seen_by_producer_fold"] for row in boundary["folds"]],
+                         [{"B": 2}, {"A": 2}])
+
+    def test_temporal_folds_can_have_zero_recorded_second_layer_label_overlap(self) -> None:
+        folds = [{"fold_id": "early", "train_ids": ["warmup"], "validation_ids": ["a", "001"]},
+                 {"fold_id": "late", "train_ids": ["warmup", "a", "001"], "validation_ids": ["1", "b"]}]
+        before, after = [self.fit_receipt(path, folds) for path in [self.baseline, self.candidate]]
+        report, _ = self.analyze("--baseline-fit", str(before), "--candidate-fit", str(after))
+        boundary = report["fold_comparison"]["pooled_oof_second_layer_boundary"]
+        self.assertEqual(boundary["status"], "no_recorded_label_overlap")
+        self.assertEqual([row["training_rows_with_saved_oof"] for row in boundary["folds"]], [0, 2])
+        self.assertEqual(boundary["folds"][1]["held_out_labels_seen_by_producer_fold"], {"early": 0})
+
+    def test_fold_check_rejects_wrong_run_incomplete_coverage_and_mismatched_membership(self) -> None:
+        folds = [{"fold_id": "A", "train_ids": ["1", "b"], "validation_ids": ["a", "001"]},
+                 {"fold_id": "B", "train_ids": ["a", "001"], "validation_ids": ["1", "b"]}]
+        before = self.fit_receipt(self.baseline, folds)
+        option = ("--baseline-fit", str(before))
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "Provide both"):
+            self.analyze(*option)
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "different OOF predictions or truth"):
+            self.analyze(*option, "--candidate-fit", str(before))
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "cover the evaluated IDs exactly once"):
+            self.analyze(*option, "--candidate-fit", str(self.fit_receipt(self.candidate, folds[:1])))
+        changed = [folds[0], {**folds[1], "train_ids": ["a"]}]
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "different training or validation assignments"):
+            self.analyze(*option, "--candidate-fit", str(self.fit_receipt(self.candidate, changed)))
+        after = self.fit_receipt(self.candidate, folds)
+        after.write_bytes(after.read_bytes() + b"\n")
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "differs from its training manifest"):
+            self.analyze(*option, "--candidate-fit", str(after))
 
     def test_total_gain_with_slice_regression_is_visible_and_matches_hand_calculations(self) -> None:
         report, output = self.analyze("--slices", str(self.slices), "--slice-column", "regime",
@@ -462,6 +523,24 @@ class PredictionErrorAnalysisTests(unittest.TestCase):
         self.assertNotEqual(full["config_hash"], default["config_hash"])
         self.assertEqual(summary["case_preference_counts"]["tie"], 4)
 
+    def test_influence_is_opt_in_and_summary_independent(self) -> None:
+        default, _ = self.analyze()
+        full, _ = self.analyze("--check-influence", "--influence-max-removals", "1")
+        summary, _ = self.analyze("--check-influence", "--influence-max-removals", "1", "--summary-only")
+        self.assertNotIn("influence", default)
+        self.assertEqual(full["influence"], summary["influence"])
+        self.assertEqual(full["aggregate_comparison"], default["aggregate_comparison"])
+        self.assertEqual(full["configuration"]["influence_max_removals"], 1)
+        self.assertNotEqual(full["config_hash"], default["config_hash"])
+        self.assertEqual(full["influence"]["loss_direction"], "candidate_better")
+        self.assertIsNone(full["influence"]["minimum_removals_to_tie_or_reverse"])
+
+    def test_influence_preserves_development_evidence_boundary(self) -> None:
+        self.baseline = self.evaluate("id,prediction\n001,1\n1,1\na,1\nb,1\n", "--stage", "confirmation")
+        self.candidate = self.evaluate("id,prediction\n001,0\n1,0\na,0\nb,0\n", "--stage", "confirmation")
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "development"):
+            self.analyze("--check-influence")
+
     def test_binary_metrics_report_unavailable_instead_of_assuming_convexity(self) -> None:
         self.truth.write_text("id,target\n001,0\n1,1\na,0\nb,1\n", encoding="utf-8")
         for metric in ["binary_log_loss", "roc_auc"]:
@@ -484,6 +563,59 @@ class PredictionErrorAnalysisTests(unittest.TestCase):
         self.truth.write_bytes(self.truth.read_bytes() + b"\n")
         with self.assertRaisesRegex(analyzer.AnalysisFailure, "Truth bytes differ"):
             self.analyze("--check-blend-direction")
+
+
+class InfluenceDiagnosticsTests(unittest.TestCase):
+    def diagnose(self, before, after, limit=5):
+        return analyzer.influence_diagnostics("rmse", [0.0] * len(before), before, after,
+                                              [str(i) for i in range(len(before))], limit)
+
+    def test_diffuse_gain_does_not_flip_when_five_of_ten_rows_are_removed(self):
+        for before, after, direction in [([1.0] * 10, [0.0] * 10, "candidate_better"),
+                                          ([0.0] * 10, [1.0] * 10, "candidate_worse")]:
+            with self.subTest(direction=direction):
+                result = self.diagnose(before, after)
+                self.assertEqual(result["loss_direction"], direction)
+                self.assertIsNone(result["minimum_removals_to_tie_or_reverse"])
+                self.assertEqual(result["max_removal_loss_share"], 0.5)
+
+    def test_concentrated_gain_and_regression_have_the_same_witness(self):
+        for before, after in [([3.0, 0.0, 0.0], [0.0, 1.0, 1.0]),
+                              ([0.0, 1.0, 1.0], [3.0, 0.0, 0.0])]:
+            result = self.diagnose(before, after, 1)
+            self.assertEqual(result["minimum_removals_to_tie_or_reverse"], 1)
+            self.assertEqual(result["minimum_witness_ids"], ["0"])
+            self.assertAlmostEqual(result["max_removal_loss_share"], 9 / 7)
+
+    def test_small_cases_match_exhaustive_deletions_in_both_directions(self):
+        rng = random.Random(1729)
+        for _ in range(60):
+            before, after = [[rng.randrange(-3, 4) for _ in range(6)] for _ in range(2)]
+            changes = [c * c - b * b for b, c in zip(before, after)]
+            total = sum(changes)
+            if total == 0:
+                continue
+            expected = next((count for count in range(1, 5)
+                             if any((total - sum(changes[i] for i in indexes)) * total <= 0
+                                    for indexes in itertools.combinations(range(6), count))), None)
+            for b, c in [(before, after), (after, before)]:
+                self.assertEqual(self.diagnose(b, c, 4)["minimum_removals_to_tie_or_reverse"], expected)
+
+    def test_ties_single_row_and_non_rmse_do_not_invent_witnesses(self):
+        self.assertEqual(self.diagnose([1.0, 0.0], [0.0, 1.0])["loss_direction"], "tied")
+        single = self.diagnose([1.0], [0.0])
+        self.assertEqual(single["effective_max_removals"], 0)
+        self.assertIsNone(single["minimum_removals_to_tie_or_reverse"])
+        self.assertEqual(analyzer.influence_diagnostics("roc_auc", [], [], [], [])["status"], "unavailable")
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "positive"):
+            self.diagnose([1.0], [0.0], 0)
+
+    def test_exact_sign_handles_large_and_small_residuals_without_nan(self):
+        for scale in [1e308, 5e-324]:
+            result = self.diagnose([scale, 0.0], [0.0, scale / 2], 1)
+            self.assertEqual(result["loss_direction"], "candidate_better")
+            self.assertEqual(result["minimum_removals_to_tie_or_reverse"], 1)
+            json.dumps(result, allow_nan=False)
 
 
 if __name__ == "__main__":

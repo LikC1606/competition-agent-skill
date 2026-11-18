@@ -20,9 +20,9 @@ import scoped_learning
 from campaign_trials import trial_history
 from candidate_evidence import (
     ArchiveFailure, ComparisonEvidence, DEVELOPMENT_ROLES, OUTPUT_ONLY_SCOPES,
-    candidate_index, canonical, directed_score, distinct_implementations,
+    candidate_index, canonical, descriptive_diagnostic, directed_score, distinct_implementations,
     implementation_identity, load_json, measurable, observed_snapshot,
-    proposal_identity_checks, review_opportunities, sha256,
+    proposal_identity_checks, proposal_prediction_status, review_opportunities, sha256,
 )
 from evidence_files import (ArtifactResolver, EvidenceReads, verify_artifacts, verify_result,
                             verify_proposal_targets)
@@ -37,6 +37,7 @@ class BriefQuery:
     frontier_seen: dict[str, int] | None = None
     pending_seen: dict[str, int] | None = None
     learning_seen: dict[str, int] | None = None
+    include_candidates: tuple[str, ...] = ()
 
     def validate(self) -> None:
         if self.recent < 1 or self.routes < 1:
@@ -95,9 +96,11 @@ def evidence_summary(entry: dict[str, Any]) -> dict[str, Any]:
         summary["implementation_review"] = entry["implementation_review"]
     if "construction_mode" in entry:
         summary["construction_mode"] = entry["construction_mode"]
-    for key in ("learning", "learning_from"):
+    for key in ("learning", "learning_from", "score_invalidation", "prediction_boundary"):
         if key in entry:
             summary[key] = entry[key]
+    if descriptive_diagnostic(entry):
+        summary["diagnostic_scope"] = "descriptive"
     return summary
 
 
@@ -182,9 +185,10 @@ class EvidenceSnapshot:
                 row.update(state="stopped", reason=outcome["reason"])
             elif outcome is not None:
                 verify(outcome)
-                row.update(state="evaluated_valid" if outcome["valid"] else "evaluation_failed_or_invalid",
+                row.update(state=("score_excluded" if "score_invalidation" in outcome else
+                                  "evaluated_valid" if outcome["valid"] else "evaluation_failed_or_invalid"),
                            candidate_id=outcome["candidate_id"], evidence=evidence_summary(outcome), objective=outcome["objective"],
-                           feedback=outcome["feedback"], prediction_status=outcome["prediction_status"],
+                           feedback=outcome["feedback"], prediction_status=proposal_prediction_status(outcome),
                            failure_mechanism=outcome["failure_mechanism"], cost=outcome["cost"])
                 gains = {}
                 for parent_id in proposal["parent_ids"]:
@@ -221,7 +225,7 @@ class EvidenceSnapshot:
             if anchor["role"] != "development":
                 raise ArchiveFailure("confirmation_feedback", "Only ordinary development evidence can anchor optimization context")
         elif development:
-            anchor = development[-1]
+            anchor = next((entry for entry in reversed(development) if "score_invalidation" not in entry), development[-1])
         else:
             raise ArchiveFailure("no_development_evidence", "Confirmation evidence cannot guide new optimization")
         context = anchor["comparison"]
@@ -257,6 +261,11 @@ class EvidenceSnapshot:
 
         include(anchor)
         include(best)
+        for candidate_id in args.include_candidates:
+            entry = index.get(candidate_id)
+            if entry is None or entry["role"] != "development" or entry["comparison"] != context:
+                raise ArchiveFailure("invalid_brief_candidate", "Requested control must belong to the active development comparison")
+            include(entry)
         resource_entries = [entry for entry in scoped if "resource_profile" in entry["result"]
                             and observed_snapshot(entry, implementation_identity(entry))
                             and (rankable is None or rankable(entry))]
@@ -316,15 +325,21 @@ class EvidenceSnapshot:
             details = sorted(matching_pending, key=lambda entry: (
                 entry["proposal_id"] in pending_seen, pending_seen.get(entry["proposal_id"], 0)))[:args.recent]
         reference_entries: dict[str, dict[str, Any]] = {}
-        diagnostics = [entry for entry in index.values() if entry["role"] == "diagnostic"
-                       and index[entry["parent_ids"][0]]["comparison"] == context]
-        selected_diagnostics = diagnostics[-2:]
-        for entry in selected_diagnostics:
-            include(index[entry["parent_ids"][0]])
+
+        def include_reference(entry: dict[str, Any]) -> None:
             if entry["comparison"] == context:
                 include(entry)
             else:
                 reference_entries[entry["candidate_id"]] = entry
+
+        diagnostics = [entry for entry in index.values()
+                       if (entry["role"] == "diagnostic" and index[entry["parent_ids"][0]]["comparison"] == context)
+                       or ("score_invalidation" in entry and entry["comparison"] == context)]
+        selected_diagnostics = diagnostics[-2:]
+        for entry in selected_diagnostics:
+            if entry["parent_ids"]:
+                include_reference(index[entry["parent_ids"][0]])
+            include_reference(entry)
         for proposal in details:
             for candidate_id in proposal.get("learning_from", []):
                 scoped_learning.verify_evidence(index[candidate_id]["learning"], index, reads=reads)
@@ -333,15 +348,8 @@ class EvidenceSnapshot:
                 if entry["role"] not in DEVELOPMENT_ROLES:
                     raise ArchiveFailure("confirmation_feedback", "Confirmation evidence cannot supply pending work or references")
                 if entry["role"] == "diagnostic":
-                    control = index[entry["parent_ids"][0]]
-                    if control["comparison"] == context:
-                        include(control)
-                    else:
-                        reference_entries[control["candidate_id"]] = control
-                if entry["comparison"] == context:
-                    include(entry)
-                else:
-                    reference_entries[candidate_id] = entry
+                    include_reference(index[entry["parent_ids"][0]])
+                include_reference(entry)
 
         recent = distinct_implementations(by_route[anchor["route"]])[-args.recent:]
         recent_ids = [include(entry) for entry in recent]
@@ -386,10 +394,12 @@ class EvidenceSnapshot:
             verify_artifacts(entry, reads=reads)
             card = {key: entry.get(key) for key in ("role", "parent_ids", "fingerprint", "artifact_paths", "route", "mechanism",
                                                   "valid", "status", "objective", "cost", "feedback", "failure_mechanism",
-                                                  "proposal_id", "prediction_status")}
+                                                  "proposal_id")}
+            card["prediction_status"] = proposal_prediction_status(entry)
             result = entry["result"]
             card["reused_from"] = artifact_reused[candidate_id]
             card["implementation"] = implementation_identity(entry)
+            card["comparison_sha256"] = sha256(canonical(entry["comparison"]))
             card["reused_implementation_from"] = reused[candidate_id]
             card["result"] = {key: result.get(key) for key in ("result_path", "result_sha256", "execution_status",
                                                              "validity_scope", "unchecked_rules")}
@@ -408,9 +418,14 @@ class EvidenceSnapshot:
                 card["implementation_review"] = entry["implementation_review"]
             if "construction_mode" in entry:
                 card["construction_mode"] = entry["construction_mode"]
-            for key in ("learning", "learning_from"):
+            if descriptive_diagnostic(entry):
+                card["diagnostic_scope"] = "descriptive"
+                card["prediction_status"] = None
+            for key in ("learning", "learning_from", "score_invalidation", "prediction_boundary"):
                 if key in entry:
                     if key == "learning":
+                        if scoped_learning.uses_descriptive(entry[key], index):
+                            continue
                         scoped_learning.verify_evidence(entry[key], index, reads=reads)
                     card[key] = entry[key]
             cards[candidate_id] = card
@@ -431,6 +446,8 @@ class EvidenceSnapshot:
                                     "snapshot_bytes": "checked" if entry["artifact_paths"] else "not_recorded"},
                 "scope": "Development or diagnostic code/result identity from another comparison. Read cited artifacts for repair or transfer; "
                          "revalidate under the target contract. Its objective and feedback do not guide active score ranking."}
+            if descriptive_diagnostic(entry):
+                pending_references[candidate_id]["diagnostic_scope"] = "descriptive"
         return {"schema_version": 1, "archive_path": reads.archive_name(self._archive_path),
                 "anchor_candidate": anchor["candidate_id"], "comparison": context,
                 "best_development": best["candidate_id"] if best else None,
@@ -444,7 +461,7 @@ class EvidenceSnapshot:
                     seen=learning_seen, archive_path=self._archive_path),
                 "diagnostic_evidence": {"selection": [entry["candidate_id"] for entry in selected_diagnostics],
                                         "available": len(diagnostics), "omitted": len(diagnostics) - len(selected_diagnostics),
-                                        "scope": "Latest two diagnostic interventions whose first development control matches the complete active comparison. "
+                                        "scope": "Latest two diagnostics with a matched control or excluded scores in the active comparison. "
                                                  "Diagnostics inform the next change, not candidate ranking, route progress, opportunity closure or promotion. "
                                                  "A diagnostic under another contract supplies identity only and requires revalidation. "
                                                  "This retrieval window does not limit diagnostic experiments."},

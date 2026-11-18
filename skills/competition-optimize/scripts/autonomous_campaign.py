@@ -18,20 +18,22 @@ import subprocess
 import sys
 import time
 import uuid
-from typing import Any, BinaryIO
+from contextlib import contextmanager
+from typing import Any, BinaryIO, Iterator
 
 import candidate_archive as archive_tools
 from campaign_archive import CampaignArchive
+from campaign_policy import update_research_corrections
 from campaign_prompt import prompt_for_turn
-from codex_invocation import FINAL_SCHEMA
+from codex_invocation import FINAL_SCHEMA, correction_reports_valid, research_state_valid
 from campaign_state import (SCHEMA_VERSION, append_event, check_control_files, complete_state, read_state, save_state)
-from turn_lifecycle import TurnLifecycle, materialize_request
+from turn_lifecycle import TurnLifecycle, materialize_request, receipt_job
 
 # Compatibility entrypoint; turn creation is owned by the lifecycle module.
 prepare_turn = TurnLifecycle.prepare
 from campaign_search import (
     DEFAULT_COMPARISON_REVIEW_WINDOW, DEFAULT_FAILURE_REVIEW_WINDOW, DEFAULT_SESSION_CHECKPOINTS,
-    DEFAULT_STAGNATION_WINDOW,
+    DEFAULT_STAGNATION_WINDOW, current_research_state,
 )
 from campaign_runtime import (
     CampaignError, HEARTBEAT_SECONDS, POLL_SECONDS, WORKER_TOKEN, acquire_resources,
@@ -150,6 +152,8 @@ def await_turn(campaign: pathlib.Path, state: dict[str, Any],
         # manager died. Recover that job first: waiting for the original agent's
         # lock cannot enforce the verifier's deadline or cancel its process tree.
         resources = await_job(campaign, state, completion_job(campaign, state, turn), resources)
+    if (job_directory(campaign, turn["number"], "receipt") / "request.json").exists():
+        resources = await_job(campaign, state, receipt_job(campaign, turn), resources)
     return await_job(campaign, state, turn, resources)
 
 
@@ -488,9 +492,13 @@ def public_status(campaign: pathlib.Path, state: dict[str, Any]) -> dict[str, An
         "context_refresh_reason", "execution_health", "failure_review_window",
         "comparison_continuity", "comparison_review_window", "workflow_provenance", *LIMITS)}
     value["unreported_usage_turns"] = state["unreported_usage_turns"]
+    value["next_proposal_id"] = state.get("next_proposal_id")
     comparison_key = (state["objective_progress"] or {}).get("comparison_key")
-    research = state.get("research_state")
-    value["research_state"] = research if research and research["comparison_key"] == comparison_key else None
+    value["research_state"] = current_research_state(state, comparison_key)
+    selection = state.get("working_selection")
+    value["working_selection"] = selection if selection and selection["comparison_key"] == comparison_key else None
+    delivery = state.get("local_delivery")
+    value["local_delivery"] = delivery if delivery and delivery["comparison_key"] == comparison_key else None
     corrections = state.get("research_corrections", {}).get(comparison_key or "null", {})
     value["research_correction_keys"] = [key for key, row in corrections.items()
                                          if row["report"].get("status") != "withdrawn"]
@@ -515,19 +523,118 @@ def public_status(campaign: pathlib.Path, state: dict[str, Any]) -> dict[str, An
                          if turn else None)
     if turn:
         value["inflight"].update({key: turn[key] for key in
-                                  ("fresh_context", "context_refresh_reason", "context_sha256") if key in turn})
+                                  ("fresh_context", "context_refresh_reason", "context_sha256", "driver_action") if key in turn})
         directory = turn_directory(campaign, turn["number"])
         for name in ("worker", "agent", "heartbeat"):
             path = directory / f"{name}.json"
             value["inflight"][name] = read_json(path) if path.exists() else None
-        completion = directory / "completion"
-        if (completion / "request.json").exists():
-            value["inflight"]["completion"] = {
-                name: read_json(completion / (name + ".json")) if (completion / (name + ".json")).exists()
-                else None for name in ("worker", "agent", "heartbeat", "exit")}
+        for kind in ("receipt", "completion"):
+            child = directory / kind
+            if (child / "request.json").exists():
+                value["inflight"][kind] = {
+                    name: read_json(child / (name + ".json")) if (child / (name + ".json")).exists()
+                    else None for name in ("worker", "agent", "heartbeat", "exit")}
     request = stop_request(campaign)
     value["stop_requested"] = request
     return value
+
+
+@contextmanager
+def stopped_checkpoint(campaign: pathlib.Path, action: str) -> Iterator[dict[str, Any]]:
+    try:
+        with exclusive_lock(campaign / "supervisor.lock"), exclusive_lock(campaign / "runner.lock"):
+            state = read_state(campaign)
+            if state["status"] != "stopped_by_user" or state["inflight"]:
+                raise CampaignError(f"Stop the campaign at a completed turn before {action}")
+            check_control_files(state)
+            resources = acquire_resources(campaign, state)
+            try:
+                yield state
+            finally:
+                for stream in resources:
+                    stream.close()
+    except BlockingIOError as exc:
+        raise CampaignError("Wait for the campaign manager and supervisor to stop") from exc
+
+
+def accept_score_invalidations(campaign: pathlib.Path) -> dict[str, Any]:
+    """Advance a normally stopped campaign to its reviewed correction events."""
+    with stopped_checkpoint(campaign, "accepting score invalidations") as state:
+        before = state["archive_snapshot"]
+        head = CampaignArchive(pathlib.Path(state["archive"])).verified_score_invalidations(before)
+        if head.snapshot == before:
+            return state
+        facts = head.evidence.signals(state["comparison_review_checkpoint"],
+                                      objective_anchor=state.get("objective_anchor"))
+        state.update({key: facts[key] for key in
+                      ("objective_progress", "execution_health", "comparison_continuity")})
+        if head.evidence.selection_excluded(state.get("working_selection")):
+            state["working_selection"] = None
+        state.update(archive_snapshot=head.snapshot, progress=head.evidence.counts)
+        append_event(campaign, {"event": "score_invalidations_accepted",
+                                "event_id": "score-invalidations:" + head.snapshot["sha256"],
+                                "archive_before": before, "archive_after": head.snapshot})
+        save_state(campaign, state)
+        return state
+
+
+def accept_research_corrections(campaign: pathlib.Path, report_path: pathlib.Path) -> dict[str, Any]:
+    """Save a reviewed interpretation for the current comparison between turns."""
+    with stopped_checkpoint(campaign, "accepting research corrections") as state:
+        request = stop_request(campaign)
+        if not request or request.get("immediate"):
+            raise CampaignError("Research corrections require a normal stop at a completed turn")
+        review = read_json(report_path)
+        required = {"comparison_key", "corrections"}
+        if not isinstance(review, dict) or not required <= set(review) <= required | {"research_state"}:
+            raise CampaignError("Expected a review with comparison_key, corrections and an optional research_state")
+        reports = review["corrections"]
+        if not reports or not correction_reports_valid(reports):
+            raise CampaignError("Expected a nonempty JSON array of distinct research corrections")
+        comparison = (state["objective_progress"] or {}).get("comparison_key")
+        if review["comparison_key"] != comparison:
+            raise CampaignError("Research correction does not match the current development comparison")
+        current = state["research_corrections"].get(comparison or "null", {})
+        finding = (current_research_state(state, comparison) or {}).get("finding", {})
+        for report in reports:
+            key = report["key"]
+            if report.get("status") == "withdrawn" and key not in current and key != finding.get("premise_id"):
+                raise CampaignError(f"Cannot withdraw an unknown research correction in this comparison: {key}")
+            if not evidence_exists(report["evidence"], state, campaign):
+                raise CampaignError(f"Research correction evidence is missing: {key}")
+        successor = review.get("research_state")
+        if "research_state" in review:
+            if not research_state_valid(successor) or successor["status"] != "open":
+                raise CampaignError("A replacement research_state must describe an open evidence check")
+            if not evidence_exists(successor["evidence"], state, campaign):
+                raise CampaignError("Replacement research question evidence is missing")
+        archive = CampaignArchive(pathlib.Path(state["archive"]))
+        with archive.confirmed(state["archive_snapshot"]):
+            raw = archive_tools.canonical({"turn": state["turn_number"], **review}) + b"\n"
+            digest = archive_tools.sha256(raw)
+            path = campaign / "maintenance" / "research-corrections" / f"{digest}.json"
+            origin = {"turn": state["turn_number"], "comparison_key": comparison,
+                      "receipt_path": str(path), "assessment_kind": "maintenance_audit"}
+            corrections = update_research_corrections(state, origin, reports)
+        if path.exists():
+            if file_hash(path) != digest:
+                raise CampaignError("Saved research correction was modified")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_bytes(path, raw)
+        if all(current.get(row["key"], {}).get("receipt_path") == str(path) for row in reports):
+            return state
+        state.update(research_corrections=corrections, session_id=None, next_mode="rethink", next_proposal_id=None,
+                     next_action="Reassess the proposed continuation using the reviewed research corrections. "
+                                 "Choose the next action supported by the task and available evidence.")
+        if successor:
+            state.update(research_state={**origin, "report": successor}, next_mode="research",
+                         next_action=successor["missing_evidence"])
+        append_event(campaign, {"event": "research_corrections_accepted", "turn": state["turn_number"],
+                                "event_id": "research-corrections:" + digest,
+                                "comparison_key": comparison, "report_path": str(path), "report_sha256": digest})
+        save_state(campaign, state)
+        return state
 
 
 def add_limits(command: argparse.ArgumentParser, clear: bool = False) -> None:
@@ -577,7 +684,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--check-dependency", type=pathlib.Path, action="append", default=[])
     start.add_argument("--completion-timeout-seconds", type=float, default=60.0)
     add_search_policy(start, defaults=True)
-    for name in ("resume", "status", "stop", "_run", "_supervise", "_worker"):
+    for name in ("resume", "status", "stop", "accept-score-invalidations", "accept-research-corrections",
+                 "_run", "_supervise", "_worker"):
         command = sub.add_parser(name, help=argparse.SUPPRESS if name.startswith("_") else None)
         command.add_argument("--campaign", type=pathlib.Path, required=True)
         if name in {"resume", "_run", "_supervise"}:
@@ -592,9 +700,11 @@ def parser() -> argparse.ArgumentParser:
         if name == "stop":
             command.add_argument("--reason", default="User requested stop")
             command.add_argument("--now", action="store_true", help="cancel the active local invocation")
+        if name == "accept-research-corrections":
+            command.add_argument("--report", type=pathlib.Path, required=True, help="reviewed corrections JSON file")
         if name == "_worker":
             command.add_argument("--number", type=int, required=True)
-            command.add_argument("--kind", choices=["agent", "completion"], default="agent")
+            command.add_argument("--kind", choices=["agent", "completion", "receipt"], default="agent")
             command.add_argument("--resource-fd", type=int, action="append", default=[])
     return root
 
@@ -649,6 +759,10 @@ def main() -> int:
                                      resume_stop_hash=args.resume_stop_hash)
             elif args.command == "status":
                 state = read_state(campaign)
+            elif args.command == "accept-score-invalidations":
+                state = accept_score_invalidations(campaign)
+            elif args.command == "accept-research-corrections":
+                state = accept_research_corrections(campaign, args.report)
             elif args.command == "stop":
                 state = read_state(campaign)
                 if (state["status"] not in {"running", "blocked"} and

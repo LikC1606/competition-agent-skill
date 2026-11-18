@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import pathlib
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +30,50 @@ class PredictionPair:
     baseline: list[float]
     candidate: list[float]
     prediction_bytes: list[bytes]
+
+
+def load_fold_receipt(path: pathlib.Path, pair: PredictionPair, role: str
+                      ) -> tuple[dict[str, tuple[set[str], set[str]]], pathlib.Path, str]:
+    """Bind recorded fold membership to the OOF bytes already verified by load_pair."""
+    path = path.expanduser().resolve(strict=True)
+    raw = path.read_bytes()
+    digest = evaluator.byte_hash(raw)
+    manifest = json.loads(path.with_name("manifest.json").read_bytes())
+    if (path.name != "fit.json" or not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+            or manifest.get("kind") != "tabular_training"
+            or manifest.get("seal") != evaluator.object_hash({k: v for k, v in manifest.items() if k != "seal"})):
+        raise EvidenceFailure(f"{role} fold analysis requires a saved tabular training fit.json and its manifest")
+    files = manifest.get("files")
+    if not isinstance(files, dict) or files.get("fit.json") != digest:
+        raise EvidenceFailure(f"{role} fit.json differs from its training manifest")
+    if (files.get("oof.csv") != pair.comparison[role]["candidate_hash"]
+            or files.get("truth.csv") != pair.input_hashes["truth"]):
+        raise EvidenceFailure(f"{role} fit receipt belongs to different OOF predictions or truth")
+    receipt = json.loads(raw)
+    rows = receipt.get("folds") if isinstance(receipt, dict) else None
+    if not isinstance(rows, list) or not rows:
+        raise EvidenceFailure(f"{role} fit receipt must have nonempty folds")
+    folds: dict[str, tuple[set[str], set[str]]] = {}
+    covered: set[str] = set()
+    for row in rows:
+        name = row.get("fold_id") if isinstance(row, dict) else None
+        if not isinstance(name, str) or not name.strip() or name in folds:
+            raise EvidenceFailure(f"{role} fit receipt must have unique nonempty fold IDs")
+        memberships = []
+        for key in ("train_ids", "validation_ids"):
+            ids = row.get(key)
+            if (not isinstance(ids, list) or not ids or any(not isinstance(i, str) or not i for i in ids)
+                    or len(set(ids)) != len(ids)):
+                raise EvidenceFailure(f"{role} fold {name!r} has invalid {key}")
+            memberships.append(set(ids))
+        train, validation = memberships
+        if train & validation or covered & validation:
+            raise EvidenceFailure(f"{role} fold {name!r} overlaps training with validation or duplicates OOF rows")
+        folds[name] = train, validation
+        covered.update(validation)
+    if covered != set(pair.sample_ids):
+        raise EvidenceFailure(f"{role} validation folds must cover the evaluated IDs exactly once")
+    return folds, path, digest
 
 
 def load_pair(baseline: pathlib.Path, candidate: pathlib.Path, truth: pathlib.Path) -> PredictionPair:

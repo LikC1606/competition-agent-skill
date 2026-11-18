@@ -715,6 +715,69 @@ class KaggleSourceTests(unittest.TestCase):
         self.assertEqual(result["source"]["coverage"]["version_lookup"]["pageToken"], "older")
         self.assertEqual(result["source"]["coverage"]["next_page_token"], "older-versions")
 
+    def test_read_reuses_exact_notebook_across_run_folders_pins_and_unverified_competition(self):
+        old_dir, new_dir = self.output / "old-read", self.output / "new" / "planned-read"
+        url = NOTEBOOK_URL + "?scriptVersionId=202"
+        body = b"print('decisive historical cell')\r\n"
+        first = kaggle.run(self.args("--output-dir", str(old_dir), "--url", url, "--max-chars", "2"),
+                           self.client(*self.notebook_steps(source=body)))
+        self.assertEqual(first["view"]["body"], "pr")
+
+        for pin in (["--url", url], ["--url", NOTEBOOK_URL, "--version", "2"]):
+            with self.subTest(pin=pin), mock.patch.object(kaggle, "Client", side_effect=AssertionError("No client on a hit")):
+                recovered = kaggle.run(self.args("--output-dir", str(new_dir), "--cache-root", str(self.output),
+                                                 "--competition", "wheat", "--full", *pin))
+                self.assertTrue(recovered["cache_hit"])
+                for field in ("snapshot", "source_path", "body_path", "sha256", "request_identity", "fetched_at"):
+                    self.assertEqual(recovered[field], first[field])
+                self.assertEqual(recovered["view"]["body"], body.decode())
+                self.assertEqual(Path(recovered["body_path"]).read_bytes(), body)
+                self.assertEqual(recovered["source"]["script_version_id"], 202)
+                self.assertEqual(recovered["source"]["competition_verification"], "unknown")
+                self.assertIsNone(recovered["source"]["competition"])
+                self.assertFalse(new_dir.exists())
+
+    def test_cache_only_miss_never_substitutes_other_notebook_versions_or_latest(self):
+        old_dir, new_dir = self.output / "old-read", self.output / "not-created"
+        kaggle.run(self.args("--output-dir", str(old_dir), "--url", NOTEBOOK_URL, "--version", "2"),
+                   self.client(*self.notebook_steps()))
+        for target in (["--url", NOTEBOOK_URL, "--version", "3"], ["--url", NOTEBOOK_URL],
+                       ["--url", NOTEBOOK_URL + "?scriptVersionId=202", "--version", "3"],
+                       ["--url", NOTEBOOK_URL.replace("alice", "bob"), "--script-version-id", "202"]):
+            with self.subTest(target=target), mock.patch.object(kaggle, "Client", side_effect=AssertionError("No client in cache-only mode")):
+                args = ["read", "--output-dir", str(new_dir), "--cache-root", str(self.output), "--cache-only", *target]
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(kaggle.main(args), 1)
+                self.assertIn("No matching successful local source snapshot", json.loads(output.getvalue())["message"])
+                self.assertFalse(new_dir.exists())
+
+    def test_source_cache_preserves_topic_range_and_refresh_bypasses_a_match(self):
+        old_dir, new_dir = self.output / "old-read", self.output / "new-read"
+        first = kaggle.run(self.args("--output-dir", str(old_dir)), self.topic_client())
+        lookup = ["--output-dir", str(new_dir), "--cache-root", str(self.output)]
+        with mock.patch.object(kaggle, "Client", side_effect=AssertionError("No client on a hit")):
+            hit = kaggle.run(self.args(*lookup, "--cache-only", "--full"))
+        self.assertTrue(hit["cache_hit"])
+        self.assertEqual(hit["body_path"], first["body_path"])
+        separate = kaggle.run(self.args(*lookup, "--starting-comment-id", "101"),
+                              self.topic_client(request={**TOPIC_REQUEST, "startingCommentId": 101}))
+        self.assertFalse(separate["cache_hit"])
+        self.assertEqual(separate["source"]["coverage"]["request"]["startingCommentId"], 101)
+
+        refreshed = kaggle.run(self.args(*lookup, "--refresh"), self.topic_client())
+        self.assertFalse(refreshed["cache_hit"])
+        self.assertNotEqual(refreshed["snapshot"], first["snapshot"])
+        self.assertTrue(Path(first["body_path"]).is_file())
+
+    def test_shared_cache_cannot_pass_a_changed_body_as_the_verified_original(self):
+        old_dir = self.output / "old-read"
+        result = kaggle.run(self.args("--output-dir", str(old_dir)), self.topic_client())
+        Path(result["body_path"]).write_text("unbound substitute")
+        with self.assertRaisesRegex(kaggle.SourceError, "Cached body bytes changed"):
+            kaggle.run(self.args("--output-dir", str(self.output / "new-read"), "--cache-root", str(self.output),
+                                "--cache-only"), self.client())
+
     def test_missing_or_conflicting_notebook_identity_never_fetches_latest_source(self):
         cases = [
             ["--url", NOTEBOOK_URL, "--version", "404"],

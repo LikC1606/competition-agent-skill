@@ -37,23 +37,24 @@ class MeasurementPlanTests(unittest.TestCase):
         self.assertIsNotNone(self.conflict)
         self.comparison = archive.candidate_index(records)["leader-first"]["comparison"]
 
-    def record(self, name: str, source_name: str, score: int, *, plan_id: str | None = None,
+    def record(self, name: str, source_name: str, score: int | float, *, plan_id: str | None = None,
                run_id: str = "pair-a", seeds: list[int] | None = None, repetitions: int = 1,
-               valid: bool = True, config_hash: str | None = None, failed: bool = False) -> dict:
+               valid: bool = True, config_hash: str | None = None, failed: bool = False,
+               direction: str = "maximize", evaluator: str = "evaluator-1") -> dict:
         source = self.sources[source_name]
         run = subprocess.run(["/usr/bin/python3", str(source)], capture_output=True, text=True,
                              env={"SCORE": str(score), "FAIL": "1" if failed else "0"})
         self.assertEqual(run.returncode != 0, failed, run.stderr)
         outcome = {"status": "failed" if failed else "success", "valid": valid and not failed,
                    "candidate_hash": archive.hash_path(source),
-                   "candidate_scope": "program_source", "evaluator_hash": "evaluator-1",
+                   "candidate_scope": "program_source", "evaluator_hash": evaluator,
                    "workload_hash": "workload-1", "score_model_hash": "score-1", "stage": "development",
-                   "score": {"kind": "proxy", "metric": "quality", "direction": "maximize"}}
+                   "score": {"kind": "proxy", "metric": "quality", "direction": direction}}
         if failed:
             outcome["error"] = {"type": "runtime_failure", "phase": "candidate_execution",
                                 "message": run.stderr}
         else:
-            outcome["score"]["value"] = int(run.stdout)
+            outcome["score"]["value"] = json.loads(run.stdout)
         if plan_id is not None:
             outcome["evaluation"] = {"measurement_plan_id": plan_id, "measurement_run_id": run_id,
                                      "seeds": [11] if seeds is None else seeds,
@@ -82,6 +83,9 @@ class MeasurementPlanTests(unittest.TestCase):
                              {"run_id": "pair-b", "seeds": [12], "repetitions": 1}],
                     "decision_rule": "Compare both prespecified paired runs; retain raw scores and review feasibility."}
         path = self.root / f"{plan_id}.json"
+        return self.write_plan(authored, path)
+
+    def write_plan(self, authored: dict, path: Path) -> dict:
         path.write_text(json.dumps(authored) + "\n")
         return archive.record_measurement_plan(archive.parser().parse_args(
             ["measure-plan", "--archive", str(self.path), "--plan", str(path)]))
@@ -106,11 +110,14 @@ class MeasurementPlanTests(unittest.TestCase):
                                  "sha256": archive.sha256(self.path.read_bytes())}, "t" * 64)
 
     def decide(self, *, conclusion: str = "Pairwise scores favor the challenger",
-               plan_id: str = "frozen-1") -> dict:
+               plan_id: str = "frozen-1", outcome: str | None = None) -> dict:
         path = self.root / "decision.json"
-        path.write_text(json.dumps({"plan_id": plan_id, "conclusion": conclusion,
-                                    "reason": "Both predeclared paired runs favored the challenger under the fixed metric.",
-                                    "next_action": "Review the task-specific promotion threshold and confirmation policy."}))
+        value = {"plan_id": plan_id, "conclusion": conclusion,
+                 "reason": "Both predeclared paired runs favored the challenger under the fixed metric.",
+                 "next_action": "Review the task-specific promotion threshold and confirmation policy."}
+        if outcome is not None:
+            value["outcome"] = outcome
+        path.write_text(json.dumps(value))
         return archive.record_measurement_decision(archive.parser().parse_args(
             ["measure-decide", "--archive", str(self.path), "--decision", str(path)]))
 
@@ -129,6 +136,77 @@ class MeasurementPlanTests(unittest.TestCase):
             operation()
         self.assertEqual(error.exception.kind, kind)
         self.assertEqual(self.path.read_bytes(), prior)
+
+    def test_eligibility_without_a_repeat_conflict_cannot_skip_a_hard_condition(self) -> None:
+        leader = self.record("incumbent-loss", "leader", 51, direction="minimize")
+        challenger = self.record("candidate-loss", "challenger", 48, direction="minimize")
+        controls = [self.record(f"cached-{i}", "leader", 50, config_hash=f"partition-{i}", direction="minimize",
+                                evaluator="repeat-evaluator")
+                    for i in range(5)]
+        authored = {"plan_id": "eligibility", "comparison": leader["comparison"],
+                    "leader_candidate": leader["candidate_id"], "challenger_candidate": challenger["candidate_id"],
+                    "runs": [{"run_id": f"pair-{i}", "seeds": [], "repetitions": 1,
+                              "comparison": entry["comparison"], "leader_result": entry["candidate_id"]}
+                             for i, entry in enumerate(controls)],
+                    "decision_rule": "At least four wins and mean outside stored dispersion."}
+        path = self.root / "eligibility.json"
+        self.rejects(lambda: self.write_plan(authored, path), "invalid_measurement_plan")
+        authored["decision_rule"] = {"requirements": [
+            {"statistic": "wins", "operator": ">=", "threshold": 4},
+            {"statistic": "mean_improvement", "operator": ">", "threshold": 2}]}
+        self.write_plan(authored, path)
+        self.rejects(lambda: measurement_plans.validate_selection(challenger, archive.read_records(self.path)),
+                     "unmet_measurement_gate")
+        self.assertEqual(self.status("eligibility")["rule_result"]["state"], "pending")
+        self.rejects(lambda: self.record("wrong-fold", "challenger", 49, plan_id="eligibility", run_id="pair-0",
+                                        seeds=[], config_hash="partition-1", direction="minimize",
+                                        evaluator="repeat-evaluator"),
+                     "unplanned_measurement")
+        self.rejects(lambda: self.record("wrong-scorer", "challenger", 49, plan_id="eligibility", run_id="pair-0",
+                                        seeds=[], config_hash="partition-0", direction="minimize"),
+                     "unplanned_measurement")
+        self.rejects(lambda: self.record("new-leader", "leader", 49, plan_id="eligibility", run_id="pair-0",
+                                        seeds=[], config_hash="partition-0", direction="minimize",
+                                        evaluator="repeat-evaluator"),
+                     "duplicate_measurement_slot")
+        for i in range(5):
+            self.record(f"test-{i}", "challenger", 48, plan_id="eligibility", run_id=f"pair-{i}",
+                        seeds=[], config_hash=f"partition-{i}", direction="minimize", evaluator="repeat-evaluator")
+        view = self.status("eligibility")
+        self.assertTrue(view["complete"])
+        self.assertEqual(len(view["attempts"]), 5)
+        self.assertEqual(view["rule_result"]["state"], "failed")
+        self.assertEqual([(row["value"], row["passed"]) for row in view["rule_result"]["requirements"]],
+                         [(5, True), (2, False)])
+        for outcome in (None, "qualified"):
+            with self.subTest(outcome=outcome):
+                self.rejects(lambda: self.decide(plan_id="eligibility", outcome=outcome), "measurement_rule_unmet")
+        self.decide(plan_id="eligibility", outcome="not_qualified")
+        self.rejects(lambda: measurement_plans.validate_selection(challenger, archive.read_records(self.path)),
+                     "unmet_measurement_gate")
+
+    def test_eligibility_pass_requires_an_archived_decision_and_bound_rule(self) -> None:
+        entries = archive.candidate_index(archive.read_records(self.path))
+        challenger = entries["challenger-first"]
+        plan = {"plan_id": "eligibility", "comparison": self.comparison, "leader_candidate": "leader-first",
+                "challenger_candidate": "challenger-first",
+                "runs": [{"run_id": "pair-a", "seeds": [11], "repetitions": 1}],
+                "decision_rule": {"requirements": [{"statistic": "mean_improvement", "operator": ">", "threshold": 2}]}}
+        self.write_plan(plan, self.root / "eligibility.json")
+        self.record("leader-eligible", "leader", 55, plan_id="eligibility")
+        self.record("challenger-eligible", "challenger", 65, plan_id="eligibility")
+        self.assertEqual(self.status("eligibility")["rule_result"]["state"], "passed")
+        self.rejects(lambda: measurement_plans.validate_selection(challenger, archive.read_records(self.path)),
+                     "unmet_measurement_gate")
+        self.decide(plan_id="eligibility", outcome="qualified")
+        records = archive.read_records(self.path)
+        measurement_plans.validate_selection(challenger, records)
+        self.assertEqual(measurement_plans.latest_decision(records, self.comparison)["outcome"], "qualified")
+        # Editing the threshold leaves the same result, but changes the frozen evidence.
+        rows = [json.loads(line) for line in self.path.read_text().splitlines()]
+        next(row for row in rows if row["event"] == "measurement_plan")["decision_rule"]["requirements"][0]["threshold"] = 3
+        self.path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.rejects(lambda: archive.read_records(self.path), "measurement_evidence_changed")
 
     def test_plan_validation_and_status_use_archived_values_without_files(self) -> None:
         before = archive.read_records(self.path)

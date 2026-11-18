@@ -40,7 +40,11 @@ def complete_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("instruction_snapshot", None)
     state.setdefault("workflow_provenance", None)
     state.setdefault("research_state", None)
+    state.setdefault("research_findings", {})
+    state.setdefault("next_proposal_id", None)
     state.setdefault("research_corrections", {})
+    state.setdefault("working_selection", None)
+    state.setdefault("local_delivery", None)
     return state
 
 

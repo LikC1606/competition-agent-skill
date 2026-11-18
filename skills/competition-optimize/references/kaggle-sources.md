@@ -89,6 +89,22 @@ The reader resolves the kernel, reads one kernel-scoped `ListKernelVersions` pag
 
 Without a requested version, the reader requires a latest session ID from the view and a matching listing record. Cached latest means latest **at that snapshot's fetch time**. Source is downloaded with `includeOutputIfAvailable=false` and retained as text, including notebook JSON where applicable; no notebook, package or cell is executed.
 
+## Reuse a Saved Source
+
+For a known URL, search the current task's research directory before another download. Pass `--cache-root` even if a new checkpoint uses a different output directory:
+
+```sh
+/usr/bin/python3 <skill-dir>/scripts/kaggle_sources.py read \
+  --url 'https://www.kaggle.com/code/OWNER/SLUG?scriptVersionId=SESSION_ID' \
+  --cache-root /absolute/task/run/research \
+  --output-dir /absolute/task/run/research/current-check \
+  --full
+```
+
+A hit returns `cache_hit: true`, the original `source_path`, `body_path`, hash and fetch time, and creates no new snapshot or network request. `request_count` and `request_identity` describe that original fetch. A pinned notebook matches its saved canonical URL and every supplied version number or session ID, even when originally requested by a different pin or with another unverified competition label. Read the `competition_verification` and coverage of the saved response. An unpinned notebook needs a cached latest request; a different historical version cannot substitute for it. For discussions and writeups, reuse requires the original comment range and other acquisition options to match.
+
+A miss falls through to the normal reader. Add `--cache-only` to report a local miss without making a request. Use `--refresh` to fetch a new response, such as an updated latest version or a different metadata page for an already cached notebook. Search the task notes and existing archive for the returned version or body path to recover prior readings of relevant cells or passages. The saved body alone confirms what can be inspected now; it does not show which passages were read before.
+
 ## Cache, Failures and Provenance
 
 A snapshot contains:
@@ -101,7 +117,7 @@ A snapshot contains:
 | `response-NNN.bin` | Original response bytes, including failed responses |
 | `manifest.json` | Request/cache identity, fetch time, paths, source hash and observed request totals |
 
-Only successful snapshots populate the cache. `--refresh` makes new requests and preserves previous snapshots. A failed or partial refresh cannot replace a usable cache; a later cache hit still identifies the older fetch time. To inspect the failed refresh, use the snapshot paths returned by that operation. A cached source whose bytes changed is rejected; an explicit refresh can obtain another snapshot.
+Only successful snapshots populate the cache. `--refresh` makes new requests and preserves previous snapshots. A failed or partial refresh cannot replace a usable cache; a later cache hit still identifies the older fetch time. To inspect the failed refresh, use the snapshot paths returned by that operation. A hit verifies the normalized source hash and the corresponding body bytes; a changed snapshot cannot serve as a cache hit.
 
 `status=error` returns a nonzero exit code. `status=partial` retains available content and operation-specific errors, with exit zero so the saved body remains usable. `status=ok` describes successful acquisition and normalization of the returned scope; a response containing recognized partial comment placeholders can be cached with its reading limits intact. Inspect coverage and `body_available` before relying on a source. HTTP 200 with JSON-RPC/tool failure, malformed JSON, or an unrecognized required shape is an error, never a successful empty search.
 

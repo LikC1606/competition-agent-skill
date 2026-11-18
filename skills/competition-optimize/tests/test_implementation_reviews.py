@@ -64,6 +64,8 @@ class ImplementationReviewTests(unittest.TestCase):
             args += ["--configuration", str(configuration)]
         if executed:
             args += ["--result", str(result)]
+            if scope == "prediction_csv":
+                args += ["--prediction-boundary", "Synthetic fixture with a fixed development boundary."]
         else:
             args += ["--valid", "--objective-value", str(score), "--objective-direction", "maximize",
                      "--objective-kind", "official_metric", "--objective-name", "profit",
@@ -127,7 +129,7 @@ class ImplementationReviewTests(unittest.TestCase):
 
     def test_review_is_bound_to_successor_and_survives_raw_input_removal(self) -> None:
         self.propose("coupled")
-        args, raw = self.arguments("child", proposal="coupled", review=self.review("partial"))
+        args, raw = self.arguments("child", proposal="coupled", review=self.review("partial"), prediction="unresolved")
         input_hash = archive.sha256(raw.read_bytes())
         child = archive.record_candidate(args)
         self.entries["child"] = child
@@ -192,7 +194,7 @@ class ImplementationReviewTests(unittest.TestCase):
                 archive.record_candidate(args)
         self.propose("diagnostic-check")
         diagnostic = self.record("failed-probe", proposal="diagnostic-check", review=self.review("no"),
-                                 role="diagnostic", valid=False)
+                                 role="diagnostic", valid=False, prediction="unresolved")
         self.assertFalse(diagnostic["valid"])
         self.assertEqual(diagnostic["implementation_review"]["fidelity"], "no")
         self.propose("recipe-check")
@@ -208,23 +210,49 @@ class ImplementationReviewTests(unittest.TestCase):
         evidence = child["implementation_review"]["code_evidence"][0]
         self.assertTrue(Path(evidence["path"]).is_relative_to(child["artifact_paths"]["configuration"]))
 
-    def test_fidelity_does_not_replace_prediction_or_measured_score(self) -> None:
+    def test_departure_leaves_proposal_unresolved_but_preserves_measured_score(self) -> None:
         self.propose("deviated")
-        no = self.record("improved-deviation", 110, proposal="deviated", review=self.review("no"), prediction="supported")
+        before = self.path.read_bytes()
+        for fidelity, prediction in (("partial", "contradicted"), ("no", "supported"), ("unknown", "supported")):
+            args, _ = self.arguments("bad-" + fidelity, 110, proposal="deviated",
+                                     review=self.review(fidelity), prediction=prediction)
+            with self.subTest(fidelity=fidelity), self.assertRaises(archive.ArchiveFailure) as error:
+                archive.record_candidate(args)
+            self.assertEqual(error.exception.kind, "proposal_outcome_out_of_scope")
+            self.assertEqual(self.path.read_bytes(), before)
+        no = self.record("improved-deviation", 110, proposal="deviated", review=self.review("no"), prediction="unresolved")
         self.propose("faithful", parent="improved-deviation")
         yes = self.record("faithful-regression", 80, proposal="faithful", review=self.review(), prediction="contradicted")
         brief = self.brief()
         self.assertEqual(brief["best_development"], no["candidate_id"])
-        self.assertEqual(brief["candidates"][no["candidate_id"]]["prediction_status"], "supported")
+        self.assertEqual(brief["candidates"][no["candidate_id"]]["prediction_status"], "unresolved")
         self.assertEqual(brief["candidates"][yes["candidate_id"]]["prediction_status"], "contradicted")
         self.assertEqual(brief["candidates"][yes["candidate_id"]]["objective_gain_vs_best"], -30)
-        self.assertEqual(no["implementation_review"]["fidelity"], "no")
         self.assertEqual(search.objective_progress(archive.read_records(self.path))["best_candidate"], no["candidate_id"])
+
+    def test_legacy_departure_keeps_raw_verdict_but_retrieves_only_what_ran(self) -> None:
+        self.propose("legacy")
+        prefix = self.path.read_bytes()
+        self.record("substitute", 110, proposal="legacy", review=self.review("partial"), prediction="unresolved")
+        old = json.loads(self.path.read_bytes()[len(prefix):])
+        old["prediction_status"] = "supported"
+        raw = prefix + archive.canonical(old) + b"\n"
+        self.path.write_bytes(raw)
+
+        records = archive.read_records(self.path)
+        self.assertEqual(records[-1]["prediction_status"], "supported")
+        trace = archive.iteration_trace(records, proposal_id="legacy")[0]
+        trial = self.history()["selection"][0]
+        self.assertEqual(trace["prediction_status"], "unresolved")
+        self.assertEqual(trial["prediction_status"], "unresolved")
+        self.assertEqual(trial["objective_gain_vs_parents"], {"parent": 10})
+        self.assertEqual(self.brief()["candidates"]["substitute"]["prediction_status"], "unresolved")
+        self.assertEqual(self.path.read_bytes(), raw)
 
     def test_foreign_outcome_does_not_deliver_review_judgment(self) -> None:
         self.propose("foreign-outcome")
         foreign = self.record("foreign", 999, proposal="foreign-outcome", review=self.review("partial"),
-                              comparison={"workload_hash": "different"})
+                              comparison={"workload_hash": "different"}, prediction="unresolved")
         row = self.history()["selection"][0]
         self.assertFalse(row["outcome_comparison_matches"])
         self.assertNotIn("implementation_review", row["evidence"]["foreign"])

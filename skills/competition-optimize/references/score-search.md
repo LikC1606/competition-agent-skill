@@ -38,7 +38,7 @@ Produce one short actionable proposal using the existing decision card or notes:
 
 In this same proposal, connect the basis to the failure or opportunity, the changed capability, its predicted local effect and a plausible counterexample/failure. Task-derived reasoning, an inspected source or development evidence can supply that basis; all three are not mandatory, and a new mechanism need not already have a measured gain. "The public score went up" describes an observation, not why the change should work. If the only change is a nearby constant with no capability or behavior explanation, classify it as parameter refinement and follow the explicit tuning rule below.
 
-Treat the diagnosis as a hypothesis when evidence does not establish its cause. Compare the proposal with the nearest credible feasible alternative when that changes the choice. Implement the chosen proposal now. The proposal is an execution decision, not another report to finish before coding.
+Treat the diagnosis as a hypothesis when evidence does not establish its cause. A failed result can reject the tested implementation without distinguishing redundancy, estimation error, representation mismatch or integration losses. Before using it to exclude a broader route, name the tested controls and the competing explanation they rule out; leave indistinguishable explanations open in existing `research_state`. Compare the proposal with the nearest credible feasible alternative when that changes the choice, then implement. No extra report or causal certificate is required for an ordinary prototype.
 
 Parameter search is not the default: no automatic grids, random/Bayesian searches, neighboring-value sweeps or seed hunting. Run a dedicated tuning campaign only when the user explicitly requests one. Internal settings may change as part of a code-supported mechanism; the tested proposal must explain that mechanism rather than enumerate values. History may favor a local change or a complete method replacement; do not force either solely from an action menu.
 
@@ -80,7 +80,9 @@ python <skill-dir>/scripts/candidate_archive.py check `
 python <skill-dir>/scripts/candidate_archive.py record `
   --archive <run>/candidate-archive.jsonl --candidate-id cand-07 `
   --parent cand-03 --source <run>/cand-07/predictions.csv `
+  --configuration <run>/cand-07/recipe `
   --result <run>/cand-07/result.json --route histogram-tree `
+  --prediction-boundary "<cite fold inputs and the isolation of each fit or postprocessing step>" `
   --mechanism "complete tree pipeline replacing the linear model" --status promising `
   --feedback "Observed nonlinear errors improved; missing interaction features warrant a successor"
 
@@ -125,7 +127,7 @@ Compare a few routes from task structure, baseline behavior and relevant sources
 | Cost and continuation | Include implementation, evaluation, likely full-fidelity follow-up and combined inference cost; say what justifies deeper work |
 | Status and best representative | Candidate/result IDs, tested maturity/resource limit, and supported, unresolved, or rejected mechanisms; keep investment eligibility separate from incumbent rank |
 
-Compare the next proposed variant with the strongest affordable alternative route. Prefer the action with credible potential to change the best solution or resolve a consequential uncertainty; do not assign numerical expected gains without a basis. A tiny test can reveal a large opportunity, and a large rewrite can still be low value. Record the chosen route and why its nearest alternative was deferred; a short sentence at a decision boundary is enough.
+At a strategy review, compare the strongest affordable refinement with a complete alternative pipeline, independently of the incumbent's slots and integration rule. Use existing proposal `basis` or `research_state.alternatives` to compare capability, coupled components, inspected evidence/derivation, prerequisites, cost and what observation changes the choice. Prefer credible potential to improve the solution or resolve consequential uncertainty; do not invent expected-gain numbers. Record why the selected route merits effort and the alternative is deferred. A local refinement may win; neither fresh starts nor route quotas are mandatory.
 
 Typical structural changes are algorithm/representation/encoding/neighborhood replacements; model/feature/pipeline changes; different permitted data or training objectives; and changes to observations or planning in a policy. Thresholds, weights, seeds, and neighboring hyperparameters are usually refinements of an existing route. Choose settings needed to implement an explained mechanism; an isolated value change or a renamed setting does not establish a new one. The classification explains the search rather than prescribing a new schema or requiring every change to replace the whole algorithm.
 

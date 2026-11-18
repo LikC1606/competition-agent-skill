@@ -12,6 +12,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 archive = importlib.import_module("candidate_archive")
 evaluator = importlib.import_module("evaluate_predictions")
+search = importlib.import_module("campaign_search")
 
 
 class ImplementationIdentityTests(unittest.TestCase):
@@ -27,7 +28,8 @@ class ImplementationIdentityTests(unittest.TestCase):
     def record(self, name: str, predictions: list[float], recipe: str | None = "fit_declared_stochastic_pipeline()",
                parent: str | None = None, route: str = "model", status: str = "runner_up", role: str | None = None,
                proposal: str | None = None, feedback: str | None = None, stage: str = "development",
-               candidate_scope: str | None = None, split_id: str = "fixed", parents: list[str] | None = None) -> dict:
+               candidate_scope: str | None = None, split_id: str = "fixed", parents: list[str] | None = None,
+               boundary: str | None = "Synthetic independent predictions on the fixed fixture.") -> dict:
         folder = self.root / name
         folder.mkdir()
         source = folder / "predictions.csv"
@@ -50,6 +52,8 @@ class ImplementationIdentityTests(unittest.TestCase):
                      "--result", str(result_path), "--route", route, "--mechanism", name, "--status", status]
         if recipe is not None:
             arguments += ["--configuration", str(pipeline)]
+        if boundary is not None:
+            arguments += ["--prediction-boundary", boundary]
         for parent_id in parents or ([parent] if parent else []):
             arguments += ["--parent", parent_id]
         if role:
@@ -111,6 +115,79 @@ class ImplementationIdentityTests(unittest.TestCase):
         decision = self.decide()
         self.assertEqual(decision["recent_valid_candidates"], 1)
         self.assertEqual(decision["progress_candidates"], [])
+
+    def test_saved_fold_projection_cannot_enter_development_without_boundary(self) -> None:
+        self.record("control", [1, 4, 8])
+        prefix = self.path.read_bytes()
+        labels = [1, 4, 9]
+        # A fold's base model returns its training-label sum. Fitting an
+        # intercept using the other two folds recovers the held-out label.
+        oof = [sum(labels[:i] + labels[i + 1:]) for i in range(3)]
+        projection = [sum(oof[j] + labels[j] for j in range(3) if i != j) / 2 - oof[i] for i in range(3)]
+        with self.assertRaises(archive.ArchiveFailure) as caught:
+            self.record("unjustified", projection, recipe="fit_meta_on_other_outer_oof()", boundary=None)
+        self.assertEqual(caught.exception.kind, "missing_prediction_boundary")
+        self.assertEqual(self.path.read_bytes(), prefix)
+        diagnostic = self.record("probe", projection, recipe="fit_meta_on_other_outer_oof()", parent="control",
+                                 role="diagnostic", status="rejected", boundary=None)
+        self.assertEqual(diagnostic["objective"]["value"], 0)
+        self.assertEqual(self.brief()["best_development"], "control")
+        self.assertEqual(search.objective_progress(archive.read_records(self.path))["best_candidate"], "control")
+
+    def test_excluding_old_result_preserves_raw_bytes_and_independent_legacy_score(self) -> None:
+        self.record("other-contract", [2, 4, 9], split_id="other")
+        self.record("incumbent", [1, 5, 8], recipe="distinct_fixed_predictor()", status="incumbent")
+        legacy = self.record("legacy", [1, 4, 8], recipe="legal_fold_local_fit()", status="rejected")
+        leak = self.record("old-probe", [1, 4, 9], recipe="fit_meta_on_other_outer_oof()", parent="other-contract")
+        rescore = self.record("old-rescore", [1, 4, 9], recipe="score_saved_projection()", parent="legacy")
+        self.assertEqual(rescore["result"]["candidate_hash"], leak["result"]["candidate_hash"])
+        self.assertNotEqual(rescore["result"]["result_sha256"], leak["result"]["result_sha256"])
+        # Build a disposable legacy prefix from before the archive required boundary notes.
+        records = archive.read_records(self.path)
+        for entry in records:
+            entry.pop("prediction_boundary")
+        records.append({**records[-2], "candidate_id": "alias"})
+        self.path.write_bytes(b"".join(archive.canonical(entry) + b"\n" for entry in records))
+        prefix = self.path.read_bytes()
+        self.assertEqual(self.brief()["best_development"], "old-probe")
+        evidence = self.root / "fold-trace.txt"
+        evidence.write_text("Other-fold base predictions depend on the scored fold's training labels.\n")
+        args = archive.parser().parse_args([
+            "invalidate-score", "--archive", str(self.path), "--candidate-id", "old-probe",
+            "--result-sha256", leak["result"]["result_sha256"], "--scope", "predictions",
+            "--reason", "Fold dependency", "--evidence", str(evidence)])
+        event = archive.invalidate_score(args)
+        self.assertTrue(self.path.read_bytes().startswith(prefix))
+        corrected = archive.read_records(self.path)
+        index = archive.candidate_index(corrected)
+        self.assertEqual(index["old-probe"]["score_invalidation"], event)
+        self.assertEqual(index["old-rescore"]["score_invalidation"], event)
+        self.assertEqual(index["alias"]["score_invalidation"], event)
+        self.assertNotIn("training_execution", index["legacy"]["result"])
+        self.assertTrue(index["old-probe"]["valid"])
+        self.assertEqual(index["old-probe"]["objective"]["value"], 0)
+        brief = self.brief()
+        self.assertEqual(brief["best_development"], "legacy")
+        self.assertEqual(brief["candidates"]["old-probe"]["score_invalidation"], event)
+        self.assertIsNone(brief["candidates"]["old-probe"]["objective_gain_vs_best"])
+        self.assertNotIn("other-contract", brief["candidates"])
+        self.assertTrue(brief["pending_references"]["other-contract"]["requires_revalidation"])
+        view = search.CampaignEvidence(corrected)
+        self.assertEqual(view.signals(objective_anchor="old-probe")["objective_progress"]["best_candidate"], "legacy")
+        packet = search.handoff_packet(
+            self.path, corrected, {"size": self.path.stat().st_size, "sha256": archive.hash_path(self.path)}, "a" * 64)
+        self.assertEqual(packet["score_invalidations"], [event])
+        with self.assertRaisesRegex(archive.ArchiveFailure, "Working selection"):
+            view.validate_working_selection({"candidate_id": "alias"})
+        view.validate_working_selection({"candidate_id": legacy["candidate_id"]})
+        after = self.path.read_bytes()
+        with self.assertRaises(archive.ArchiveFailure) as repeated:
+            archive.invalidate_score(args)
+        self.assertEqual(repeated.exception.kind, "duplicate_score_invalidation")
+        with self.assertRaises(archive.ArchiveFailure) as rescore_error:
+            self.record("new-rescore", [1, 4, 9], recipe="rescore_in_another_directory()")
+        self.assertEqual(rescore_error.exception.kind, "score_excluded")
+        self.assertEqual(self.path.read_bytes(), after)
 
     def test_new_predictions_from_same_pipeline_cannot_replace_best_representative(self) -> None:
         baseline = self.record("baseline", [1, 2, 3])

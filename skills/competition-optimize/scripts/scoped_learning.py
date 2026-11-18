@@ -10,7 +10,7 @@ import hashlib
 import pathlib
 from typing import Any
 
-from candidate_evidence import canonical, implementation_identity, observed_snapshot, sha256
+from candidate_evidence import canonical, descriptive_diagnostic, implementation_identity, observed_snapshot, sha256
 from evidence_files import EvidenceReads, verify_artifacts, verify_result
 
 
@@ -50,6 +50,10 @@ def evidence_identity(entry: dict[str, Any]) -> dict[str, Any]:
                        for key in ("result_path", "result_sha256", "execution_status")}}
 
 
+def uses_descriptive(value: dict[str, Any], candidates: dict[str, dict[str, Any]]) -> bool:
+    return any(descriptive_diagnostic(candidates[candidate_id]) for candidate_id in value["evidence_from"])
+
+
 def verify_evidence(value: dict[str, Any], candidates: dict[str, dict[str, Any]], *,
                     reads: EvidenceReads | None = None) -> None:
     for candidate_id in value["evidence_from"]:
@@ -75,10 +79,13 @@ def validate(value: Any, entry: dict[str, Any], candidates: dict[str, dict[str, 
                 or not observed_snapshot(reference, implementation_identity(reference),
                                          include_diagnostics=True)):
             raise LearningFailure("Learning evidence requires measured development/diagnostic snapshots under the same complete comparison")
+        if reference.get("diagnostic_scope") == "descriptive":
+            raise LearningFailure("Descriptive diagnostics may motivate a new test but cannot supply scoped learning evidence")
     previous = active(candidates, entry["comparison"]).get(value["key"])
     if value.get("revises") != (previous["candidate_id"] if previous else None):
         raise LearningFailure("A learning update must explicitly revise the current head for its key and comparison")
-    if previous and previous["candidate_id"] not in value["evidence_from"]:
+    if (previous and previous["candidate_id"] not in value["evidence_from"]
+            and not uses_descriptive(previous["learning"], candidates)):
         raise LearningFailure("A learning revision must retain its previous head as evidence")
     identities = {candidate_id: evidence_identity(evidence[candidate_id])
                   for candidate_id in value["evidence_from"]}
@@ -94,6 +101,8 @@ def normalize(value: Any, raw: bytes, entry: dict[str, Any],
     all_entries = {**candidates, entry["candidate_id"]: entry}
     if any(candidate_id not in all_entries for candidate_id in ids):
         raise LearningFailure("Unknown learning evidence candidate")
+    if uses_descriptive({"evidence_from": ids}, all_entries):
+        raise LearningFailure("Descriptive diagnostics may motivate a new test but cannot supply scoped learning evidence")
     report.update(assessment_kind="agent_report", candidate_id=entry["candidate_id"],
                   proposal_id=entry.get("proposal_id"), input_sha256=hashlib.sha256(raw).hexdigest(),
                   comparison_sha256=sha256(canonical(entry["comparison"])),
@@ -105,7 +114,7 @@ def normalize(value: Any, raw: bytes, entry: dict[str, Any],
     return report
 
 
-def validate_references(proposal: dict[str, Any], candidates: dict[str, dict[str, Any]]) -> None:
+def validate_references(proposal: dict[str, Any], candidates: dict[str, dict[str, Any]], *, new: bool = False) -> None:
     if "learning_from" not in proposal:
         return
     ids = proposal["learning_from"]
@@ -113,7 +122,9 @@ def validate_references(proposal: dict[str, Any], candidates: dict[str, dict[str
             or len(set(ids)) != len(ids)):
         raise LearningFailure("learning_from must name distinct current learning candidate IDs")
     comparison = candidates[proposal["parent_ids"][0]]["comparison"]
-    heads = {entry["candidate_id"] for entry in active(candidates, comparison).values()}
+    heads = {entry["candidate_id"] for entry in active(candidates, comparison).values()
+             if not any("score_invalidation" in candidates[i] for i in entry["learning"]["evidence_from"])
+             and (not new or not uses_descriptive(entry["learning"], candidates))}
     if not set(ids) <= heads:
         raise LearningFailure("learning_from must reference current learning under the first parent's complete comparison")
 
@@ -126,7 +137,9 @@ def retrieve(candidates: dict[str, dict[str, Any]], comparison: dict[str, Any],
     if seen is not None and (not isinstance(seen, dict) or any(
             not _text(key) or type(turn) is not int or turn < 0 for key, turn in seen.items())):
         raise LearningFailure("Learning exposures must map candidate IDs to nonnegative turns")
-    heads = list(active(candidates, comparison).values())
+    heads = [entry for entry in active(candidates, comparison).values()
+             if not any("score_invalidation" in candidates[i] for i in entry["learning"]["evidence_from"])
+             and not uses_descriptive(entry["learning"], candidates)]
     positions = {entry["candidate_id"]: i for i, entry in enumerate(candidates.values())}
     heads.sort(key=lambda entry: (implementation_identity(entry)["fingerprint"] not in related,
                                   -positions[entry["candidate_id"]]))

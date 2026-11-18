@@ -32,7 +32,8 @@ from candidate_evidence import (
     executed_snapshot as _executed_snapshot, implementation_identity, load_json, measurable,
     nonempty_text, observed_snapshot as _observed_snapshot, reject_constant, sha256, unique_object,
     construction_mode, review_opportunities as _review_opportunities, distinct_implementations,
-    proposal_identity_checks, validate_construction_targets,
+    descriptive_diagnostic, prediction_result, proposal_identity_checks, proposal_prediction_status,
+    validate_construction_targets,
 )
 from evidence_files import (EvidenceReads, hash_path, verify_artifacts, verify_result,
                             verify_proposal_targets as _verify_proposal_targets)
@@ -42,6 +43,19 @@ from evidence_queries import (BriefQuery, EvidenceSnapshot, evidence_summary, re
 
 
 STATUSES = {"incumbent", "runner_up", "promising", "rejected", "unresolved"}
+
+
+def score_keys(result: dict[str, Any]) -> list[tuple[str, str]]:
+    keys = [("result", result["result_sha256"])] if isinstance(result.get("result_sha256"), str) else []
+    if prediction_result(result) and isinstance(result.get("candidate_hash"), str):
+        keys.append(("predictions", result["candidate_hash"]))
+    return keys
+
+
+def invalidation_key(event: dict[str, Any]) -> tuple[str, str]:
+    if "prediction_sha256" in event:
+        return "predictions", event["prediction_sha256"]
+    return "result", event["result_sha256"]
 
 
 def read_records(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -63,19 +77,27 @@ def parse_records(raw: bytes, source: str) -> list[dict[str, Any]]:
     plans: dict[str, dict[str, Any]] = {}
     closed_plans: set[str] = set()
     result_hashes: set[str] = set()
+    score_positions: dict[tuple[str, str], list[int]] = defaultdict(list)
+    invalidations: dict[tuple[str, str], dict[str, Any]] = {}
     closed: set[str] = set()
     filled_slots: set[tuple[str, str, str]] = set()
+    slots_by_position: dict[int, tuple[str, str, str]] = {}
     for index, line in enumerate(raw.splitlines(), 1):
         if not line.strip():
             continue
         value = load_json(line, f"{source}:{index}")
         if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
             raise ArchiveFailure("invalid_archive", f"{source}:{index}: expected schema_version 1 object")
-        if value.get("event") not in {"candidate", "decision", "proposal", "proposal_stop",
+        if value.get("event") not in {"candidate", "decision", "proposal", "proposal_stop", "score_invalidation",
                                       "measurement_plan", "measurement_decision", "measurement_stop"}:
             raise ArchiveFailure("invalid_archive", f"{source}:{index}: unknown event")
         if value["event"] == "candidate":
             validate_candidate(value)
+            digest = value["result"].get("result_sha256")
+            keys = score_keys(value["result"]) if value["role"] == "development" else []
+            for key in keys:
+                if key in invalidations:
+                    value["score_invalidation"] = invalidations[key]
             slot = measurement_plans.validate_candidate(value, records,
                                                         plans=plans, candidates=candidates,
                                                         filled_slots=filled_slots,
@@ -100,9 +122,21 @@ def parse_records(raw: bytes, source: str) -> list[dict[str, Any]]:
             candidates[candidate_id] = value
             if slot is not None:
                 filled_slots.add(slot)
-            digest = value["result"].get("result_sha256")
+                slots_by_position[len(records)] = slot
             if isinstance(digest, str):
                 result_hashes.add(digest)
+            for key in keys:
+                score_positions[key].append(len(records))
+        elif value["event"] == "score_invalidation":
+            key = validate_score_invalidation(value, candidates)
+            if key in invalidations:
+                raise ArchiveFailure("duplicate_score_invalidation", "These score inputs are already excluded")
+            invalidations[key] = value
+            # This annotation belongs to replay, never to the sealed candidate event.
+            for position in score_positions[key]:
+                records[position]["score_invalidation"] = value
+                if position in slots_by_position:
+                    filled_slots.discard(slots_by_position[position])
         elif value["event"] == "proposal":
             validate_proposal(value, records, candidates=candidates)
             proposal_id = value["proposal_id"]
@@ -131,6 +165,10 @@ def parse_records(raw: bytes, source: str) -> list[dict[str, Any]]:
 
 
 def validate_candidate(value: dict[str, Any]) -> None:
+    if "score_invalidation" in value:
+        raise ArchiveFailure("invalid_archive", "Score invalidation requires a separate archive event")
+    if "prediction_boundary" in value:
+        nonempty_text(value["prediction_boundary"], "prediction_boundary")
     for field in ("candidate_id", "fingerprint", "route", "mechanism"):
         nonempty_text(value.get(field), field)
     if value.get("status") not in STATUSES or type(value.get("valid")) is not bool:
@@ -148,6 +186,8 @@ def validate_candidate(value: dict[str, Any]) -> None:
         raise ArchiveFailure("invalid_archive", "Artifact hashes/fingerprint are malformed or inconsistent")
     if value.get("role") not in DEVELOPMENT_ROLES | {"confirmation"}:
         raise ArchiveFailure("invalid_archive", "Candidate role is malformed")
+    if "diagnostic_scope" in value and (value["role"] != "diagnostic" or value["diagnostic_scope"] != "descriptive"):
+        raise ArchiveFailure("invalid_candidate", "Descriptive scope requires --role diagnostic")
     if value["role"] == "diagnostic":
         if value["status"] in {"incumbent", "runner_up"}:
             raise ArchiveFailure("invalid_candidate", "Diagnostic evidence cannot be an incumbent or runner-up")
@@ -277,8 +317,54 @@ def validate_diagnostic_parent(value: dict[str, Any], candidates: dict[str, dict
         raise ArchiveFailure("confirmation_feedback", "Confirmation evidence cannot supply diagnostic parents")
 
 
+def validate_score_invalidation(value: dict[str, Any], candidates: dict[str, dict[str, Any]]) -> tuple[str, str]:
+    candidate_id = nonempty_text(value.get("candidate_id"), "candidate_id")
+    target = candidates.get(candidate_id)
+    digest = value.get("result_sha256")
+    if (target is None or target["role"] != "development" or not target["valid"]
+            or target["objective"].get("value") is None or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or target["result"].get("result_sha256") != digest):
+        raise ArchiveFailure("invalid_score_invalidation",
+                             "Exclusion must identify an archived development score and its exact result hash")
+    for name in ("reason", "evidence_path", "evidence_sha256"):
+        nonempty_text(value.get(name), name)
+    if not re.fullmatch(r"[0-9a-f]{64}", value["evidence_sha256"]):
+        raise ArchiveFailure("invalid_score_invalidation", "Exclusion evidence hash is malformed")
+    if "prediction_sha256" in value:
+        predictions = value["prediction_sha256"]
+        if (not isinstance(predictions, str) or not re.fullmatch(r"[0-9a-f]{64}", predictions)
+                or ("predictions", predictions) not in score_keys(target["result"])):
+            raise ArchiveFailure("invalid_score_invalidation", "Prediction exclusion must bind the scored CSV bytes")
+    return invalidation_key(value)
+
+
+def invalidate_score(args: argparse.Namespace) -> dict[str, Any]:
+    archive = args.archive.expanduser().resolve()
+    old = read_records(archive)
+    candidates = candidate_index(old)
+    evidence = args.evidence.expanduser().resolve(strict=True)
+    if not evidence.is_file():
+        raise ArchiveFailure("invalid_score_invalidation", "Supply a file documenting the specific evaluation defect")
+    value = {"schema_version": 1, "event": "score_invalidation",
+             "candidate_id": args.candidate_id, "result_sha256": args.result_sha256,
+             "reason": nonempty_text(args.reason, "reason"),
+             "evidence_path": str(evidence), "evidence_sha256": hash_path(evidence),
+             "recorded_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")}
+    target = candidates.get(args.candidate_id)
+    if args.scope == "predictions" and target is not None:
+        value["prediction_sha256"] = target["result"].get("candidate_hash")
+    key = validate_score_invalidation(value, candidates)
+    if any(entry["event"] == "score_invalidation" and invalidation_key(entry) == key for entry in old):
+        raise ArchiveFailure("duplicate_score_invalidation", "These score inputs are already excluded")
+    verify_result(target)
+    append_record(archive, value)
+    return value
+
+
 def validate_proposal(value: dict[str, Any], records: list[dict[str, Any]], *,
-                      candidates: dict[str, dict[str, Any]] | None = None) -> None:
+                      candidates: dict[str, dict[str, Any]] | None = None,
+                      new: bool = False) -> None:
     for field in ("proposal_id", "route", "basis", "change", "expected_observation", "validation", "stop_condition"):
         nonempty_text(value.get(field), field)
     if candidates is None:
@@ -291,7 +377,7 @@ def validate_proposal(value: dict[str, Any], records: list[dict[str, Any]], *,
         if any(candidates[i]["role"] not in DEVELOPMENT_ROLES for i in ids):
             raise ArchiveFailure("confirmation_feedback", "Confirmation evidence cannot supply search parents or feedback")
     try:
-        scoped_learning.validate_references(value, candidates)
+        scoped_learning.validate_references(value, candidates, new=new)
     except scoped_learning.LearningFailure as exc:
         raise ArchiveFailure("invalid_learning", str(exc)) from exc
     validate_construction_targets(value)
@@ -321,7 +407,7 @@ def propose_candidate(args: argparse.Namespace) -> dict[str, Any]:
     value.update(schema_version=1, event="proposal", input_sha256=sha256(raw),
                  code_targets=[{"path": str(pathlib.Path(target).expanduser().resolve(strict=True)),
                                 "sha256": hash_path(pathlib.Path(target))} for target in targets])
-    validate_proposal(value, records)
+    validate_proposal(value, records, new=True)
     if any(entry["event"] == "proposal" and entry["proposal_id"] == value["proposal_id"] for entry in records):
         raise ArchiveFailure("duplicate_proposal_id", "Proposal ID already exists")
     value["recorded_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -355,16 +441,21 @@ def record_measurement_plan(args: argparse.Namespace) -> dict[str, Any]:
     authored = load_json(raw, str(path))
     if not isinstance(authored, dict):
         raise ArchiveFailure("invalid_measurement_plan", "Plan input must be an object")
-    fields = ("plan_id", "conflict_signature", "comparison", "leader_candidate",
-              "challenger_candidate", "witness_candidate", "runs", "decision_rule")
-    if set(authored) != set(fields):
-        raise ArchiveFailure("invalid_measurement_plan", "Plan must contain exactly the declared measurement fields")
-    plan = {key: authored[key] for key in fields}
+    fields = {"plan_id", "comparison", "leader_candidate", "challenger_candidate", "runs", "decision_rule"}
+    conflict_fields = {"conflict_signature", "witness_candidate"}
+    if set(authored) not in (fields, fields | conflict_fields):
+        raise ArchiveFailure("invalid_measurement_plan", "Supply both conflict_signature and witness_candidate for a repeat conflict, "
+                             "or omit both for eligibility")
+    plan = dict(authored)
+    candidates = candidate_index(records)
+    if "witness_candidate" not in plan:
+        plan.update(witness_candidate=None, conflict_signature=measurement_plans.eligibility_signature(plan, candidates))
+    elif plan["witness_candidate"] is None:
+        raise ArchiveFailure("invalid_measurement_plan", "Omit witness_candidate and conflict_signature for eligibility")
     plan.update(schema_version=1, event="measurement_plan", input_sha256=sha256(raw),
                 recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
     measurement_plans.validate_plan(plan, records)
-    candidates = candidate_index(records)
-    for candidate_id in (plan["leader_candidate"], plan["challenger_candidate"], plan["witness_candidate"]):
+    for candidate_id in sorted(measurement_plans.plan_candidate_ids(plan)):
         verify_result(candidates[candidate_id])
         verify_artifacts(candidates[candidate_id])
     append_record(args.archive, plan)
@@ -376,9 +467,10 @@ def record_measurement_decision(args: argparse.Namespace) -> dict[str, Any]:
     path = args.decision.expanduser().resolve(strict=True)
     raw = path.read_bytes()
     authored = load_json(raw, str(path))
-    fields = ("plan_id", "conclusion", "reason", "next_action")
-    if not isinstance(authored, dict) or set(authored) != set(fields):
-        raise ArchiveFailure("invalid_measurement_decision", "Decision needs plan_id, conclusion, reason and next_action")
+    fields = {"plan_id", "conclusion", "reason", "next_action"}
+    if not isinstance(authored, dict) or set(authored) not in (fields, fields | {"outcome"}):
+        raise ArchiveFailure("invalid_measurement_decision", "Decision needs plan_id, conclusion, reason and next_action; "
+                             "a structured rule also needs outcome")
     plan = next((entry for entry in records if entry["event"] == "measurement_plan"
                  and entry["plan_id"] == authored["plan_id"]), None)
     if plan is None:
@@ -388,17 +480,12 @@ def record_measurement_decision(args: argparse.Namespace) -> dict[str, Any]:
         raise ArchiveFailure("closed_measurement_plan", "The measurement plan was stopped unresolved")
     if not view["complete"]:
         raise ArchiveFailure("incomplete_measurement_plan", "Every frozen paired run must be validly measured before a decision")
-    index = candidate_index(records)
-    for run in view["runs"]:
-        for name in ("leader", "challenger"):
-            entry = index[run[name]["candidate_id"]]
-            verify_result(entry)
-            verify_artifacts(entry)
-    decision = {key: authored[key] for key in fields}
+    decision = dict(authored)
     decision.update(schema_version=1, event="measurement_decision", input_sha256=sha256(raw),
                     evidence_sha256=measurement_plans.evidence_sha256(view),
                     recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
     measurement_plans.validate_decision(decision, records)
+    measurement_plans.verify_decision_evidence(view, candidate_index(records), reads=EvidenceReads())
     append_record(args.archive, decision)
     return decision
 
@@ -557,6 +644,20 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
         candidate_status=status)
     objective, comparison = observation.objective, observation.comparison
     validity, role = observation.valid, observation.role
+    if role == "development" and validity and objective.get("value") is not None:
+        keys = set(score_keys(result))
+        if any(entry["event"] == "score_invalidation" and invalidation_key(entry) in keys for entry in old):
+            raise ArchiveFailure("score_excluded", "This result or prediction artifact has an archived evaluation defect; "
+                                 "inspect the exclusion before recording more development evidence")
+    boundary = getattr(args, "prediction_boundary", None)
+    if boundary is not None:
+        boundary = nonempty_text(boundary, "prediction_boundary")
+    if (role == "development" and validity and objective.get("value") is not None
+            and prediction_result(result) and "training_execution" not in result and boundary is None):
+        raise ArchiveFailure("missing_prediction_boundary",
+                             "A saved prediction score alone does not establish fit isolation. Record as "
+                             "--role diagnostic with its development control, or use --prediction-boundary "
+                             "to cite how each scored partition was excluded at every fitting/selection layer.")
     cost: Any = {"evaluation_elapsed_seconds": result["elapsed_seconds"]} if "elapsed_seconds" in result else {}
     if args.cost is not None:
         cost = load_json(args.cost.encode("utf-8"), "--cost")
@@ -598,6 +699,10 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
         "result": result,
     }
     record["implementation"] = implementation_identity(record)
+    if boundary is not None:
+        record["prediction_boundary"] = boundary
+    if getattr(args, "descriptive", False) or descriptive_diagnostic(record):
+        record["diagnostic_scope"] = "descriptive"
     record["reused_implementation_from"] = [entry["candidate_id"] for entry in old if entry["event"] == "candidate"
                                             and entry["role"] in DEVELOPMENT_ROLES
                                             and implementation_identity(entry)["fingerprint"] == record["implementation"]["fingerprint"]]
@@ -625,6 +730,10 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
                 review, raw_review, record, implementation_identity(record), hash_path)
         except implementation_reviews.ReviewFailure as exc:
             raise ArchiveFailure("invalid_implementation_review", str(exc)) from exc
+        if record["prediction_status"] != proposal_prediction_status(record):
+            raise ArchiveFailure("proposal_outcome_out_of_scope",
+                                 "Incomplete or unverified fidelity requires --prediction-status unresolved. "
+                                 "Keep the measured score and describe the actual implementation in the review and feedback.")
     if getattr(args, "learning", None) is not None:
         raw_learning = args.learning.expanduser().resolve(strict=True).read_bytes()
         try:
@@ -762,7 +871,7 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
     return {"schema_version": 1, "candidate_count": len(candidates),
             "decision_count": sum(entry["event"] == "decision" for entry in records),
             "proposal_count": sum(entry["event"] == "proposal" for entry in records),
-            "recent_candidates": [{key: entry[key] for key in ("candidate_id", "parent_ids", "fingerprint", "artifact_paths", "route", "status", "valid", "role", "objective", "comparison", "cost", "result", "feedback", "failure_mechanism")}
+            "recent_candidates": [{key: entry[key] for key in ("candidate_id", "parent_ids", "fingerprint", "artifact_paths", "route", "status", "valid", "role", "objective", "comparison", "cost", "result", "feedback", "failure_mechanism", "score_invalidation", "prediction_boundary", "diagnostic_scope") if key in entry}
                                   for entry in candidates[-args.recent:]],
             "routes": {route: {"candidates": info["candidates"],
                                "statuses": dict(info["statuses"]), "latest": info["latest"]}
@@ -784,7 +893,7 @@ def parser() -> argparse.ArgumentParser:
     stop.add_argument("--archive", type=pathlib.Path, required=True)
     stop.add_argument("--proposal-id", required=True)
     stop.add_argument("--reason", required=True)
-    measure = sub.add_parser("measure-plan", help="freeze a paired conflict measurement before its runs")
+    measure = sub.add_parser("measure-plan", help="freeze a paired measurement for a repeat conflict or an eligibility decision")
     measure.add_argument("--archive", type=pathlib.Path, required=True)
     measure.add_argument("--plan", type=pathlib.Path, required=True)
     measure_status = sub.add_parser("measure-status", help="read the frozen plan and its actual paired results")
@@ -827,6 +936,10 @@ def parser() -> argparse.ArgumentParser:
     record.add_argument("--score-model-hash")
     record.add_argument("--stage")
     record.add_argument("--role", choices=["development", "diagnostic", "confirmation"])
+    record.add_argument("--descriptive", action="store_true",
+                        help="keep a diagnostic observation out of transferable learning")
+    record.add_argument("--prediction-boundary",
+                        help="for unmanaged prediction scores: cite the fold-specific source proving fit and selection isolation")
     record.add_argument("--reuse-reason", help="required for recording unchanged artifacts under a new measurement")
     record.add_argument("--route", required=True)
     record.add_argument("--mechanism", required=True)
@@ -842,6 +955,14 @@ def parser() -> argparse.ArgumentParser:
     record.add_argument("--cost", help="Optional extra measured costs; managed training cost is read from --result")
     record.add_argument("--feedback")
     record.add_argument("--failure")
+    invalidate = sub.add_parser("invalidate-score", help="exclude a proven defective score while retaining the original observation")
+    invalidate.add_argument("--archive", type=pathlib.Path, required=True)
+    invalidate.add_argument("--candidate-id", required=True)
+    invalidate.add_argument("--result-sha256", required=True)
+    invalidate.add_argument("--scope", choices=["result", "predictions"], default="result",
+                            help="exclude the score result alone, or all rescores of the same defective prediction bytes")
+    invalidate.add_argument("--reason", required=True)
+    invalidate.add_argument("--evidence", type=pathlib.Path, required=True)
     decide = sub.add_parser("decide", help="recommend exploit or explore from archive evidence")
     decide.add_argument("--archive", type=pathlib.Path, required=True)
     decide.add_argument("--current-route")
@@ -864,6 +985,8 @@ def main() -> int:
             result = check_candidate(args)
         elif args.command == "record":
             result = record_candidate(args)
+        elif args.command == "invalidate-score":
+            result = invalidate_score(args)
         elif args.command == "propose":
             result = {"schema_version": 1, "status": "pending", "proposal": propose_candidate(args)}
         elif args.command == "measure-plan":

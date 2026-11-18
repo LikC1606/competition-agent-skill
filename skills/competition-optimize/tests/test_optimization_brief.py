@@ -60,6 +60,8 @@ class OptimizationBriefTests(unittest.TestCase):
             arguments += ["--source", str(source)]
         if result:
             arguments += ["--result", str(result_path)]
+            if archive.prediction_result(receipt):
+                arguments += ["--prediction-boundary", "Synthetic fixture with a fixed development boundary."]
         else:
             arguments += ["--valid" if valid else "--invalid", "--objective-value", str(score), "--objective-direction", direction,
                           "--objective-kind", "official_metric", "--objective-name", "score", "--stage", "full",

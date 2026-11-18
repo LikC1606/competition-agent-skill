@@ -30,6 +30,32 @@ class CodexInvocationTests(unittest.TestCase):
     def observe(self, **result):
         return CodexInvocation.observe(self.directory, {"returncode": 0, **result}, quarantined=False)
 
+    def test_receipt_delivery_is_only_for_successful_work_with_a_saved_session(self):
+        self.events.write_text(json.dumps({"type": "thread.started", "thread_id": "work-session"}) +
+                               "\n" + json.dumps({"type": "turn.completed"}) + "\n")
+        self.message.write_text("Composing the receipt now.")
+        self.assertTrue(self.observe().needs_receipt)
+        for result in ({"returncode": 7}, {"error": "watchdog expired"}):
+            self.assertFalse(self.observe(**result).needs_receipt)
+        self.assertFalse(CodexInvocation.observe(self.directory, {"returncode": 0},
+                                                quarantined=True).needs_receipt)
+        self.message.write_text(json.dumps(self.receipt))
+        self.assertFalse(self.observe().needs_receipt)
+        self.message.unlink()
+        self.events.write_text(json.dumps({"type": "turn.completed"}) + "\n")
+        self.assertFalse(self.observe().needs_receipt)
+
+    def test_receipt_delivery_forks_exact_work_session_with_frozen_schema_and_model(self):
+        turn = {"number": 4, "command": ["bound-deepseek", "exec", "--model", "deepseek-flash"],
+                "instruction_snapshot": {"receipt_schema_path": "/frozen/receipt.schema.json"}}
+        command = CodexInvocation.receipt_command(turn, self.directory, "work-session")
+        self.assertEqual(command[:3], ["bound-deepseek", "exec", "fork"])
+        self.assertEqual(command[-2:], ["work-session", "-"])
+        self.assertEqual(command[command.index("--model") + 1], "deepseek-flash")
+        self.assertEqual(command[command.index("--output-schema") + 1], "/frozen/receipt.schema.json")
+        self.assertEqual(Path(command[command.index("-o") + 1]),
+                         self.directory / "turns/000004/receipt/message.json")
+
     @unittest.skipUnless(shutil.which("bash") and shutil.which("head"), "Requires Bash and head")
     def test_fresh_and_resumed_commands_preserve_pipeline_failure_using_native_bash(self):
         state = {"model": "deepseek-flash", "agent_bin": "codex", "session_id": None,
@@ -84,6 +110,18 @@ class CodexInvocationTests(unittest.TestCase):
             self.assertIsNone(self.observe().receipt)
         self.message.write_text(json.dumps({**self.receipt, "research_state": None, "corrections": []}))
         self.assertIsNotNone(self.observe().receipt)
+
+    def test_working_selection_is_optional_but_requires_a_scoped_reason_and_evidence(self):
+        selection = {"candidate_id": "measured", "reason": "Preferred under the declared comparison.",
+                     "limitations": "Development evidence only.", "evidence": ["runs/measured/result.json"]}
+        for value in (selection, None):
+            receipt = {**self.receipt, "working_selection": value}
+            self.message.write_text(json.dumps(receipt))
+            self.assertEqual(self.observe().receipt, receipt)
+        for value in ({**selection, "evidence": []}, {**selection, "limitations": ""},
+                      {**selection, "value": 999}, "measured"):
+            self.message.write_text(json.dumps({**self.receipt, "working_selection": value}))
+            self.assertIsNone(self.observe().receipt)
 
     def test_explicit_withdrawal_needs_a_reason_and_evidence_without_a_replacement_claim(self):
         withdrawal = {"key": "population-size", "status": "withdrawn",

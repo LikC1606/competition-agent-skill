@@ -53,7 +53,8 @@ def bound_packet(packet: dict[str, Any], *, budget: int, mode: str = "work") -> 
         return source
 
     def compact_recovery(name: str, recovery: dict[str, Any] | None) -> Any:
-        if not recovery or size(recovery) <= budget // 3:
+        active = mode == ("measure" if name == "comparison_recovery" else "repair")
+        if not recovery or active and size(recovery) <= budget // 3:
             return recovery
         keys = (("reference_relationship", "changed_fields", "scope", "retrieval_sha256")
                 if name == "comparison_recovery" else
@@ -120,42 +121,49 @@ def bound_packet(packet: dict[str, Any], *, budget: int, mode: str = "work") -> 
     for name in priorities:
         add(name, source.get(name))
 
-    # Keep current decision boundaries ahead of optional historical candidate
-    # prose. An oversized report becomes an exact receipt pointer, never a
-    # substring that could remove its conditions or reopening rule.
+    for name in ("objective_progress", "execution_health", "comparison_continuity",
+                 "measurement_decision", "measurement_stop", "working_selection"):
+        if name in source:
+            add(name, source[name])
+
+    def decision_card(row: dict[str, Any]) -> dict[str, Any]:
+        pointer = {key: value for key, value in row.items() if key not in {"report", "finding"}}
+        pointer.update(report=None, report_sha256=sha256(canonical(row["report"])),
+                       report_key=row["report"].get("key"),
+                       report_status=row["report"].get("status", "active"),
+                       details_omitted="Read the complete report in receipt_path before applying it")
+        return pointer
+
+    def fit_corrections(target: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+        for row in sorted(rows, key=lambda row: row["report"].get("status") != "withdrawn"):
+            target["corrections"].append(decision_card(row))
+            if not fits():
+                target["corrections"].pop()
+                omitted("/decision_context/corrections/omitted_items")
+
+    # An audit may correct the inherited question itself. Deliver its pointers
+    # before the question and optional candidate evidence, keeping reports whole.
     decision = source.get("decision_context")
+    historical = []
     if decision:
         target = {"scope": decision["scope"], "research_state": None, "corrections": []}
         selected["decision_context"] = target
-        def decision_card(row: dict[str, Any], path: str) -> dict[str, Any]:
-            pointer = {key: value for key, value in row.items() if key != "report"}
-            pointer.update(report=None, report_sha256=sha256(canonical(row["report"])),
-                           report_key=row["report"].get("key"),
-                           report_status=row["report"].get("status", "active"),
-                           details_omitted="Read the complete report in receipt_path before applying it")
-            omitted(path + "/report")
-            return pointer
+        audits = []
+        for row in decision.get("corrections", []):
+            (audits if row.get("assessment_kind") == "maintenance_audit" else historical).append(row)
+        fit_corrections(target, audits)
         if decision.get("research_state"):
             row = decision["research_state"]
             target["research_state"] = row
-            if not fits():
-                target["research_state"] = decision_card(row, "/decision_context/research_state")
+            if (any(audit["turn"] >= row["turn"] and audit["receipt_path"] != row["receipt_path"] for audit in audits)
+                    or size(row) > allowance // 4 or not fits()):
+                target["research_state"] = decision_card(row)
+                omitted("/decision_context/research_state/report")
                 if not fits():
                     target["research_state"] = None
-        for row in decision.get("corrections", []):
-            target["corrections"].append(row)
-            if not fits():
-                target["corrections"][-1] = decision_card(row, "/decision_context/corrections")
-                if not fits():
-                    target["corrections"].pop()
-                    omitted("/decision_context/corrections/omitted_items")
         if not fits():
             selected["decision_context"] = None
             omitted("/decision_context")
-
-    for name in ("objective_progress", "execution_health", "comparison_continuity",
-                 "measurement_decision", "measurement_stop"):
-        add(name, source.get(name))
 
     def fit_collection(parent: dict[str, Any], name: str, value: Any, path: str) -> None:
         parent[name] = value
@@ -178,6 +186,9 @@ def bound_packet(packet: dict[str, Any], *, budget: int, mode: str = "work") -> 
             parent[name] = None
             omitted(path)
 
+    if source.get("score_invalidations"):
+        fit_collection(selected, "score_invalidations", source["score_invalidations"], "/score_invalidations")
+
     brief = source.get("development_brief")
     if brief:
         selected["development_brief"] = {}
@@ -186,14 +197,42 @@ def bound_packet(packet: dict[str, Any], *, budget: int, mode: str = "work") -> 
                     "best_development", "scope"):
             if key in brief:
                 fit_collection(target, key, brief[key], "/development_brief/" + key)
+        target["candidates"] = {}
+        cards = brief.get("candidates", {})
+
+        def fit_candidate(identity: str) -> None:
+            target["candidates"][identity] = cards[identity]
+            if not fits():
+                del target["candidates"][identity]
+                omitted(f"/development_brief/candidates/{identity}")
+
+        controls = [brief.get("best_development"), (source.get("working_selection") or {}).get("candidate_id")]
+        routes = [brief.get("anchor_candidate"), *(route.get("best") for route in brief.get("routes", []))]
+        routes += [row.get(key) for row in (brief.get("review_frontier") or {}).get("selection", [])
+                   for key in ("candidate_id", "feedback_candidate_id")]
+        core = dict.fromkeys(controls + routes)
+        for identity in dict.fromkeys(controls):
+            if identity in cards:
+                fit_candidate(identity)
+        for key in ("routes", "review_frontier", "pending_proposals"):
+            if key in brief:
+                fit_collection(target, key, brief[key], "/development_brief/" + key)
+        for identity in dict.fromkeys(routes):
+            if identity in cards and identity not in controls:
+                fit_candidate(identity)
+
+    target_decision = selected.get("decision_context")
+    if target_decision:
+        fit_corrections(target_decision, historical)
+
+    if brief:
+        target = selected["development_brief"]
         for name in ("candidates", "pending_references"):
-            target[name] = {}
-            cards = brief.get(name, {})
-            order = list(dict.fromkeys([brief.get("best_development"), brief.get("anchor_candidate"), *cards]))
-            for identity in order:
-                if identity not in cards:
+            target.setdefault(name, {})
+            for identity, card in brief.get(name, {}).items():
+                if name == "candidates" and identity in core:
                     continue
-                target[name][identity] = cards[identity]
+                target[name][identity] = card
                 if not fits():
                     del target[name][identity]
                     omitted(f"/development_brief/{name}/{identity}")
@@ -201,6 +240,15 @@ def bound_packet(packet: dict[str, Any], *, budget: int, mode: str = "work") -> 
             if key not in target:
                 fit_collection(target, key, value, "/development_brief/" + key)
     fit_collection(selected, "trial_history", source.get("trial_history"), "/trial_history")
+    if target_decision:
+        originals = {(row["turn"], row["report"].get("key")): row
+                     for row in decision.get("corrections", [])}
+        for index, pointer in enumerate(target_decision["corrections"]):
+            row = originals[(pointer["turn"], pointer["report_key"])]
+            target_decision["corrections"][index] = row
+            if not fits():
+                target_decision["corrections"][index] = pointer
+                omitted(f"/decision_context/corrections/{index}/report")
     # Even an unusually long archive path must not silently exceed the contract.
     if size(selected) > budget:
         raise ValueError("Required handoff envelope exceeds the evidence byte allowance")
