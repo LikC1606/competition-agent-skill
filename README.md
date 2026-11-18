@@ -1,59 +1,54 @@
+<!-- README_SYNC: source=4e47943d568303dfb95221ba1a40e000ff053ba6; updated=2026-11-18 -->
+
+简体中文 · [English](./README_EN.md)
+
 # Competition Agent Skill
 
-用于比赛解法的持续改进：从规则和强方案推导机制，实际修改代码或训练流水线，用匹配的评测比较，再把反馈接到下一项实现。技能入口是 [`competition-optimize`](skills/competition-optimize/SKILL.md)。
+给已有比赛解法持续找改进方向，并用匹配的本地评测检验。先找出限制当前效果的机制或证据缺口，再实现候选、保存结果，并根据结果决定下一步。技能入口是 [competition-optimize](./skills/competition-optimize/SKILL.md)。
 
-主流程按当前缺口选择定向研究、评测修复、有效诊断或完整机制实现。资料检索产出可迁移的能力差距；本地评测分清机制探针、代表性比较和独立确认；公榜分歧触发诊断；失败结果决定修实现、换机制还是补测。完整设计见[围绕五个方向的比赛工作流](docs/competition-workflow-design.md)，分支细节见[资料检索](skills/competition-optimize/references/competition-research.md)与[本地评测设计](skills/competition-optimize/references/local-evaluation.md)。
+## 从现有工作区开始
 
-本轮按 [2026-11-10 重构方案](docs/refactor-plan-2026-11-10.md)实施，变更和验证见 [实施记录](docs/refactor-implementation-2026-11-10.md)。代码测试和集成演示不等于真实比赛提分；跨任务、多次运行的效果对照仍需独立实验。
+把比赛规则、当前实现、评测命令和已有结果放在比赛工作区，让 Agent 读取上述 Skill。可以直接说：
 
-## 当前能力
+> 用 competition-optimize 接着改进这份比赛解法。先对账未完成的实验，沿用现有开发协议，比对真实候选，并说明结果怎样影响下一项改动。
 
-| 能力 | 已实现的范围 | 使用入口 |
-| --- | --- | --- |
-| 策略与迭代 | 按缺口分流研究／评测修复／诊断／实现，将强方案转为能力改进，并按结果选择后继 | [技能入口](skills/competition-optimize/SKILL.md)、[决策路由](skills/competition-optimize/references/decision-loop.md)、[策略设计](skills/competition-optimize/references/strategy-design.md) |
-| Kaggle 资料读取 | 比赛范围发现与翻页、榜单关联、方案帖与评论、指定 notebook 版本、本地快照；主要读取链路与 API token 认证已在线验证 | [只读来源工具](skills/competition-optimize/references/kaggle-sources.md) |
-| 候选证据 | 提案/结果关联、未决机会、诊断、条件经验、互补案例、资源权衡、配对复测 | [迭代档案](skills/competition-optimize/references/iteration-trace.md) |
-| 无人值守 | 每轮按需上下文、完整证据卡、指令快照、进程恢复、档案接收与检查点 | [启动与恢复](skills/competition-optimize/references/unattended-campaign.md) |
-| 固定时隙 C++ | 固定 workload 完整性、Clang AST 已声明规则子集、ZIP 字节核验 | [timeslot adapter](skills/competition-optimize/references/fixed-timeslot.md) |
-| 预测文件 | 无权标量回归/二分类 CSV 评分、比较、错误分析和已有预测组合诊断 | [预测工具](skills/competition-optimize/references/data-model.md) |
-| 数值表格训练 | 实际 fold 训练、OOF、group/time 检查、冻结模型、独立确认和提交 CSV | [训练 adapter](skills/competition-optimize/references/tabular-training.md) |
-| LLM 与 Agent | 数据与训练、推理和交互机制指南；已生成答案的投票/早停离线诊断，真实推理需题目 adapter | [专项指南](skills/competition-optimize/references/llm-agent-competitions.md)、[投票重放](skills/competition-optimize/references/inference-vote-replay.md) |
-| 其它题型 | 共用档案与驱动；仍需对应的题目评测器 | [Adapter 合同](skills/competition-optimize/references/adapter-contract.md) |
+只需要理解强方案时，可以明确要求只分析。要做优化时，先检查本地评测是否覆盖规则、目标分布和必要的对照；开发结果用来选方向，独立确认集不参与开发决策。公榜和本地分歧时先诊断原因。提交、上传和无人值守运行分别需要对应授权。
 
-不设置默认总轮数、总时间或费用上限；遵守比赛约束、实际资源和用户当前限制。默认实施有依据的机制改动，专门参数搜索需要明确请求。确认集不参与开发决策；正式提交/上传需要明确授权。
+## 运行一个离线例子
 
-## 最短使用路径
+普通脚本需要 Python 3.10 或更新版本。若 `python3` 是容器包装命令，换成能访问比赛工作区的解释器。下例用四组**合成固定答案**演示投票和早停诊断，写出 `trace.json` 和 `report.json`，无需模型、网络或数值依赖。缓存回放不能证明比赛提分或实测耗时减少。
 
-将题目、当前实现、评测命令和已有结果放在比赛工作区，然后向 agent 描述目标与当前限制：
+```sh
+demo_root=$(mktemp -d "${TMPDIR:-/data/lzh/default-storage/tmp}/competition-demo.XXXXXXXX")
+python3 examples/inference_vote_replay.py --output-dir "$demo_root/replay"
+```
 
-> 使用本仓库的 competition-optimize，继续改进这份解法。先恢复未完成试验，按现有开发协议运行真实候选，再据结果执行下一项改动。我补充的想法是……
-
-如仅研究方案思路，明确说“只分析，不改代码”。如果当前没有可信评测器，先核对官方计分和目标分布，用已知正反例验证边界，再建立能区分机制的本地开发评测。工具详情按题型和当前决策加载，不需要每轮读完整历史。
-
-仓库脚本可直接运行，无须安装 skill。普通脚本使用 Python 3.10+；本次验证使用 `/usr/bin/python3` 3.12。预测评分、数值诊断和表格训练复用任务的[数值依赖环境](skills/competition-optimize/references/tabular-training.md#setup-and-candidate-interface)，指标调用 NumPy/sklearn/SciPy；只读档案和无需复算的分数比较不依赖这些包。C++ 执行需要比赛 harness 和编译器，静态规则检查另需 Clang。
-
-真实训练的本地集成示例：
+要查看完整的表格训练路径，准备[数值环境](./skills/competition-optimize/references/tabular-training.md#setup-and-candidate-interface)，再运行这个实际拟合示例：
 
 ```sh
 /absolute/path/to/tabular-env/bin/python examples/tabular_training_pilot.py \
   --output-dir /absolute/path/to/new-pilot-directory
 ```
 
-固定答案投票与早停的可运行示例：
+## 按证据选择工具
+
+| 现在要解决什么 | 入口 |
+| --- | --- |
+| 读强方案，确定可转用的机制 | [比赛资料](./skills/competition-optimize/references/competition-research.md) · [Kaggle 只读来源](./skills/competition-optimize/references/kaggle-sources.md) |
+| 核对评分、验证切分和可比性 | [本地评测设计](./skills/competition-optimize/references/local-evaluation.md) · [题目 Adapter](./skills/competition-optimize/references/adapter-contract.md) |
+| 比较候选、保存失败和恢复试验 | [决策路由](./skills/competition-optimize/references/decision-loop.md) · [迭代档案](./skills/competition-optimize/references/iteration-trace.md) |
+| 处理预测文件或实际训练 | [CSV 评分/诊断](./skills/competition-optimize/references/data-model.md) · [表格训练](./skills/competition-optimize/references/tabular-training.md) |
+| 核对固定时隙 C++ 合规性 | [时隙 Adapter](./skills/competition-optimize/references/fixed-timeslot.md)；需要比赛 harness，静态规则检查需 Clang |
+| 检查 LLM 答案选择或推理策略 | [LLM 比赛](./skills/competition-optimize/references/llm-agent-competitions.md) · [投票回放](./skills/competition-optimize/references/inference-vote-replay.md)；真实推理需要题目专用 Adapter |
+
+常规优化从有依据的机制改动开始；专门的参数搜索只在明确要求时进行。开发评测、独立确认及提交产物各自保留。方法总览见[比赛工作流设计](./docs/competition-workflow-design.md)。
+
+## 已授权的无人值守运行
+
+准备可执行的题目 Adapter 和开发 baseline，并确认工作区、归档位置与资源限制。以下命令会启动持续调用已配置 Codex 的后台进程，只有任务明确需要无人值守时运行：
 
 ```sh
-/usr/bin/python3 examples/inference_vote_replay.py \
-  --output-dir "${TMPDIR:-/data/lzh/default-storage/tmp}/inference-vote-demo"
-```
-
-该示例生成合成答案缓存和诊断报告，目录须尚不存在；不调用模型，不代表真实比赛提分或实测运行时间节省。
-
-## 无人值守启动
-
-先建立可运行 adapter 和开发 baseline。以下动作会持续调用已配置的 Codex；仅在用户请求无人值守执行时运行：
-
-```sh
-/usr/bin/python3 skills/competition-optimize/scripts/autonomous_campaign.py start \
+python3 skills/competition-optimize/scripts/autonomous_campaign.py start \
   --workspace /absolute/path/to/contest \
   --task-file /absolute/path/to/contest/continuing-task.md \
   --campaign /absolute/path/to/contest/agent-runs/campaign-01 \
@@ -61,29 +56,18 @@
   --background
 ```
 
-用 `status` 查看状态，`stop` 在本轮后停止，`stop --now` 取消当前执行，`resume --background` 对账后恢复；均指定同一 `--campaign`。模型 receipt 是检查点，完成须由配置的 verifier 证实。主机重启需恢复进程。具体参数、旧请求兼容和来源信息见[运行说明](skills/competition-optimize/references/unattended-campaign.md)。
+使用同一个 `--campaign` 查看 `status`、用 `stop` 停在本轮后、用 `stop --now` 取消本轮，或对账后 `resume --background`。模型回报是检查点，完成取决于配置的验证器。重启后按[运行与恢复说明](./skills/competition-optimize/references/unattended-campaign.md)恢复；按任务要求设置时长、费用和资源限制。
 
-## 本地安装与更新
+## 安装到本地 Codex
 
-本次重构不自动安装或改变全局配置。如需要本地发现，可在确认目标尚不存在后，将技能目录复制到 `~/.codex/skills/competition-optimize`。先选择并记录明确的仓库版本；更新前核对安装内容和当前运行任务。运行中的旧封存请求保留原引用，新轮次使用指令快照。
+只运行脚本时无需安装 Skill。需要客户端发现时，在仓库根目录执行下列命令；已有目标须先比较版本并处理本地修改。
 
 ```sh
-# 在仓库根目录执行；目标已存在时停止，避免覆盖本地修改。
-test ! -e "$HOME/.codex/skills/competition-optimize" && \
-  cp -a skills/competition-optimize "$HOME/.codex/skills/competition-optimize"
-diff -qr skills/competition-optimize "$HOME/.codex/skills/competition-optimize"
+skill_dir="${CODEX_HOME:-$HOME/.codex}/skills/competition-optimize"
+mkdir -p "$(dirname "$skill_dir")"
+test ! -e "$skill_dir" && test ! -L "$skill_dir" && cp -a skills/competition-optimize "$skill_dir"
+diff -qr skills/competition-optimize "$skill_dir"
 git rev-parse HEAD
 ```
 
-`git rev-parse` 只标识提交，不能代表未提交工作树。未提交版本另保留文件 hashes/差异；不要把当前改动宣称为基线提交的原始内容。更新方法和运行证据以已核对的文件为准。
-
-## 文档与证据
-
-- [后续改进方案](docs/competition-improvement-plan-2026-11-16.md)与[实施记录](docs/competition-improvement-implementation-2026-11-16.md)：五个方向的具体增量、已实现工具与案例、相关检查和在线接入边界。
-- [专业比赛 Skills 与 Agents 研究报告](docs/competition-skills-agents-research-report-2026-11-16.md)：围绕五个方向分析实际机制、理论依据、评测边界、成本及相对当前 skill 的采用顺序。
-- [专业比赛 Skills 与 Agents 收集](docs/competition-skills-agents-2026-11-16.md)：按五个优化方向核对专业工具、可复用机制、源码版本和接入边界。
-- [下载与本地源码精读](docs/competition-local-source-reading-2026-11-16.md)：本地固定版本入口、实际调用链、可迁移机制及源码复读后的结论修订。
-- [本轮方案](docs/refactor-plan-2026-11-10.md)、[源码和一手资料依据](docs/refactor-evidence-2026-11-10.md)、[实施与验证](docs/refactor-implementation-2026-11-10.md)。
-- 当前模块设计：[候选证据](docs/candidate-evidence.md)、[档案恢复](docs/campaign-archive.md)、[纯策略](docs/campaign-policy.md)。
-- 历史设计和经验：[MVP](docs/mvp-plan.md)、[实际使用复盘](docs/execution-first-revision.md)、[源码研究](docs/source-study-20261022.md)。旧默认额度不适用于当前技能。
-- 历史验证：[无人值守与恢复](docs/unattended-campaign-validation.md)、[工具效率](docs/efficiency.md)、[表格 pilot](docs/tabular-pilot.md)、[路线 pilot](docs/route-search-pilot.md)。当前不可访问的历史原始路径保留并标明复核边界，不补造数据。
+[实施记录](./docs/competition-improvement-implementation-2026-11-16.md)和[重构验证](./docs/refactor-implementation-2026-11-10.md)列出已运行的测试与集成示例。[竞赛策略研究](./docs/competition-skills-agents-research-report-2026-11-16.md)说明外部机制与采用边界；[表格 pilot](./docs/tabular-pilot.md)和[无人值守验证](./docs/unattended-campaign-validation.md)保存历史结果。上述证据验证工具与流程，实际排名收益仍要按题目评测。
