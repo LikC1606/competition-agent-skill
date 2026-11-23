@@ -31,11 +31,16 @@ class CampaignWorkflowTests(unittest.TestCase):
         self.state = {"agent_bin": "/test/fake-cli", "model": None, "turn_number": 0}
 
     def test_snapshot_preserves_linked_content_and_executable_after_source_upgrade(self):
+        catalog = Path("references/cases.tsv")
+        (self.skill / catalog).write_text("case\tmethod\na\tpaired replay\n")
         first, protected, provenance = freeze_workflow(self.campaign, self.skill, self.state)
         (self.skill / "references/task.md").write_text("Version two.\n")
+        (self.skill / catalog).write_text("case\tmethod\nb\tnew representation\n")
         (self.skill / "scripts/solve.py").write_text("print('version two')\n")
         root = Path(first["skill_root"])
         self.assertIn("Version one", (root / "references/task.md").read_text())
+        self.assertIn("paired replay", (root / catalog).read_text())
+        self.assertIn(str(root / catalog), protected)
         self.assertEqual((root / "scripts/requirements.txt").read_text(), "fixture-package==1\n")
         run = subprocess.run([sys.executable, str(root / "scripts/solve.py")], capture_output=True,
                              text=True, check=True)

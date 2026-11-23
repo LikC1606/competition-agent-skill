@@ -10,6 +10,7 @@ import math
 import pathlib
 import platform
 import random
+import statistics
 import sys
 from typing import Any
 
@@ -37,6 +38,7 @@ def summarize(replicates: list[dict], confidence: float, minimum_improvement: fl
     if len(differences) < 100 or len(differences) / len(replicates) < 0.9:
         unavailable = "Requires at least 100 valid replicates and at least 90% valid draws"
     interval = None
+    standard_error = None
     preference = "inconclusive"
     fraction = None
     if unavailable is None:
@@ -44,6 +46,11 @@ def summarize(replicates: list[dict], confidence: float, minimum_improvement: fl
         lower, upper = percentile(differences, tail), percentile(differences, 1 - tail)
         interval = {"method": "paired_percentile_bootstrap", "confidence_level": confidence,
                     "lower": lower, "upper": upper}
+        try:
+            standard_error = statistics.stdev(differences)
+        except OverflowError:
+            # The percentile interval can be representable even when the standard error is too large.
+            pass
         if lower > minimum_improvement:
             preference = "candidate_supported"
         elif upper < -minimum_improvement:
@@ -53,6 +60,7 @@ def summarize(replicates: list[dict], confidence: float, minimum_improvement: fl
         "status": "available" if unavailable is None else "unavailable",
         "requested_replicates": len(replicates), "valid_replicates": len(differences),
         "invalid_replicates": len(replicates) - len(differences), "unavailable_reason": unavailable,
+        "objective_improvement_standard_error": standard_error,
         "objective_improvement_interval": interval, "minimum_improvement": minimum_improvement,
         "evidence_preference": preference, "fraction_above_minimum": fraction,
     }
@@ -149,7 +157,8 @@ def assess(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any]
             "sampling_unit_independence", "distribution_shift", "training_variation", "multiple_comparisons"}),
         "artifacts": [str(output_dir / name) for name in
                       ["baseline.csv", "candidate.csv", "bootstrap.csv", *(["groups.csv"] if group_raw else [])]],
-        "note": "The interval estimates sampling variation conditional on fixed predictions and exchangeable units. "
+        "note": "The standard error and interval describe the paired difference for these fixed predictions "
+                "and the configured exchangeable sampling units. The minimum improvement is a separate input in metric units. "
                 "The bootstrap fraction is not a p-value or probability of winning. It does not establish leaderboard gain.",
         "error": None,
     }
@@ -192,8 +201,12 @@ def main() -> int:
             print(json.dumps({"status": "failed", "error": {"type": "output_failure", "message": str(exc)}},
                              ensure_ascii=False), file=sys.stderr)
             return 2
-    print(json.dumps({"status": result["status"], "report": str(output_dir / "report.json") if created else None,
-                      "uncertainty": result.get("uncertainty"), "error": result["error"]}, ensure_ascii=False),
+    summary = {"status": result["status"], "report": str(output_dir / "report.json") if created else None,
+               "uncertainty": result.get("uncertainty"), "error": result["error"]}
+    if result["status"] == "success":
+        summary["observed_objective_improvement"] = result["aggregate_comparison"]["objective_improvement"]
+        summary["resampling_unit"] = result["configuration"]["resampling_unit"]
+    print(json.dumps(summary, ensure_ascii=False),
           file=sys.stdout if result["status"] == "success" else sys.stderr)
     return 0 if result["status"] == "success" else 2
 

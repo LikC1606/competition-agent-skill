@@ -266,6 +266,93 @@ class CampaignPolicyTests(unittest.TestCase):
             with self.subTest(candidate=candidate), self.assertRaises(archive.ArchiveFailure):
                 view.validate_working_selection({"candidate_id": candidate}, objective_anchor="primary")
 
+    def test_selection_reports_the_missing_workload_in_the_challenger_comparison(self) -> None:
+        self.record("primary", 100)
+        self.record("challenger", 101, parent="primary", comparison={"workload_hash": None})
+        view = search.CampaignEvidence(self.records())
+        with self.assertRaisesRegex(archive.ArchiveFailure, r"challenger.*workload_hash \(missing\)"):
+            view.validate_working_selection({"candidate_id": "challenger"}, objective_anchor="primary")
+        self.assertEqual(view.signals(objective_anchor="primary")["objective_progress"]["best_candidate"], "primary")
+
+    def test_completed_delivery_requests_do_not_keep_idle_research_running(self) -> None:
+        self.record("adopted", 100)
+        records = self.records()
+        evidence = search.CampaignEvidence(records)
+        key = evidence.signals()["objective_progress"]["comparison_key"]
+        completed = {"candidate_id": "adopted", "comparison_key": key, "status": "completed",
+                     "evidence_sha256": {"original.csv": "a" * 64}}
+        memory = self.memory(next_mode="research", turn_number=318, session_checkpoints=0,
+                             working_selection={"candidate_id": "adopted", "comparison_key": key},
+                             local_delivery=completed,
+                             research_state={"comparison_key": key, "report": self.research_report()})
+        receipt = {**self.receipt("Continue the open research question."),
+                   "local_delivery": {"candidate_id": "adopted", "status": "requested",
+                                      "detail": "Revisit the existing draft.", "evidence": []}}
+        driver = policy.CampaignPolicy()
+
+        for number, mode, next_mode, retry in (
+                (319, "research", "research", None), (320, "research", "rethink", 101.0),
+                (321, "rethink", "research", 102.0), (322, "research", "rethink", 103.0),
+                (323, "rethink", "research", 104.0)):
+            with self.subTest(turn=number):
+                plan = driver.prepare(memory, evidence)
+                memory.update(plan.updates)
+                self.assertEqual(memory["next_mode"], mode)
+                turn = {"number": number, "mode": mode, "review_checkpoints": plan.review_requests}
+                self.assertIsNone(policy.validate_local_delivery(memory, turn, receipt, evidence))
+                updates = driver.accept(memory, turn, self.outcome(records, records, receipt))
+                memory.update(updates, turn_number=number)
+                self.assertEqual(memory["next_mode"], next_mode)
+                self.assertEqual(memory["retry_at"], retry)
+                self.assertEqual(memory["turns_without_implementation"], number - 318)
+                self.assertEqual(memory["local_delivery"], completed)
+
+    def test_repeated_completion_preserves_evidence_and_checks_candidate_and_comparison(self) -> None:
+        self.record("adopted", 100)
+        self.record("different", 99, parent="adopted")
+        records = self.records()
+        evidence = search.CampaignEvidence(records)
+        key = evidence.signals()["objective_progress"]["comparison_key"]
+        completed = {"candidate_id": "adopted", "comparison_key": key, "status": "completed",
+                     "evidence_sha256": {"original.csv": "a" * 64}}
+        selection = {"candidate_id": "adopted", "reason": "Met the development criterion.",
+                     "limitations": "No independent confirmation.", "evidence": [str(self.path)]}
+        memory = self.memory(next_mode="research", turns_without_implementation=1,
+                             working_selection={**selection, "comparison_key": key}, local_delivery=completed)
+        turn = {"number": 302, "mode": "research"}
+        repeat = {**self.receipt(), "working_selection": selection,
+                  "local_delivery": {"candidate_id": "adopted", "status": "completed",
+                                     "detail": "Draft already exists.", "evidence": ["obsolete.csv"]}}
+
+        self.assertIsNone(policy.validate_local_delivery(memory, turn, repeat, evidence))
+        driver = policy.CampaignPolicy()
+        replay = replace(self.outcome(records, records, repeat), local_delivery_hashes={"obsolete.csv": "b" * 64})
+        accepted = driver.accept(memory, turn, replay)
+        self.assertEqual({**memory, **accepted}["local_delivery"], completed)
+        self.assertEqual(accepted["next_mode"], "rethink")
+        self.assertEqual(accepted["retry_at"], 101.0)
+
+        new_selection = {**selection, "candidate_id": "different"}
+        new_report = {**repeat["local_delivery"], "candidate_id": "different"}
+        for changed in (
+                {**repeat, "working_selection": new_selection},
+                {**repeat, "working_selection": new_selection, "local_delivery": new_report},
+                {**repeat, "local_delivery": {**new_report, "candidate_id": "unknown"}}):
+            with self.assertRaises(archive.ArchiveFailure):
+                policy.validate_local_delivery(memory, turn, changed, evidence)
+        for unrelated in ({**completed, "comparison_key": "old"},
+                          {**completed, "status": "requested"}):
+            with self.assertRaises(archive.ArchiveFailure):
+                policy.validate_local_delivery({**memory, "local_delivery": unrelated}, turn, repeat, evidence)
+
+        request = {**repeat, "working_selection": new_selection,
+                   "local_delivery": {**new_report, "status": "requested", "evidence": []}}
+        self.assertIsNotNone(policy.validate_local_delivery(memory, turn, request, evidence))
+        scheduled = driver.accept(memory, turn, self.outcome(records, records, request))
+        self.assertEqual(scheduled["next_mode"], "deliver")
+        self.assertIsNone(scheduled["retry_at"])
+        self.assertEqual(scheduled["local_delivery"]["candidate_id"], "different")
+
     def test_failed_receipt_does_not_acknowledge_or_erase_research(self) -> None:
         self.record("baseline", 100)
         records = self.records()
@@ -404,6 +491,36 @@ class CampaignPolicyTests(unittest.TestCase):
         self.assertEqual(restored["research_state"]["finding"]["premise_id"], finding["premise_id"])
         self.assertEqual(self.records(), records)
 
+    def test_completed_research_checkpoint_preserves_checked_open_successor_without_verifier(self) -> None:
+        self.record("baseline", 100)
+        records = self.records()
+        progress = search.CampaignEvidence(records).signals()["objective_progress"]
+        report = {**self.research_report(), "route": "evaluation", "evidence": [str(self.path)]}
+        finding = {"premise_id": "blend-ceiling", "observation": "Only the grouped route has headroom.",
+                   "design_effect": "Use a matched nested comparison.", "evidence_path": str(self.path)}
+        receipt = {**self.receipt("Recover verified inner predictions for the grouped route."),
+                   "status": "complete", "research_state": report, "research_finding": finding}
+        turn = {"number": 2, "mode": "research", "context": {"objective_progress": progress}}
+        outcome = replace(self.outcome(records, records, receipt), finding_sha256="f" * 64)
+        driver = policy.CampaignPolicy()
+        memory = self.memory(turns_without_implementation=1)
+
+        updates = driver.accept(memory, turn, outcome)
+
+        self.assertEqual(updates["last_agent_status"], "complete")
+        self.assertEqual(updates["next_mode"], "research")
+        self.assertEqual(updates["next_action"], receipt["next_action"])
+        self.assertEqual(updates["research_state"]["finding"]["evidence_sha256"], outcome.finding_sha256)
+        self.assertIsNone(updates["retry_at"])
+        for checked_memory, checked_outcome in (
+            ({**memory, "completion_check": "verify.py"}, outcome),
+            (memory, replace(outcome, finding_sha256=None)),
+        ):
+            with self.subTest(checker=checked_memory.get("completion_check"), digest=checked_outcome.finding_sha256):
+                review = driver.accept(checked_memory, turn, checked_outcome)
+                self.assertEqual(review["next_mode"], "rethink")
+                self.assertNotIn("finding", review["research_state"])
+
     def test_pending_measurement_keeps_its_work_across_context_rotation(self) -> None:
         fixture = self.measurement_fixture()
         frozen = fixture.plan()
@@ -439,38 +556,114 @@ class CampaignPolicyTests(unittest.TestCase):
         for chosen in (None, "absent", "foreign", "stopped", "primary"):
             with self.subTest(chosen=chosen):
                 delivered = {**receipt, "next_proposal_id": chosen} if chosen else receipt
-                outcome = self.outcome(records, records, delivered)
+                outcome = replace(self.outcome(records, records, delivered), receipt_path="/run/receipt.json")
                 updates = policy_driver.accept(memory, {"number": 2, "mode": "rethink"}, outcome)
                 ready = chosen == "primary"
-                self.assertEqual(updates["next_mode"], "execute" if ready else "research")
+                mode = "execute" if ready else "register" if chosen == "absent" else "research"
+                self.assertEqual(updates["next_mode"], mode)
                 self.assertEqual(updates["next_proposal_id"], "primary" if ready else None)
-                self.assertEqual(updates["research_state"]["report"], report)
+                if chosen == "stopped":
+                    self.assertIsNone(updates["research_state"])
+                    self.assertIn('Review the archived outcome of proposal "stopped"', updates["next_action"])
+                else:
+                    self.assertEqual(updates["research_state"]["report"], report)
+                    if chosen == "foreign":
+                        self.assertIn("pending under a different comparison", updates["next_action"])
                 planned = policy_driver.prepare({**memory, **updates}, outcome.evidence)
                 if ready:
                     self.assertIn('proposal "primary"', planned.driver_action)
                     empty = policy_driver.accept({**memory, **updates}, {"number": 3, "mode": "execute"}, outcome)
                     self.assertIsNone(empty["next_proposal_id"])
                     self.assertNotEqual(empty["next_mode"], "execute")
+                elif chosen == "absent":
+                    self.assertIn('registration of proposal "absent"', planned.driver_action)
+                    self.assertIn("/run/receipt.json", planned.driver_action)
                 else:
                     self.assertIn("one evidence gap", planned.driver_action)
+
+    def test_registration_survives_an_interruption_and_uses_the_committed_proposal(self) -> None:
+        self.record("baseline", 100)
+        records = self.records()
+        driver = policy.CampaignPolicy()
+        memory = self.memory(objective_anchor="baseline", turns_without_implementation=1)
+        receipt = {**self.receipt("Implement the change after this review."), "next_proposal_id": "unfiled"}
+        outcome = replace(self.outcome(records, records, receipt), receipt_path="/run/turns/000002/message.json")
+        memory.update(driver.accept(memory, {"number": 2, "mode": "rethink"}, outcome))
+        self.assertEqual((memory["next_mode"], memory["turns_without_implementation"]), ("register", 2))
+        self.assertIsNone(memory["next_proposal_id"])
+        memory = complete_state(json.loads(json.dumps(memory)))
+        interrupted = {"number": 3, "mode": "register"}
+        failed = self.outcome(records, records, None)
+        memory.update(driver.accept(memory, interrupted, failed))
+        memory["failures"] = 1
+        retry = driver.prepare(memory, failed.evidence)
+        self.assertIn("/run/turns/000002/message.json", retry.driver_action)
+        self.propose("unfiled", "baseline")
+        committed = self.outcome(records, self.records(), None)
+        memory.update(driver.accept(memory, {**interrupted, "number": 4}, committed))
+        plan = driver.prepare(memory, committed.evidence)
+        self.assertEqual(plan.updates["next_mode"], "execute")
+        self.assertIn('proposal "unfiled"', plan.driver_action)
+        self.assertIsNone(memory["proposal_registration"])
+        self.assertEqual(committed.archive_delta["new_implementation_attempts"], 0)
+
+    def test_registration_can_return_a_gap_without_requeueing_the_same_id(self) -> None:
+        self.record("baseline", 100)
+        records = self.records()
+        driver = policy.CampaignPolicy()
+        report = {**self.research_report(), "route": "implement"}
+        receipt = {**self.receipt(), "next_proposal_id": "unfiled", "research_state": report}
+        choice = replace(self.outcome(records, records, receipt), receipt_path="/run/turns/000002/message.json")
+        memory = self.memory(objective_anchor="baseline", turns_without_implementation=3)
+        memory.update(driver.accept(memory, {"number": 2, "mode": "rethink"}, choice))
+        self.assertEqual(memory["research_state"]["proposal_id"], "unfiled")
+        gap = self.research_report()
+        blocked = {**self.receipt("Read the official inference conditions."), "research_state": gap,
+                   "next_proposal_id": "unfiled"}
+        memory.update(driver.accept(memory, {"number": 3, "mode": "register"},
+                                    self.outcome(records, records, blocked)))
+        self.assertIsNone(memory["proposal_registration"])
+        self.assertIsNone(memory["next_proposal_id"])
+        self.assertEqual(memory["research_state"]["report"], gap)
+        self.assertEqual(memory["next_action"], blocked["next_action"])
+        self.assertEqual(driver.prepare(memory, choice.evidence).updates["next_mode"], "research")
 
     def test_execute_hands_off_a_replacement_after_stopping_the_original(self) -> None:
         self.record("baseline", 100)
         self.propose("original", "baseline")
         before = self.records()
-        memory = self.memory(objective_anchor="baseline", next_mode="execute", next_proposal_id="original")
+        driver = policy.CampaignPolicy()
+        memory = self.memory(objective_anchor="baseline")
+        implementation = {**self.research_report(), "route": "implement",
+                          "question": "Does the original intervention help under the fixed scorer?"}
+        start = {**self.receipt("Implement the original intervention."),
+                 "next_proposal_id": "original", "research_state": implementation}
+        memory.update(driver.accept(memory, {"number": 1, "mode": "research"}, self.outcome(before, before, start)))
+        self.assertEqual(memory["research_state"]["proposal_id"], "original")
+        self.assertEqual(memory["next_mode"], "execute")
         reason = "The real feature caller disproves the selector defect."
         archive.stop_proposal(archive.parser().parse_args(
             ["stop", "--archive", str(self.path), "--proposal-id", "original", "--reason", reason]))
         self.propose("narrowed", "baseline")
+        after = self.records()
+        turn = {"number": 2, "mode": "execute"}
+        interrupted = driver.accept(memory, turn, self.outcome(before, after, None))
+        self.assertIsNone(interrupted["research_state"])
+        self.assertIsNone(interrupted["next_proposal_id"])
+        self.assertIn('Review the archived outcome of proposal "original"', interrupted["next_action"])
+
         receipt = {**self.receipt("Evaluate the replacement intervention."), "next_proposal_id": "narrowed"}
-        outcome = self.outcome(before, self.records(), receipt)
-        driver = policy.CampaignPolicy()
-        updates = driver.accept(memory, {"number": 2, "mode": "execute"}, outcome)
+        outcome = self.outcome(before, after, receipt)
+        updates = driver.accept(memory, turn, outcome)
+        self.assertIsNone(updates["research_state"])
         plan = driver.prepare({**memory, **updates}, outcome.evidence)
         self.assertEqual(plan.updates["next_mode"], "execute")
         self.assertIn('proposal "narrowed"', plan.driver_action)
         self.assertEqual(outcome.archive_delta["new_implementation_attempts"], 0)
+        replacement = {**receipt, "research_state": {**implementation, "question": "Does the replacement help?"}}
+        continued = driver.accept(memory, turn, self.outcome(before, after, replacement))
+        self.assertEqual(continued["research_state"]["proposal_id"], "narrowed")
+        self.assertEqual(continued["research_state"]["report"], replacement["research_state"])
         old = archive.iteration_trace(self.records(), proposal_id="original")[0]
         self.assertEqual((old["state"], old["reason"]), ("stopped", reason))
         self.assertNotIn("objective_gain_vs_parents", old)

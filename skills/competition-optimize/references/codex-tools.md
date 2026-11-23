@@ -25,6 +25,7 @@ Write code only for a concrete uncovered operation, the new competition mechanis
 | Inspect fitted objects or preprocessing | `tabular_training.SavedTabularRun.load_model(fold_id)` for each run; inspect the loaded estimator through its existing API. Apply each pipeline's own `pipeline[:-1].transform(x)` before accessing members of its final estimator; do not share the challenger's transforms with its parent or manually register candidate modules |
 | Recompute a fixed prediction change | [Reuse matched OOF or fitted fold artifacts](tabular-training.md#reuse-fitted-artifacts-for-prediction-only-changes); `tabular_training.predictions` reads full pipeline output in model units. Apply the declared rule and score a new artifact with the same evaluator contract |
 | Check whether a convex blend can improve on two fixed parents | `analyze_prediction_errors.py --check-blend-direction` on matching RMSE or MAE development results and their truth CSV. Returns endpoint derivative signs, without selecting a weight or scoring a new recipe |
+| Bound the possible gain of a grouped blend | [`analyze_prediction_errors.py --check-blend-headroom`](data-model.md#bound-the-headroom-of-a-grouped-blend) on matching RMSE development predictions with sealed fold receipts |
 | Attach a managed training result | `candidate_archive.py record --result RUN/evaluation/result.json --configuration RUN/recipe.json`, with the original bound proposal when applicable. The recorder verifies and imports training cost automatically; omit `training_execution` from optional `--cost` |
 | Total actual fitting costs, including failed attempts | `tabular_training.py cost --run RUN_A --run RUN_B`; repeated copies of one execution are counted once |
 
@@ -37,6 +38,8 @@ Describe diagnostic cost by the actual operations and elapsed time. Loading mode
 A reported fit-call count supports only that instrumentation's boundary. It cannot rule out uninstrumented fitting, and solving coefficients is itself parameter estimation even when no estimator API was called. Do not use an operation count to infer a cause of a score improvement or relate it to unrelated row counts.
 
 The campaign passes native Codex `shell_environment_policy.set.SHELLOPTS="pipefail"` on fresh and resumed invocations. Keep the option enabled in Bash commands. Prefer tool output limits or reading a saved log over `| head`: an early reader exit can generate SIGPIPE. Check the command's final status before using its output; error-looking text alone is not a failure detector.
+
+Run a potentially blocking setup command with a bounded timeout or use the tool's session handle. For a command you launched in the background, keep its PID or handle to wait or cancel. A broad command-line match such as `pkill -f 'cargo build'` can also match the current shell and prevent the recovery commands from running.
 
 ## Choose the Tool from the Missing Evidence
 

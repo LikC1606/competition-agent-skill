@@ -49,6 +49,16 @@ Use `trace --archive <path> --proposal-id <ID>` to recover one original proposal
 
 The command checks displayed result and snapshot bytes and shown pending code targets. Case-profile retrieval also verifies the historical result bytes used for case comparisons; other unselected history is not fully verified. It does not alter the archive. Missing identity fields are labeled `not_recorded`; legacy evidence does not gain verification merely by appearing in a brief. Adapter validity keeps its checked scope, and score recomputation, training provenance, unchecked hard rules and causal interpretation still require their existing evidence. Reference raw results when detailed errors or components are needed; there is no need to write another summary document.
 
+## Search Older Development Trials
+
+Use the archive search when the next decision depends on whether a mechanism already ran. Search for the operation and its variants.
+
+```sh
+python <skill-dir>/scripts/candidate_archive.py summary --archive ARCHIVE --match mixup --match jitter
+```
+
+Each `--match` adds a case-insensitive literal alternative across candidate IDs, route names and mechanism descriptions with `role: development`. The count covers the full archive, and `--recent` controls how many matching records are returned. An empty result only covers the terms and fields searched. Check aliases and the likely ancestor's source if the novelty claim would change the next action. Each hit shows its recorded comparison, parent IDs, artifact paths and proposal ID when available. Use the cited source and matched control to determine what actually ran. Use `trace --proposal-id` to verify an available proposal chain and its outcome.
+
 ## Retrieve Complementary Case Evidence
 
 An adapter can opt in with the optional [`case_profile` result field](adapter-contract.md#optional-case-profile). `brief.complementary_evidence` searches all matched ordinary development history, independently of route, recent and open-opportunity lists. It requires at least two aligned cases, a valid completed scalar adapter observation and an actual code/recipe snapshot. Diagnostic, confirmation, failed, manually scored and output-only records cannot supply these parents.
@@ -174,6 +184,12 @@ python <skill-dir>/scripts/candidate_archive.py record `
   --feedback "Valid block moves escaped the stalled state; runtime cost and the full score determine further investment."
 ```
 
+Use the saved adapter result and executed recipe when recording a completed run, including after a checkpoint interruption. If those paths would be hard to find after a cutoff, put the planned paths in the proposal's `validation` and keep the actual output path in the tool log. On recovery, use `trace --proposal-id` to see whether the result is already attached. If it is still pending, verify the result, its executed snapshot and the shared comparison before recording. Replay the scorer on saved outputs if needed to establish the missing evidence. Run the candidate again only if the required evidence cannot be recovered from what was saved.
+
+For a saved score with an incomplete comparison, `record` and the driver's `execution_recovery.target.diagnostic` list `missing_comparison_fields`. If the original evaluation establishes those fields, record the same source, configuration and result under a new ID with `--reuse-reason` and the verified identities. Check that `brief` ranks the repaired record under the intended development contract. Keep fields unresolved when the original evidence cannot establish them.
+
+Ordinary observations go in `--feedback`. The optional `--implementation-review` and `--learning` options take paths to JSON files. If an optional attachment fails, fix it when its structured evidence affects the decision. Otherwise omit it and record the same result with feedback that retains any uncertainty. Check the proposal's `trace` before retrying an uncertain write. Once the result is recorded, return the checkpoint receipt and put later work in `next_action`.
+
 Use the measured outcome, not the example's `promising`/`supported` labels. Failed implementations use `rejected` or `unresolved`, keep the failure, and do not establish method quality. The successor must match the proposal's parents and route, change the evaluated artifacts, supply a new completed adapter result and include feedback/prediction status. Produced outputs require a changed executable recipe: fresh predictions from any unchanged parent cannot fulfill a code-change or combination proposal. Algorithm source may change while its ordinary configuration stays fixed. Necessary unchanged measurement remains an ordinary record; an exact artifact repeat uses `--reuse-reason`. The archive automatically links different output bytes from the same complete recipe as repeated implementation measurements.
 
 Different fingerprints alone do not prove a substantive algorithm change. The agent still reviews the code difference, hard rules, maturity, cost and full-objective comparison; do not edit comments or rename artifacts to satisfy the check. Adapter validity keeps its declared scope. Unknown total score and partial-rule coverage remain limitations even when an implementation ran.
@@ -181,6 +197,8 @@ Different fingerprints alone do not prove a substantive algorithm change. The ag
 ## Review the Actual Implementation
 
 If a successor may have omitted or substituted the proposed mechanism, inspect its executed source against the original proposal. The score and feedback describe what ran; `prediction_status` answers the original proposal. An explicit `partial`, `no`, or `unknown` fidelity review requires `--prediction-status unresolved`, even when the actual candidate scored better or worse. Decide whether the missing component still merits a test rather than automatically retrying it.
+
+When a proposed operation does not change an output, check whether its acceptance test compares quantities over the same scope. A component's score compared with the entire incumbent can suppress every intended move. Use a small case with a known improving move or count executions on the saved development inputs. Report which operations ran and keep any unmeasured contribution unresolved.
 
 Pass `--implementation-review <run>/review.json` on the same `record` command that attaches the measured successor. The optional JSON input is:
 

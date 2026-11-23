@@ -191,9 +191,25 @@ if scenario in {"repeat_plan", "repeat_plan_interrupt", "repeat_plan_decision_in
         print(json.dumps({"type": "error", "message": "simulated interruption after plan append"}), flush=True)
         sys.exit(1)
 
+if scenario == "missing_proposal" and number == 2:
+    request = json.loads(pathlib.Path(sys.argv[sys.argv.index("-o") + 1]).with_name("request.json").read_text())
+    assert request["mode"] == "register" and 'proposal "refine"' in request["driver_action"]
+    parent = tools.candidate_index(tools.read_records(archive))["candidate-1"]
+    proposal = workspace / "refine.json"
+    proposal.write_text(json.dumps({
+        "proposal_id": "refine", "parent_ids": ["candidate-1"], "feedback_from": ["candidate-1"],
+        "route": "synthetic", "code_targets": [parent["artifact_paths"]["source"]],
+        "basis": "Compare the change to the archived control", "change": "Use a different representation",
+        "expected_observation": "Higher matched score", "validation": "Reuse the fixed synthetic evaluator",
+        "stop_condition": "Stop if this implementation does not score higher"}))
+    tools.propose_candidate(tools.parser().parse_args([
+        "propose", "--archive", str(archive), "--proposal", str(proposal)]))
+    print(json.dumps({"type": "turn.failed", "error": {"message": "stream closed after registration"}}), flush=True)
+    sys.exit(1)
+
 if scenario not in {"no_progress", "research_no_progress", "research_finding", "repeat_plan", "repeat_plan_interrupt", "repeat_plan_decision_interrupt", "repeat_plan_rotation_429"} and not (
                                       scenario.startswith("local_delivery") and number != 1 or
-                                      scenario == "selected_proposal" and number != 4 or
+                                      scenario.startswith("selected_proposal") and number != 4 or
                                       scenario.startswith("repeat_plan_stop") and number <= (2 if scenario == "repeat_plan_stop_foreign" else 3) or
                                       scenario == "comparison_retry_receipt" and number == 5 or
                                       scenario == "trial_failures" and number == 2):
@@ -242,6 +258,8 @@ if scenario not in {"no_progress", "research_no_progress", "research_finding", "
         outcome["evaluation"] = {"config_hash": "other-evaluation"}
     if scenario == "objective_smoke":
         outcome["stage"] = "smoke"
+    if scenario == "selected_proposal_foreign":
+        outcome["evaluation"] = {"config_hash": "candidate-recipe", "runtime_environment": {"notes": "different"}}
     if failed:
         outcome["error"] = {"type": "runtime_failure", "phase": "candidate_execution", "message": measured.stderr}
     elif scenario != "unscored_forever":
@@ -250,7 +268,7 @@ if scenario not in {"no_progress", "research_no_progress", "research_finding", "
     result_path.write_text(json.dumps(outcome))
     args = ["record", "--archive", str(archive), "--candidate-id", "candidate-" + str(number),
             "--source", str(source), "--result", str(result_path),
-            "--route", "pending-1" if scenario == "selected_proposal" else
+            "--route", "pending-1" if scenario.startswith("selected_proposal") else
                        "synthetic-" + str(number % 2) if scenario == "regress" else "synthetic",
             "--mechanism", "executed synthetic implementation", "--status", "promising"]
     diagnostic = (scenario == "diagnostic_ablations" and 2 <= number <= 5 or
@@ -267,11 +285,17 @@ if scenario not in {"no_progress", "research_no_progress", "research_finding", "
         args += ["--parent", "candidate-4", "--reuse-reason", "evaluate existing source on the frozen target contract"]
     if number > 1 and scenario in {"invalid_forever", "recover_execution", "unscored_forever"}:
         args += ["--parent", "candidate-" + str(number - 1)]
-    if scenario == "selected_proposal":
+    if scenario.startswith("selected_proposal"):
         request = json.loads(pathlib.Path(sys.argv[sys.argv.index("-o") + 1]).with_name("request.json").read_text())
         assert request["mode"] == "execute" and 'proposal "p1"' in request["driver_action"]
-        args += ["--parent", "seed-best", "--proposal-id", "p1", "--prediction-status", "contradicted",
-                 "--feedback", "The prototype scored below the fixed primary control."]
+        args += ["--parent", "seed-best", "--proposal-id", "p1", "--prediction-status",
+                 "contradicted" if scenario == "selected_proposal" else "unresolved",
+                 "--feedback", "The prototype produced a scored result."]
+    if scenario == "missing_proposal" and number == 3:
+        request = json.loads(pathlib.Path(sys.argv[sys.argv.index("-o") + 1]).with_name("request.json").read_text())
+        assert request["mode"] == "execute" and 'proposal "refine"' in request["driver_action"]
+        args += ["--parent", "candidate-1", "--proposal-id", "refine", "--prediction-status", "supported",
+                 "--feedback", "Higher score under the original evaluation."]
     tools.record_candidate(tools.parser().parse_args(args))
 
     if scenario == "diagnostic_on_stagnation" and number == 1:
@@ -329,15 +353,34 @@ if scenario == "research_finding" and number in (2, 3):
         "evidence_path": str(artifact),
         "observation": "The current encoder already pools rare levels.",
         "design_effect": "Check a representation that preserves available category order."}
-if scenario == "selected_proposal" and number == 3:
+if scenario.startswith("selected_proposal") and number == 3:
     receipt.update(summary="Selected an existing representation change after review.",
                    next_action="Check the proposed representation against the primary control.",
                    next_proposal_id="p1")
-if scenario == "working_selection" and number <= 2:
+    receipt["research_state"] = {
+        "status": "open", "route": "implement", "question": "Does the new representation improve the score?",
+        "alternatives": ["New representation", "Current control"], "missing_evidence": "Matched evaluation.",
+        "answer_actions": [{"observation": "Measures higher on the same contract", "action": "Review its gain."}],
+        "evidence": [str(archive)]}
+if scenario.startswith("selected_proposal") and number == 4:
+    receipt["next_action"] = "Inspect which saved cases improved after the representation change."
+    if scenario == "selected_proposal_foreign":
+        receipt["working_selection"] = {
+            "candidate_id": "candidate-4", "reason": "New best.",
+            "limitations": "Development evidence only.", "evidence": [str(archive)]}
+if scenario == "missing_proposal" and number == 1:
+    receipt["next_proposal_id"] = "refine"
+if scenario in {"working_selection", "descriptive_finding"} and number <= 2:
     receipt["working_selection"] = {
         "candidate_id": "candidate-1" if number == 1 else "unknown-candidate",
         "reason": "Selected under the task protocol.", "limitations": "Development evidence only.",
         "evidence": [str(archive)]}
+if scenario == "descriptive_finding":
+    receipt["research_finding"] = {
+        "premise_id": "score-definition",
+        "observation": "The evaluator maximizes the recorded objective.",
+        "design_effect": "Compared the implementation on the same objective.",
+        "evidence_path": str(archive)}
 if scenario.startswith("local_delivery"):
     candidate, draft = "candidate-1", workspace / "local-draft.csv"
     if number == 1:
@@ -369,10 +412,32 @@ if scenario == "reviewed_corrections" and number == 1:
         "key": "gate", "claim": "The fitted gate is fold-honest.", "conditions": "Fixed folds.",
         "limitations": "No independent confirmation.", "reopen_when": "Review the fit lineage.",
         "evidence": [str(archive)]}]
+if scenario == "correction_evidence":
+    report = {"key": "direction", "claim": "The direction follows the stated objective.",
+              "conditions": "Fixed evaluator.", "limitations": "Development only.",
+              "reopen_when": "The scorer changes.", "evidence": [str(archive)]}
+    research = {"status": "open", "route": "source", "question": "Which rule governs ties?",
+                "alternatives": ["Secondary metric", "Stable case order"], "missing_evidence": "Inspect the official rules.",
+                "answer_actions": [{"observation": "Secondary metric specifies ties", "action": "Preserve it in the scorer."}],
+                "evidence": [str(archive)]}
+    if number == 1:
+        receipt["corrections"] = [report]
+        receipt["research_state"] = research
+    else:
+        (workspace / "probe.txt").write_text("Run succeeded on the fixed fixture.\n")
+        receipt["corrections"] = [
+            {**report, "claim": "The direction is reversed.", "evidence": ["misplaced/probe.txt"]},
+            {**report, "key": "probe", "evidence": ["probe.txt#observation", "https://example.com/rules#score"]},
+        ]
+        receipt["research_state"] = {**research, "question": "Can the scorer drop the tie rule?",
+                                     "evidence": ["misplaced/rules.md#Tie"]}
 if (scenario == "invalid_receipt" and number == 1 or
         scenario == "comparison_retry_receipt" and number == 5 or
         scenario == "trial_failures" and number == 2):
     receipt.pop("evidence")
+if scenario == "selected_proposal_foreign" and number == 5:
+    print(json.dumps({"type": "turn.failed", "error": {"message": "stream closed during comparison recovery"}}))
+    sys.exit(1)
 message = json.dumps(receipt)
 if scenario.startswith("missing_receipt") and number == 1:
     message = "Composing the receipt and validating it against the supplied schema shape."
@@ -944,13 +1009,20 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertIn(str(root / "SKILL.md"), self.calls()[0]["prompt"])
         self.assertIn(str(root / "scripts/candidate_archive.py"), self.calls()[0]["prompt"])
         self.assertEqual((root / "SKILL.md").read_bytes(), (SCRIPTS.parent / "SKILL.md").read_bytes())
+        catalog = Path("references/cases-top10.tsv")
+        self.assertEqual((root / catalog).read_bytes(), (SCRIPTS.parent / catalog).read_bytes())
+        manifest = json.loads(Path(snapshot["manifest_path"]).read_text())
+        self.assertEqual(manifest["files"][catalog.as_posix()], runtime.file_hash(root / catalog))
+        self.assertEqual(state["protected_files"][str(root / catalog)], manifest["files"][catalog.as_posix()])
+        provenance = request["workflow_provenance"]
+        self.assertEqual(provenance["freezer_sha256"], manifest["files"]["scripts/campaign_workflow.py"])
         requirements = SCRIPTS / "requirements-tabular.txt"
         if requirements.exists():
             self.assertEqual((root / "scripts/requirements-tabular.txt").read_bytes(), requirements.read_bytes())
         comparison = request["context"]["objective_progress"]["comparison"]
         self.assertNotIn("workflow_provenance", comparison)
-        reference = root / "references/iteration-trace.md"
-        reference.write_text(reference.read_text() + "\nModified sealed reference.\n")
+        reference = root / catalog
+        reference.write_bytes(reference.read_bytes() + b"\n")
         resumed = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
         self.assertEqual(resumed.returncode, 2, resumed.stderr + resumed.stdout)
         self.assertEqual(len(self.calls()), 1)
@@ -966,6 +1038,39 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertIn("mock-model", calls[1]["argv"])
         self.assertEqual(self.state()["usage"], {
             "input_tokens": 30, "cached_input_tokens": 9, "output_tokens": 6})
+        self.assertFalse(json.loads(result.stdout)["allow_network"])
+
+    def test_authorized_network_uses_native_workspace_profile_across_resume(self) -> None:
+        invalid = self.start("--allow-network", "--sandbox", "read-only", "--max-turns", "1")
+        self.assertEqual(invalid.returncode, 2)
+        self.assertFalse(self.campaign.exists())
+
+        first = self.start("--allow-network", "--max-turns", "1")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertTrue(json.loads(first.stdout)["allow_network"])
+        resumed = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        sealed, successor = [call["argv"] for call in self.calls()]
+        self.assertEqual(successor[:2], ["exec", "resume"])
+        self.assertIn("--add-dir", sealed)
+        for command in (sealed, successor):
+            self.assertNotIn("--sandbox", command)
+            self.assertIn('default_permissions="competition-research"', command)
+            self.assertIn('permissions.competition-research.extends=":workspace"', command)
+            self.assertIn("permissions.competition-research.network.enabled=true", command)
+
+    def test_work_accepts_cited_observation_without_fork_or_research_credit(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "descriptive_finding"
+        result = self.start("--max-turns", "1")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = self.state()
+        self.assertEqual(state["working_selection"]["candidate_id"], "candidate-1")
+        self.assertIsNone(state["research_state"])
+        self.assertEqual(state["research_findings"], {})
+        completed = [row for row in self.events() if row["event"] == "turn_completed"]
+        self.assertEqual(len(completed), 1)
+        self.assertNotIn("research_finding_sha256", completed[0])
+        self.assertFalse((self.campaign / "fake-receipt-calls.jsonl").exists())
 
     def test_missing_receipt_is_delivered_once_without_repeating_the_experiment(self) -> None:
         self.environment["FAKE_SCENARIO"] = "missing_receipt"
@@ -2199,7 +2304,9 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.environment["FAKE_SCENARIO"] = "selected_proposal"
         first = self.start("--max-turns", "3")
         self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
-        self.assertEqual(self.state()["next_proposal_id"], "p1")
+        selection = self.state()
+        self.assertEqual(selection["next_proposal_id"], "p1")
+        self.assertEqual(selection["research_state"]["proposal_id"], "p1")
         self.assertEqual(self.state()["progress"]["pending_proposals"], 2)
         self.assertEqual([row["mode"] for row in self.events() if row["event"] == "turn_prepared"],
                          ["work", "work", "rethink"])
@@ -2216,6 +2323,99 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertEqual(records[-1]["candidate_id"], "candidate-4")
         self.assertEqual(self.state()["progress"]["pending_proposals"], 1)
         self.assertIsNone(self.state()["next_proposal_id"])
+
+        # Old managers cleared the selected ID after execution but could retain
+        # an unlinked implementation report with evidence that still exists.
+        restored = self.state()
+        self.assertIsNone(restored["research_state"])
+        legacy_report = selection["research_state"]
+        legacy_report.pop("proposal_id")
+        restored["research_state"] = legacy_report
+        original_action = restored["next_action"]
+        raw_receipt = Path(legacy_report["receipt_path"])
+        sealed = raw_receipt.read_bytes()
+        driver.TurnLifecycle.prepare(self.campaign, restored)
+        self.assertIsNone(self.state()["research_state"])
+        self.assertEqual(self.state()["next_action"], original_action)
+        self.assertIsNone(self.state()["inflight"]["context"].get("decision_context"))
+        self.assertEqual(raw_receipt.read_bytes(), sealed)
+
+    def test_off_contract_proposal_result_is_archived_without_changing_objective_or_adoption(self) -> None:
+        self.seed_pending_proposals(2)
+        self.environment["FAKE_SCENARIO"] = "selected_proposal_foreign"
+        run = self.start("--max-turns", "4")
+        self.assertEqual(run.returncode, 0, run.stderr + run.stdout)
+        state = self.state()
+        records = driver.archive_tools.read_records(self.archive)
+        self.assertEqual((records[-1]["candidate_id"], records[-1]["proposal_id"]), ("candidate-4", "p1"))
+        self.assertEqual(state["objective_progress"]["best_candidate"], "seed-best")
+        self.assertIsNone(state["working_selection"])
+        self.assertEqual(state["failures"], 1)
+        self.assertIn("differs from the primary comparison: config_hash, runtime_environment", state["last_error"])
+        self.assertEqual(state["progress"]["pending_proposals"], 1)
+        self.assertEqual(state["next_mode"], "measure")
+        self.assertLess(state["comparison_continuity"]["new_unpaired_contracts"], state["comparison_review_window"])
+
+        prefix = self.archive.read_bytes()
+        resumed = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "5")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
+        request = json.loads((runtime.turn_directory(self.campaign, 5) / "request.json").read_text())
+        self.assertEqual((request["mode"], request["context_refresh_reason"]), ("measure", "selection_comparison"))
+        recovery = request["context"]["comparison_recovery"]
+        self.assertEqual(recovery["target"]["candidate_id"], "candidate-4")
+        self.assertEqual(recovery["reference"]["candidate_id"], records[-1]["parent_ids"][0])
+        self.assertEqual(recovery["changed_fields"], ["config_hash", "runtime_environment"])
+        self.assertNotIn("development_brief", request["context"])
+        self.assertEqual(self.archive.read_bytes(), prefix)
+        self.assertEqual(self.state()["selection_comparison"], state["selection_comparison"])
+        self.assertEqual(self.state()["next_mode"], "measure")
+
+        recovered = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "6")
+        self.assertEqual(recovered.returncode, 0, recovered.stderr + recovered.stdout)
+        self.assertEqual(self.turn_context(6)["comparison_recovery"], recovery)
+        self.assertEqual(self.archive.read_bytes(), prefix)
+        self.assertIsNone(self.state()["selection_comparison"])
+        self.assertIsNone(self.state()["working_selection"])
+
+        switched = self.call("resume", "--campaign", str(self.campaign), "--objective-anchor", "candidate-4")
+        self.assertEqual(switched.returncode, 0, switched.stderr + switched.stdout)
+        self.assertEqual(self.state()["objective_progress"]["best_candidate"], "candidate-4")
+        self.assertIsNone(self.state()["working_selection"])
+
+    def test_legacy_receipt_recovers_registration_and_dispatches_after_a_stream_failure(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "missing_proposal"
+        first = self.start("--max-turns", "1")
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        legacy = self.state()
+        origin = Path(legacy["proposal_registration"]["receipt_path"])
+        original_receipt = origin.read_bytes()
+        self.assertEqual(legacy["next_mode"], "register")
+        self.assertEqual(legacy["progress"]["proposals"], 0)
+        before = self.archive.read_bytes()
+        legacy.pop("proposal_registration")
+        legacy["next_mode"] = "rethink"
+        driver.save_state(self.campaign, legacy)
+
+        resumed = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "2")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
+        interrupted = self.state()
+        self.assertEqual(interrupted["next_proposal_id"], "refine", interrupted["last_error"])
+        self.assertEqual(interrupted["progress"]["evaluated_candidates"], 1)
+        register = runtime.turn_directory(self.campaign, 2)
+        self.assertEqual(runtime.read_json(register / "exit.json")["returncode"], 1)
+        request = runtime.read_json(register / "request.json")
+        self.assertEqual(request["mode"], "register")
+        self.assertIn(str(origin), request["driver_action"])
+
+        resumed = self.call("resume", "--campaign", str(self.campaign), "--max-turns", "3")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr + resumed.stdout)
+        request = runtime.read_json(runtime.turn_directory(self.campaign, 3) / "request.json")
+        self.assertEqual(request["mode"], "execute")
+        self.assertEqual(self.state()["objective_progress"]["best_candidate"], "candidate-3")
+        self.assertEqual(driver.archive_tools.read_records(self.archive)[-1]["proposal_id"], "refine")
+        self.assertIsNone(self.state()["proposal_registration"])
+        self.assertEqual(self.archive.read_bytes()[:len(before)], before)
+        self.assertEqual(origin.read_bytes(), original_receipt)
 
     def test_authorized_local_delivery_survives_stream_failure_and_precedes_research(self) -> None:
         self.task.write_text("Synthetic contest. Produce local drafts from saved models only.\n")
@@ -2257,6 +2457,25 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertIn("Delivery evidence must be a nonempty local artifact", state["last_error"])
         self.assertEqual(state["next_mode"], "deliver")
 
+    def test_missing_research_evidence_preserves_the_previous_report_and_measured_candidate(self) -> None:
+        self.environment["FAKE_SCENARIO"] = "correction_evidence"
+        result = self.start("--max-turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        state = self.state()
+        key = state["objective_progress"]["comparison_key"]
+        reports = state["research_corrections"][key]
+        self.assertEqual(reports["direction"]["turn"], 1)
+        self.assertEqual(reports["probe"]["turn"], 2)
+        event = next(row for row in self.events() if row["event"] == "turn_completed" and row["turn"] == 2)
+        self.assertEqual(event["research_corrections_missing_evidence"], {"direction": ["misplaced/probe.txt"]})
+        self.assertEqual(event["research_state_missing_evidence"], ["misplaced/rules.md#Tie"])
+        self.assertEqual(state["research_state"]["turn"], 1)
+        raw_receipt = json.loads(Path(event["receipt_path"]).read_text())
+        self.assertEqual(raw_receipt["corrections"][0]["claim"], "The direction is reversed.")
+        self.assertEqual(raw_receipt["research_state"]["question"], "Can the scorer drop the tie rule?")
+        self.assertEqual(event["receipt"], raw_receipt)
+        self.assertEqual(state["objective_progress"]["best_candidate"], "candidate-2")
+
     def test_real_finding_keeps_research_across_resume_but_a_copied_artifact_does_not(self) -> None:
         self.environment["FAKE_SCENARIO"] = "research_finding"
         first = self.start("--max-turns", "2", "--session-checkpoints", "0")
@@ -2294,7 +2513,12 @@ class AutonomousCampaignTests(unittest.TestCase):
         self.assertEqual(self.state()["progress"]["executed_implementations"], 6)
         self.assertEqual(len([event for event in self.events()
                               if event["event"] == "turn_interrupted"]), 4)
-        self.assertIn("Recover already-produced artifacts", self.calls()[4]["prompt"])
+        calls = self.calls()
+        self.assertIn("Recover already-produced artifacts", calls[4]["prompt"])
+        self.assertNotIn("resume", calls[4]["argv"])
+        for turn in ("000001", "000004"):
+            self.assertIn(str(self.campaign / "turns" / turn), calls[4]["prompt"])
+        self.assertNotIn("Recover already-produced artifacts", calls[5]["prompt"])
 
     def test_actual_auth_failure_is_a_concrete_blocker(self) -> None:
         self.environment["FAKE_SCENARIO"] = "auth"

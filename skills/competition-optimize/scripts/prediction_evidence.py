@@ -1,16 +1,20 @@
-"""Verified paired prediction inputs shared by diagnostic tools."""
+#!/usr/bin/env python3
+"""Verify prediction evidence and match saved tabular OOF without loading models."""
 
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import json
 import pathlib
+import sys
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
 import evaluate_predictions as evaluator
-from prediction_core import compare, load_result
+from prediction_core import PredictionFailure, compare, load_result
 
 
 class EvidenceFailure(Exception):
@@ -32,22 +36,25 @@ class PredictionPair:
     prediction_bytes: list[bytes]
 
 
-def load_fold_receipt(path: pathlib.Path, pair: PredictionPair, role: str
-                      ) -> tuple[dict[str, tuple[set[str], set[str]]], pathlib.Path, str]:
-    """Bind recorded fold membership to the OOF bytes already verified by load_pair."""
-    path = path.expanduser().resolve(strict=True)
-    raw = path.read_bytes()
-    digest = evaluator.byte_hash(raw)
-    manifest = json.loads(path.with_name("manifest.json").read_bytes())
-    if (path.name != "fit.json" or not isinstance(manifest, dict) or manifest.get("schema_version") != 1
-            or manifest.get("kind") != "tabular_training"
+def _training_hashes(root: pathlib.Path, role: str, *,
+                     kinds: tuple[str, ...] = ("tabular_training",)) -> dict[str, str]:
+    manifest = json.loads((root / "manifest.json").read_bytes())
+    if (not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+            or manifest.get("kind") not in kinds
             or manifest.get("seal") != evaluator.object_hash({k: v for k, v in manifest.items() if k != "seal"})):
-        raise EvidenceFailure(f"{role} fold analysis requires a saved tabular training fit.json and its manifest")
+        raise EvidenceFailure(f"{role} fold analysis requires a sealed manifest of kind {' or '.join(kinds)}")
     files = manifest.get("files")
-    if not isinstance(files, dict) or files.get("fit.json") != digest:
+    if not isinstance(files, dict):
+        raise EvidenceFailure(f"{role} training manifest requires artifact hashes")
+    return files
+
+
+def _verified_folds(raw: bytes, files: dict[str, str], *, oof_hash: str, truth_hash: str,
+                    sample_ids: Collection[str], role: str) -> tuple[dict[str, tuple[set[str], set[str]]], str]:
+    digest = evaluator.byte_hash(raw)
+    if files.get("fit.json") != digest:
         raise EvidenceFailure(f"{role} fit.json differs from its training manifest")
-    if (files.get("oof.csv") != pair.comparison[role]["candidate_hash"]
-            or files.get("truth.csv") != pair.input_hashes["truth"]):
+    if files.get("oof.csv") != oof_hash or files.get("truth.csv") != truth_hash:
         raise EvidenceFailure(f"{role} fit receipt belongs to different OOF predictions or truth")
     receipt = json.loads(raw)
     rows = receipt.get("folds") if isinstance(receipt, dict) else None
@@ -71,9 +78,78 @@ def load_fold_receipt(path: pathlib.Path, pair: PredictionPair, role: str
             raise EvidenceFailure(f"{role} fold {name!r} overlaps training with validation or duplicates OOF rows")
         folds[name] = train, validation
         covered.update(validation)
-    if covered != set(pair.sample_ids):
+    if covered != set(sample_ids):
         raise EvidenceFailure(f"{role} validation folds must cover the evaluated IDs exactly once")
+    return folds, digest
+
+
+def load_fold_receipt(path: pathlib.Path, pair: PredictionPair, role: str
+                      ) -> tuple[dict[str, tuple[set[str], set[str]]], pathlib.Path, str]:
+    """Bind recorded fold membership to the OOF bytes already verified by load_pair."""
+    path = path.expanduser().resolve(strict=True)
+    if path.name != "fit.json":
+        raise EvidenceFailure(f"{role} fold analysis requires a saved tabular training fit.json")
+    files = _training_hashes(path.parent, role)
+    folds, digest = _verified_folds(path.read_bytes(), files, oof_hash=pair.comparison[role]["candidate_hash"],
+                                    truth_hash=pair.input_hashes["truth"], sample_ids=pair.sample_ids, role=role)
     return folds, path, digest
+
+
+def fold_membership(folds: dict[str, tuple[set[str], set[str]]]) -> list[tuple[list[str], list[str]]]:
+    """Pair each validation set with its training set, independent of names and order."""
+    return sorted((sorted(validation), sorted(train)) for train, validation in folds.values())
+
+
+def load_saved_oof_evidence(path: pathlib.Path) -> dict[str, Any]:
+    """Verify saved scalar OOF, truth and fold membership without opening models."""
+    path = path.expanduser().resolve(strict=True)
+    if path.name != "oof.csv":
+        raise EvidenceFailure("Select oof.csv in a sealed tabular training run or frozen copy")
+    root = path.parent
+    files = _training_hashes(root, str(path), kinds=("tabular_training", "tabular_frozen"))
+    protocol_raw = (root / "protocol.json").read_bytes()
+    if files.get("protocol.json") != evaluator.byte_hash(protocol_raw):
+        raise EvidenceFailure("protocol.json differs from its training manifest")
+    protocol = json.loads(protocol_raw)
+    if not isinstance(protocol, dict):
+        raise EvidenceFailure("Training protocol must be a JSON object")
+    columns = [protocol.get(name, default) for name, default in
+               [("id_column", "id"), ("target_column", "target"), ("prediction_column", "prediction")]]
+    if any(not isinstance(name, str) or not name.strip() for name in columns) or len(set(columns)) != 3:
+        raise EvidenceFailure("Training protocol requires distinct ID, target and prediction columns")
+    id_column, target_column, prediction_column = columns
+    truth_raw, oof_raw = (root / "truth.csv").read_bytes(), path.read_bytes()
+    truth = evaluator.read_values(truth_raw, id_column, target_column, "truth")
+    oof = evaluator.read_values(oof_raw, id_column, prediction_column, "OOF")
+    if truth.keys() != oof.keys():
+        raise EvidenceFailure("OOF IDs must match truth IDs exactly")
+    truth_hash, oof_hash = evaluator.byte_hash(truth_raw), evaluator.byte_hash(oof_raw)
+    folds, fit_hash = _verified_folds((root / "fit.json").read_bytes(), files, oof_hash=oof_hash,
+                                     truth_hash=truth_hash, sample_ids=truth.keys(), role=str(path))
+    return {"oof": str(path), "oof_sha256": oof_hash, "truth_sha256": truth_hash, "fit_sha256": fit_hash,
+            "fold_membership_sha256": evaluator.object_hash(fold_membership(folds)), "fold_count": len(folds),
+            "scored_rows": len(truth)}
+
+
+def match_saved_oof(reference: pathlib.Path, candidates: list[pathlib.Path]) -> dict[str, Any]:
+    """Group saved OOF by verified truth bytes and actual fold memberships."""
+    control = load_saved_oof_evidence(reference)
+    counts = dict.fromkeys(("matched", "different_folds", "different_truth", "unverified"), 0)
+    rows = []
+    for path in candidates:
+        try:
+            row = load_saved_oof_evidence(path)
+            if row["truth_sha256"] != control["truth_sha256"]:
+                row["status"] = "different_truth"
+            elif row["fold_membership_sha256"] != control["fold_membership_sha256"]:
+                row["status"] = "different_folds"
+            else:
+                row["status"] = "matched"
+        except (EvidenceFailure, OSError, PredictionFailure, ValueError) as exc:
+            row = {"oof": str(path.expanduser().absolute()), "status": "unverified", "reason": str(exc)}
+        counts[row["status"]] += 1
+        rows.append(row)
+    return {"reference": control, "counts": counts, "candidates": rows}
 
 
 def load_pair(baseline: pathlib.Path, candidate: pathlib.Path, truth: pathlib.Path) -> PredictionPair:
@@ -83,7 +159,11 @@ def load_pair(baseline: pathlib.Path, candidate: pathlib.Path, truth: pathlib.Pa
     results = [load_result(paths[role]) for role in ["baseline", "candidate"]]
     comparison = compare(*results, 0)
     if results[0]["evaluator_hash"] != evaluator.evaluator_fingerprint():
-        raise EvidenceFailure("Reevaluate both candidates with the installed prediction evaluator before analysis")
+        raise EvidenceFailure(
+            "Analysis requires results from the installed prediction evaluator. "
+            "If the saved predictions and truth still apply, score both CSVs with evaluate_predictions.py "
+            "under one shared protocol and pass the two new result.json files."
+        )
     config = results[0]["evaluation"]["configuration"]
     for key in ["id_column", "target_column", "prediction_column"]:
         if not isinstance(config.get(key), str) or not config[key].strip():
@@ -151,3 +231,21 @@ def read_categories(raw: bytes, id_column: str, columns: list[str], sample_ids: 
         return rows
     except (UnicodeDecodeError, csv.Error) as exc:
         raise EvidenceFailure(f"Invalid metadata CSV: {exc}") from exc
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--reference", type=pathlib.Path, required=True, help="Sealed reference oof.csv")
+    parser.add_argument("candidates", type=pathlib.Path, nargs="+", help="Saved oof.csv paths to check")
+    args = parser.parse_args()
+    try:
+        report = match_saved_oof(args.reference, args.candidates)
+    except (EvidenceFailure, OSError, PredictionFailure, ValueError) as exc:
+        print(json.dumps({"status": "failed", "reference": str(args.reference), "reason": str(exc)}), file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

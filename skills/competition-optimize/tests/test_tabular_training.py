@@ -26,6 +26,61 @@ ML_AVAILABLE = all(importlib.util.find_spec(name) for name in ["sklearn", "numpy
 
 
 class SplitContractTests(unittest.TestCase):
+    def test_saved_oof_screen_checks_training_and_validation_membership_and_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def saved_oof(name, folds, *, first_target=1, freeze=False):
+                run = root / name
+                run.mkdir()
+                oof = run / "oof.csv"
+                adapter.save_csv(oof, ["Id", "prediction"], [("a", 1), ("b", 2), ("c", 3), ("d", 4)])
+                adapter.save_csv(run / "truth.csv", ["Id", "target"],
+                                 [("a", first_target), ("b", 2), ("c", 3), ("d", 4)])
+                protocol = {"id_column": "Id", "task": "regression"}
+                adapter.write_json(run / "protocol.json", protocol)
+                adapter.write_json(run / "fit.json", {"folds": [
+                    {"fold_id": key, "train_ids": list(train), "validation_ids": list(validation)}
+                    for key, train, validation in folds]})
+                model = run / "fold-0.joblib"
+                model.write_bytes(b"model bytes are outside this preflight")
+                adapter.seal(run, {"kind": "tabular_training", "protocol_hash": adapter.object_hash(protocol)})
+                if freeze:
+                    copy = root / "frozen"
+                    adapter.freeze(run, copy, "Fixture decision")
+                    (copy / model.name).unlink()
+                    return copy / oof.name
+                model.unlink()
+                return oof
+
+            folds = [("0", "cd", "ab"), ("1", "ab", "cd")]
+            reference = saved_oof("reference", folds)
+            reordered = saved_oof("reordered", [("last", "ba", "dc"), ("first", "dc", "ba")])
+            other_validation = saved_oof("other-validation", [("0", "bd", "ac"), ("1", "ac", "bd")])
+            other_training = saved_oof("other-training", [("0", "c", "ab"), ("1", "ab", "cd")])
+            other_truth = saved_oof("other-truth", folds, first_target=0)
+            frozen = saved_oof("original", folds, freeze=True)
+            missing = saved_oof("missing-fit", folds)
+            missing.with_name("fit.json").unlink()
+            changed = saved_oof("tampered-oof", folds)
+            changed.write_text("Id,prediction\na,9\nb,2\nc,3\nd,4\n", encoding="utf-8")
+
+            cmd = [sys.executable, "-B", str(SCRIPTS / "prediction_evidence.py")]
+            report = subprocess.run(cmd + ["--reference", str(reference), *map(str, [
+                reordered, other_validation, other_training, other_truth, frozen, missing, changed])],
+                capture_output=True, text=True, check=True)
+            candidates = {Path(row["oof"]).parent.name: row for row in json.loads(report.stdout)["candidates"]}
+            self.assertEqual({name: row["status"] for name, row in candidates.items()}, {
+                "reordered": "matched", "other-validation": "different_folds",
+                "other-training": "different_folds", "other-truth": "different_truth", "frozen": "matched",
+                "missing-fit": "unverified", "tampered-oof": "unverified"})
+            self.assertIn("different OOF predictions", candidates["tampered-oof"]["reason"])
+
+            invalid_reference = subprocess.run(cmd + ["--reference", str(changed), str(reference)],
+                                               capture_output=True, text=True)
+            self.assertEqual(invalid_reference.returncode, 2)
+            self.assertFalse(invalid_reference.stdout)
+
     def test_group_overlap_rejected(self):
         with self.assertRaisesRegex(adapter.TrainingFailure, "groups overlap"):
             adapter.check_boundary({"split": {"kind": "group", "group_column": "group"}},
@@ -193,6 +248,44 @@ def predict_fold(control, member, x_fit, x_score, member_x_fit, member_x_score, 
         with self.assertRaisesRegex(adapter.TrainingFailure, "Control reproduction failed on fold"):
             adapter.recompose(control, member, composition, invalid)
         self.assertFalse(invalid.exists())
+
+    def test_recompose_reuses_members_inside_one_saved_control(self):
+        self.candidate.write_text("""import numpy as np
+
+class TwoMembers:
+    def fit(self, X, y):
+        self.offset_ = float(np.mean(y - 3 * X[:, 0]))
+        return self
+    def members(self, X):
+        trend = 3 * X[:, 0]
+        return trend, trend + 2 * self.offset_
+    def predict(self, X):
+        a, b = self.members(X)
+        return 0.5 * a + 0.5 * b
+
+def build_model(seed, task):
+    return TwoMembers()
+""")
+        control = self.train("control")
+        composition = self.root / "composition.py"
+        composition.write_text("""def predict_fold(control, member, x_fit, x_score, member_x_fit, member_x_score, *, include_member):
+    assert member is member_x_fit is member_x_score is None
+    a, b = control.members(x_score)
+    weight_b = 0.25 if include_member else 0.5
+    return (1 - weight_b) * a + weight_b * b
+""")
+        output = self.root / "recomposed"
+        received = subprocess.run([sys.executable, "-B", str(SCRIPTS / "tabular_training.py"), "recompose",
+                                   "--control", str(control), "--composition", str(composition),
+                                   "--output-dir", str(output)], capture_output=True, text=True, check=True)
+        report = json.loads(received.stdout)
+        self.assertEqual(report["new_fit_calls"], 0)
+        self.assertEqual(set(report["inputs"]), {"control"})
+        self.assertTrue(all(row["control_max_abs_error"] == 0 for row in report["folds"]))
+        result = load_result(output / "evaluation/result.json")
+        compare(load_result(control / "evaluation/result.json"), result, 0)
+        self.assertEqual(result["score"]["value"], 1.0)
+        self.assertNotIn("training_execution", result)
 
     def test_recompose_refuses_mismatched_folds_before_importing_composition(self):
         control = self.train("control")

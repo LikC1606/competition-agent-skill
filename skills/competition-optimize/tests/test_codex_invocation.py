@@ -27,8 +27,8 @@ class CodexInvocationTests(unittest.TestCase):
                         "next_action": "Inspect the paired result", "stop_reason": "",
                         "evidence": ["runs/candidate/result.json"]}
 
-    def observe(self, **result):
-        return CodexInvocation.observe(self.directory, {"returncode": 0, **result}, quarantined=False)
+    def observe(self, *, mode=None, **result):
+        return CodexInvocation.observe(self.directory, {"returncode": 0, **result}, quarantined=False, mode=mode)
 
     def test_receipt_delivery_is_only_for_successful_work_with_a_saved_session(self):
         self.events.write_text(json.dumps({"type": "thread.started", "thread_id": "work-session"}) +
@@ -110,6 +110,47 @@ class CodexInvocationTests(unittest.TestCase):
             self.assertIsNone(self.observe().receipt)
         self.message.write_text(json.dumps({**self.receipt, "research_state": None, "corrections": []}))
         self.assertIsNotNone(self.observe().receipt)
+
+    def test_research_finding_recovers_only_its_declared_evidence_and_keeps_raw_receipt(self):
+        report = "runs/candidate/implementation-review.json"
+        receipt = {**self.receipt, "evidence": [*self.receipt["evidence"], report],
+                   "research_state": {
+                       "status": "open", "route": "implement", "question": "Did the measured code add the new member?",
+                       "alternatives": ["Member integrated", "Member omitted"],
+                       "missing_evidence": "Inspect the implementation review.",
+                       "answer_actions": [{"observation": "Member omitted", "action": "Repair integration."}],
+                       "evidence": ["runs/candidate/recipe.json"]},
+                   "research_finding": {"premise_id": "member-integration", "observation": "Member omitted.",
+                                        "design_effect": "Repair integration.", "evidence_path": report},
+                   "corrections": [{"key": "equivalent-recipes", "status": "withdrawn", "reason": "The recipes differ.",
+                                    "evidence": [report]}]}
+        self.events.write_text(json.dumps({"type": "thread.started", "thread_id": "work-session"}) +
+                               "\n" + json.dumps({"type": "turn.completed"}) + "\n")
+        raw = (json.dumps(receipt, indent=2) + "\n").encode()
+        self.message.write_bytes(raw)
+        repaired = self.observe()
+        expected = copy.deepcopy(receipt)
+        expected["research_state"]["evidence"].append(report)
+        self.assertEqual(repaired.receipt, expected)
+        self.assertFalse(repaired.needs_receipt)
+        self.assertEqual(self.message.read_bytes(), raw)
+
+        for variant, field in (({**receipt, "evidence": self.receipt["evidence"]}, "research_finding.evidence_path"),
+                               ({**receipt, "research_state": None}, "research_state")):
+            with self.subTest(field=field):
+                self.message.write_text(json.dumps(variant))
+                outcome = self.observe(mode="research")
+                self.assertIsNone(outcome.receipt)
+                self.assertTrue(outcome.needs_receipt)
+                self.assertIn(field, outcome.error)
+
+        unlinked = {**receipt, "evidence": self.receipt["evidence"], "research_state": None}
+        self.message.write_text(json.dumps(unlinked))
+        self.assertTrue(self.observe(mode="work").needs_receipt)
+
+        del expected["evidence"][-1]
+        self.message.write_text(json.dumps(expected))
+        self.assertEqual(self.observe().receipt, expected)
 
     def test_working_selection_is_optional_but_requires_a_scoped_reason_and_evidence(self):
         selection = {"candidate_id": "measured", "reason": "Preferred under the declared comparison.",

@@ -143,6 +143,7 @@ class BootstrapTests(unittest.TestCase):
         summary = estimator.summarize(rows, 0.95, 0)
         self.assertEqual(summary["status"], "unavailable")
         self.assertGreater(summary["invalid_replicates"], 20)
+        self.assertIsNone(summary["objective_improvement_standard_error"])
         self.assertIsNone(summary["objective_improvement_interval"])
         self.assertEqual(summary["evidence_preference"], "inconclusive")
 
@@ -287,12 +288,22 @@ class UncertaintyWorkflowTests(unittest.TestCase):
             self.assess()
 
     def test_cli_reproduces_bootstrap_and_refuses_overwrite(self) -> None:
+        self.candidate = self.evaluate("id,prediction\nb,4\na,0\n1,1\n001,0\n")
         output = self.root / "cli-uncertainty"
         command = [sys.executable, str(SCRIPT_DIR / "compare_prediction_uncertainty.py"), *self.arguments(output)]
         first = subprocess.run(command, capture_output=True, text=True, timeout=15)
         self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertEqual(json.loads(first.stdout)["uncertainty"]["evidence_preference"], "candidate_supported")
+        summary = json.loads(first.stdout)
+        self.assertAlmostEqual(summary["observed_objective_improvement"], 2 - math.sqrt(17 / 4))
+        self.assertEqual(summary["resampling_unit"], "row")
+        with (output / "bootstrap.csv").open(encoding="utf-8", newline="") as stream:
+            gains = [float(row["objective_improvement"]) for row in csv.DictReader(stream)]
+        mean = math.fsum(gains) / len(gains)
+        standard_error = math.sqrt(math.fsum((gain - mean) ** 2 for gain in gains) / (len(gains) - 1))
+        self.assertGreater(standard_error, 0)
+        self.assertAlmostEqual(summary["uncertainty"]["objective_improvement_standard_error"], standard_error)
         before = (output / "report.json").read_bytes()
+        self.assertEqual(json.loads(before)["uncertainty"], summary["uncertainty"])
         second = subprocess.run(command, capture_output=True, text=True, timeout=15)
         self.assertEqual(second.returncode, 2)
         self.assertEqual((output / "report.json").read_bytes(), before)

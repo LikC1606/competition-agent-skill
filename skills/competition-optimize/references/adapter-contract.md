@@ -18,11 +18,25 @@ If the official score cannot be computed, return its value as unavailable. Do no
 
 ## Verify the Executable Meaning
 
+When organizers publish runnable tools, try their generator and scorer before implementing replacements. If a build trips on a read-only dependency cache, try a cache inside the workspace and bound the build to the checkpoint's remaining time. Check the official web or prebuilt version before replacing the scorer. A published WebAssembly visualizer may expose its generator and scorer to an installed JavaScript runtime. Reuse the published module through its actual interface and save the version and hashes. AHC041's [official visualizer](https://img.atcoder.jp/ahc041/m0Bwp9WL.html?lang=en) uses `gen` and `vis`, so its own scoring code can run without building Rust. If the official tool cannot run within the task's environment or budget, keep fallback measurements provisional until a reference comparison establishes what is equivalent.
+
 Compare official rules, scorer source where available, and actual output on reference candidates. Check maximize/minimize transformations, units, mean/median/percentile or relative-score aggregation, case weights, timeout treatment, and validity coverage. A field called `correct` or `accepted` may mean only one case passed or a positive score was returned; record individual outcomes and enforce the contract's required checks before promotion.
+
+Identify the scorer's actual validity signal. For example, the AHC027 local visualizer exits normally for a route that misses a square, prints an error and then prints `Score = 0`. For a minimization task this can reverse rankings if the adapter reads only the final number. Check the complete response on valid, illegal and missing output. An interactive visualizer can treat an empty answer as its initial display state. Check missing or empty output explicitly when the task requires an answer. If the task accepts successive answers, exercise both a valid sequence and a malformed earlier block followed by a valid last block to check the official parser and the scoring selection. Gate aggregation on validity and complete case coverage.
+
+When the metric penalizes unfinished work, include a legal partial output in the boundary check. A local adapter must preserve the official distinction between a penalty and an invalid output.
 
 For relative or rank-based objectives whose reference changes, preserve raw measurements and the reference version. Freeze that reference for comparisons or recompute all compared candidates under the same reference. Do not present a local reference ranking as the unknown official ranking. Smoke-test the scoring boundary as well as candidate execution, including missing cases, non-finite metrics, and timeout/failed outputs.
 
 Establish [local evaluation quality](local-evaluation.md) separately from identity and execution checks: the workload must represent decision-relevant test conditions, respect independent groups and information availability, and expose the mechanisms being compared. Preserve unknown distribution assumptions. A stable evaluator hash does not certify any of these properties; a public leaderboard correlation alone cannot validate them.
+
+### Live Interaction and Saved Output
+
+When a judge answers during execution, route the full instance to the organizer's live tester. Verify in the tester source or with a probe what initial fields and replies actually reach the candidate. Keep hidden state in the judge and run each policy live when its queries or actions can differ. A standalone visualizer can replay saved output and score the final answer. It establishes only the checks that its replay implements.
+
+Use one accepted interaction and one that breaks a consequential protocol rule, such as exceeding the query limit. Check which errors the tester signals in text and which it signals through its exit status. A zero score can also be legal. Apply the shared deadline to every live run and exercise timeout or early termination when either could produce an incomplete result. If a prior result used a different launcher or deadline, remeasure the pair with one runner before comparing quality and time. Save the versioned tool, build/run recipe, fixed inputs, stdout and judge diagnostics where the next checkpoint can reuse them. Record each case's query/action count, validity, score and elapsed time. Report what the local timer includes.
+
+When a deadline determines eligibility, preserve the actual launched command or effective timeout with the case result. Record the time limit used by any separate timeout probe so a deliberately short probe can be distinguished from the scored runs.
 
 ## Result Record
 
@@ -39,13 +53,14 @@ Each invocation should produce an immutable machine-readable result with informa
   "score": {
     "kind": "official_metric",
     "origin": "local",
+    "metric": "objective_name",
     "direction": "maximize",
     "value": 0.0,
     "aggregation": "officially specified aggregation",
     "components": {}
   },
   "evaluation": {
-    "stage": "validation",
+    "stage": "development",
     "config_hash": "...",
     "split_hash": "...",
     "seeds": [],
@@ -66,6 +81,12 @@ For a frozen repeatability plan, add `evaluation.measurement_plan_id` and `evalu
 `score.kind` is `official_metric` (the specified formula), `proxy`, or `unknown`; `score.origin` is `local` or `platform`. A local evaluation using the official metric is still a local estimate, not a leaderboard result. `score.direction` is `maximize` or `minimize`. A proxy must name its formula and assumptions. An unknown score has a null value and explicit missing terms. For tasks with multiple test cases, report per-case scores and use the official aggregation rather than an unweighted average chosen by the adapter author.
 
 An adapter may use different field names during an initial pilot, but it must preserve these distinctions and hashes. A shared runner should normalize adapters only after more than one real adapter demonstrates a stable common contract.
+
+Before scoring a matched control and challenger, fix the evaluator hash, score model hash, evaluation stage and input workload identity. Emit the shared identity from the adapter into both result files (`evaluation.split_hash` carries the workload). A hash passed only to the control's `record` command is absent from its result file. If present, `evaluation.config_hash` and `evaluation.runtime_environment` are also part of the comparison. Generate these from one evaluation configuration. Keep solver settings, dependencies and their recipe hash in `--configuration`. Keep setup failure notes in the result's diagnostics so differing phrasing cannot split an otherwise unchanged environment. Preserve any real differences when they affect the declared comparison. With `candidate_archive.py brief --archive ARCHIVE --anchor CONTROL_ID`, verify that both implementations appear under the control's comparison before making a paired claim. If the results use different contracts, identify the change and replay saved outputs when that can repair the comparison. Preserve prior results and archive the eligible replay separately.
+
+For a deterministic judge, the score model describes the scoring rule. Save the metric, direction, judge version, case acceptance and aggregation in the shared scoring configuration and hash its bytes for `score_model_hash`. Use the same file for every matched run. The evaluator hash identifies the executed scorer, while the workload hash identifies the inputs. For an old result with no emitted score model identifier, reconstruct the description only when the saved evaluator or launcher and measurement evidence establish those details. Cite them and label the identifier as reconstructed.
+
+In a new task, archive the verified control when its shared comparison is ready. A subsequent checkpoint can continue a source search or implement a supported proposal from that control. Keep small mechanism checks separate from the scored development panel. Record the proposal before starting the matched evaluation on that panel.
 
 ## Optional Case Profile
 

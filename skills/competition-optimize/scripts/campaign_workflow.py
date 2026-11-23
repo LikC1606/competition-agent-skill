@@ -17,11 +17,13 @@ from codex_invocation import FINAL_SCHEMA
 # A running manager retains its loaded code even if a later checkpoint adopts
 # new instruction/tool files. Keep that identity separate from the new package.
 MANAGER_SOURCE_SHA256 = file_hash(pathlib.Path(__file__).with_name("autonomous_campaign.py"))
+FREEZER_SOURCE_SHA256 = file_hash(pathlib.Path(__file__))
 
 
 def freeze_workflow(campaign: pathlib.Path, skill: pathlib.Path,
                     state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
-    paths = [skill / "SKILL.md", *sorted((skill / "references").rglob("*.md")),
+    references = sorted(path for path in (skill / "references").rglob("*") if path.is_file())
+    paths = [skill / "SKILL.md", *references,
              *sorted(path for path in (skill / "scripts").iterdir() if path.is_file())]
     contents = {str(path.relative_to(skill)): path.read_bytes() for path in paths}
     # Future turns can adopt an extended receipt without replacing a campaign's
@@ -54,6 +56,8 @@ def freeze_workflow(campaign: pathlib.Path, skill: pathlib.Path,
     provenance = {"schema_version": 1, "package_sha256": fingerprint,
                   "skill_sha256": hashes["SKILL.md"], "runner_sha256": MANAGER_SOURCE_SHA256,
                   "tool_runner_sha256": hashes.get("scripts/autonomous_campaign.py"),
+                  "freezer_sha256": FREEZER_SOURCE_SHA256,
+                  "tool_freezer_sha256": hashes.get("scripts/campaign_workflow.py"),
                   "cli_path": state["agent_bin"], "cli_version": "unknown",
                   "requested_model": state["model"] or "unknown", "resolved_model": "unknown"}
     if state["turn_number"] and not state.get("instruction_snapshot"):

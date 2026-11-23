@@ -113,6 +113,8 @@ This preference is about the deterministic local metric. Independently check tra
 
 Use `compare_prediction_uncertainty.py` when ranking fixed candidates for performance on unseen samples and the observed difference may depend on the validation sample. It loads a matched pair of complete evaluations, verifies truth and prediction bytes, recomputes recorded scores with the installed evaluator, and resamples the **same units for both candidates**. It retains the deterministic `aggregate_comparison` separately from `uncertainty`; a positive local difference can have an interval spanning zero. This is optional evidence for a decision, not a universal significance gate or a replacement score.
 
+If the installed scorer has changed and the saved predictions and truth still apply, score each saved prediction snapshot under one shared protocol. Pass those new results to the uncertainty command. [CSV scorer](#inputs-and-evaluation)
+
 Choose the sampling unit, replicates, seed, confidence level, and practical improvement threshold before viewing the comparison, and freeze these for confirmation. Repeating with different seeds until an interval becomes favorable is additional selection on the same data. Use row resampling only when rows can reasonably be treated as independent exchangeable samples:
 
 ```powershell
@@ -130,7 +132,9 @@ python <skill-dir>/scripts/compare_prediction_uncertainty.py `
 
 For dependent rows within patients, devices, or another defensible independent cluster, use `--resampling-unit group --groups <metadata.csv> --group-column patient`. The metadata needs the evaluated ID column and a non-empty group column, with unique IDs and exact sample coverage. Each draw selects the original number of groups with replacement and includes every selected group's rows; duplicated groups repeat their rows. Each replicate computes the **pooled row metric**, including unequal group sizes; it does not substitute an equally weighted mean of group scores. At least two units are required to compute a result, but a small number of independent units can still give an unreliable interval. Row/group bootstrap does not implement time-series block resampling or fix distribution shift; use a task-specific protocol when these assumptions do not fit. It is unnecessary for an exact deterministic objective on a fixed exhaustive test population.
 
-The output saves `report.json`, all replicate scores/differences in `bootstrap.csv`, parent prediction snapshots, and group metadata when supplied. The report includes the empirical percentile interval for improvement (positive is better), configuration/input/estimator hashes, requested/valid/invalid replicate counts, independent unit count, Python version, and consumed row draws. `--bootstrap-samples` supports 100-10000 draws. `--max-row-draws` defaults to 2,000,000 total resampled row occurrences as a computational safety guard: expected work is checked before sampling and the actual total is checked during sampling, including invalid AUC draws. Cluster draws can exceed their expectation. Increase the guard when the machine can safely handle the work; it is not an optimization quota. These repetitions consume compute/time, without creating additional candidate versions. Existing output directories are never overwritten; failed invocations return code 2 with a reason in a new directory's report.
+The output saves `report.json`, all replicate scores/differences in `bootstrap.csv`, parent prediction snapshots, and group metadata when supplied. The report includes the percentile interval and bootstrap standard error of the paired improvement (positive is better), input and estimator hashes, replicate counts, sampling unit count and consumed row draws. The standard error is the sample standard deviation of valid replicate improvements. Use it with the exact prediction pair and sampling unit recorded in the report. Report the observed difference and any task-defined practical threshold alongside it. Older reports may omit the standard error. Their replicate differences are saved in `bootstrap.csv`.
+
+`--bootstrap-samples` supports 100–10,000 draws. `--max-row-draws` defaults to 2,000,000 resampled row occurrences. The command checks expected work before sampling and actual work during sampling, including invalid AUC draws. Cluster draws can exceed their expectation. Existing output directories remain intact. Failed invocations return code 2 and record the reason in a new output directory when available.
 
 Immutable metric inputs are validated before sampling. The engine caches row residuals/log losses and prepares AUC ordering once; each AUC draw uses integer row multiplicities with the original tie rule. Regression retains per-draw scaling so small residuals remain measurable when an extreme row is absent. The random draws, pooled formulas and invalid-draw accounting are preserved; the compute guard remains explicit, and this computational optimization does not add statistical evidence.
 
@@ -142,7 +146,7 @@ Use development evidence to choose the next experiments. For a frozen confirmati
 
 ## Diagnose Development Errors
 
-Use `analyze_prediction_errors.py` when a total score leaves the next improvement mechanism unclear, or when a candidate's gains might hide specific regressions. It requires paired complete development evaluations from the installed evaluator and the exact evaluated truth bytes. It verifies snapshot hashes, recomputes both overall scores, and rejects mismatched contracts, modified artifacts, or confirmation-stage evaluations. Older evaluator versions require reevaluation. An exploratory diagnosis consumes evaluation time/compute; it is not a new candidate unless it leads to a code/configuration variant.
+Use `analyze_prediction_errors.py` when a total score leaves the next improvement mechanism unclear, or when a candidate's gains might hide specific regressions. It requires paired complete development evaluations, their matching evaluator and the exact evaluated truth bytes. It verifies snapshot hashes, recomputes both overall scores, and rejects mismatched contracts, modified artifacts, or confirmation-stage evaluations. A diagnostic consumes evaluation time but does not itself produce a code or configuration variant.
 
 ```powershell
 python <skill-dir>/scripts/analyze_prediction_errors.py `
@@ -154,6 +158,16 @@ python <skill-dir>/scripts/analyze_prediction_errors.py `
   --slice-column device `
   --output-dir <new-diagnostic-directory>
 ```
+
+When the installed evaluator has changed, use the scorer snapshot from a verified managed rescore and the task's matching numeric environment. In Bash, run the existing diagnostic as a module with the saved scorer first on its import path:
+
+```bash
+PYTHONPATH="$rescore_dir/scorer:$skill_dir/scripts" "$numeric_python" -B -m analyze_prediction_errors \
+  --baseline "$baseline_result" --candidate "$candidate_result" --truth "$truth_csv" \
+  --summary-only --check-blend-direction --output-dir "$new_diagnostic_dir"
+```
+
+If the two results have different scorer identities, first use the managed [zero-fit rescore](tabular-training.md#rescore-with-the-frozen-evaluator) for the result outside the intended contract.
 
 Omit `--slices` and all `--slice-column` options for per-sample analysis only. Metadata must contain the evaluated ID column and requested categorical columns, with unique IDs covering exactly the evaluated samples and non-empty category values. Rows can differ in order. Each column is analyzed independently, without automatic intersections or bins. Default `--max-groups 100` bounds the groups per column; choose meaningful regimes rather than slicing by a near-unique identifier. The diagnostic configuration and metadata hash are recorded separately from the frozen evaluation configuration.
 
@@ -190,6 +204,35 @@ When deciding whether to spend a trial on two compatible predictions, add `--che
 For RMSE the convex loss is MSE, which has the same minima. Let `r0 = baseline-target`, `r1 = candidate-target`, and `d = candidate-baseline`. The two inward derivative signs are those of `sum(r0*d)` and `-sum(r1*d)`. For MAE the baseline contribution is `sign(r0)*d` when `r0 != 0`, otherwise `abs(d)`; at the candidate use direction `-d`. A non-negative endpoint derivative of a convex loss makes that endpoint a minimum. Both negative imply a minimum strictly below both endpoints. This concerns ideal real-arithmetic blending of the parsed inputs; constructed CSVs and evaluator rounding still need separate scoring. Log-loss clipping can introduce flat boundary regions, and AUC depends on ordering, so these criteria are not transferred to them.
 
 Case wins are neither necessary nor sufficient: with targets `[0,0]`, baseline `[1,2]` and candidate `[4,1]` each wins one case, yet no blend beats baseline RMSE. Conversely baseline `[1,1]` and candidate `[-2,2]` gives the candidate no wins, yet an interior blend can improve RMSE. The check gives no practical gain size, selected weight, training/resource validation, or independent evidence. Any chosen weight recipe remains a candidate trial, including a rejected recipe; do not hide weight selection or score sweeps as diagnostics. The criterion covers exactly two fixed parents on this declared development objective and does not establish other splits, metrics, nonlinear combinations, or ensemble gains.
+
+### Bound the Headroom of a Grouped Blend
+
+From the task workspace, use the configured numeric Python and the active skill directory. For a pool of saved OOF predictions, run the [fold and truth preflight](tabular-training.md#match-saved-oof-before-screening) once:
+
+```bash
+"$numeric_python" "$skill_dir/scripts/prediction_evidence.py" \
+  --reference runs/control/oof.csv runs/member*/oof.csv > blend-preflight.json
+jq -c '.candidates[] | {oof, status, reason}' blend-preflight.json
+```
+
+Use the reported status to explain exclusions in the receipt. For a relevant matched member or an already selected pair, run the headroom command. It verifies the saved development scores, truth and fit memberships together. Keep the output in a new directory under the task workspace.
+
+```bash
+"$numeric_python" "$skill_dir/scripts/analyze_prediction_errors.py" \
+  --baseline runs/control/evaluation/result.json --candidate runs/member/evaluation/result.json \
+  --truth runs/control/truth.csv --baseline-fit runs/control/fit.json --candidate-fit runs/member/fit.json \
+  --slices metadata.csv --slice-column regime --check-blend-headroom --summary-only --output-dir headroom-check
+```
+
+The command prints `blend_headroom`, `second_layer_boundary` and the path to the full report. The receipts bind the prediction snapshots and truth to the recorded training and validation memberships. Use categories available at inference. Omit the slice options to check global and per-fold bounds alone.
+
+The `blend_headroom` report gives the lowest pooled RMSE and the corresponding gain over the baseline for one convex weight globally, one per outer fold and, for each supplied column, one per category or per fold and category. Each cell has its own weight in `[0,1]`. The tool solves the ideal squared-loss minimum using the scored labels and reports it to scorer precision. These are bounds for the two fixed endpoints.
+
+For a procedure that learns a category map separately inside each outer training fold, use `by_fold_and_category`. Fold identifies which fitted map is being evaluated. The map uses the category at prediction time. `by_category` covers a map shared across all outer folds and can give zero headroom even when the separate fits have headroom.
+
+When the task states a required RMSE reduction, pass it as `--required-blend-gain`. The tool labels each bound `below_required_gain` or `not_ruled_out` at scorer precision. Skip a class below the threshold for the two fixed prediction endpoints on these rows. A class with headroom still needs a fitted comparison to measure gain.
+
+For a checkpoint devoted to choosing a blend class, cite the preflight and headroom reports and specify the supported choice and next test. If the pooled OOF producers saw the held-out labels, the follow-up needs verified inner predictions from within each outer training fold. Count the required base fits if those predictions need to be generated. Score the fitted rule against the unchanged control on the corresponding outer validation rows with the declared evaluator. [Interpret the bounds](prediction-ensembles.md#compare-an-edited-member-in-the-full-blend)
 
 ## Construct and Confirm a Prediction Blend
 
