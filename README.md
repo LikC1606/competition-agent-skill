@@ -1,10 +1,16 @@
-<!-- README_SYNC: source=4e47943d568303dfb95221ba1a40e000ff053ba6; updated=2026-11-18 -->
-
-简体中文 · [English](./README_EN.md)
+<!-- README_SYNC: source=4e47943d568303dfb95221ba1a40e000ff053ba6; updated=2026-11-23 -->
+<p align="center">简体中文 · <a href="./README_EN.md" lang="en">English</a></p>
 
 # Competition Agent Skill
 
-给已有比赛解法持续找改进方向，并用匹配的本地评测检验。先找出限制当前效果的机制或证据缺口，再实现候选、保存结果，并根据结果决定下一步。技能入口是 [competition-optimize](./skills/competition-optimize/SKILL.md)。
+给已有比赛解法持续找改进方向，并用可比的本地评测检验。先定位限制当前效果的机制或证据缺口，再实现候选、留存记录，并依据评测结果决定下一步。技能入口是 [competition-optimize](./skills/competition-optimize/SKILL.md)。
+
+<a href="https://github.com/LikC1606/competition-agent-skill"><img alt="GitHub stars" src="https://img.shields.io/github/stars/LikC1606/competition-agent-skill"></a>
+<img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
+<img alt="Codex Skill" src="https://img.shields.io/badge/skill-Codex-4c566a">
+<a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f855a"></a>
+
+欢迎[点 Star](https://github.com/LikC1606/competition-agent-skill) 收藏这套可审计的竞赛迭代工作流。
 
 ## 从现有工作区开始
 
@@ -70,4 +76,8 @@ diff -qr skills/competition-optimize "$skill_dir"
 git rev-parse HEAD
 ```
 
+## 记录与许可
+
 [实施记录](./docs/competition-improvement-implementation-2026-11-16.md)和[重构验证](./docs/refactor-implementation-2026-11-10.md)列出已运行的测试与集成示例。[竞赛策略研究](./docs/competition-skills-agents-research-report-2026-11-16.md)说明外部机制与采用边界；[表格 pilot](./docs/tabular-pilot.md)和[无人值守验证](./docs/unattended-campaign-validation.md)保存历史结果。上述证据验证工具与流程，实际排名收益仍要按题目评测。
+
+本项目采用 [MIT 许可证](./LICENSE)。欢迎[提交 Issue](https://github.com/LikC1606/competition-agent-skill/issues)反馈可复现的问题，也可以[点 Star](https://github.com/LikC1606/competition-agent-skill)收藏。

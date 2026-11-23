@@ -1,10 +1,16 @@
-<!-- README_SYNC: source=4e47943d568303dfb95221ba1a40e000ff053ba6; updated=2026-11-18 -->
-
-[简体中文](./README.md) · English
+<!-- README_SYNC: source=4e47943d568303dfb95221ba1a40e000ff053ba6; updated=2026-11-23 -->
+<p align="center"><a href="./README.md" lang="zh-CN">简体中文</a> · English</p>
 
 # Competition Agent Skill
 
-Improve an existing contest solution by turning a concrete capability gap into an implemented candidate, then measuring it on a comparable local evaluation. The [competition-optimize Skill](./skills/competition-optimize/SKILL.md) uses the result to decide what to investigate or implement next.
+Improve an existing contest solution by turning a concrete capability gap into an implemented candidate, then measuring it on a comparable local evaluation. The [competition-optimize Skill](./skills/competition-optimize/SKILL.md) records each trial and uses the measured evidence to decide what to investigate or implement next.
+
+<a href="https://github.com/LikC1606/competition-agent-skill"><img alt="GitHub stars" src="https://img.shields.io/github/stars/LikC1606/competition-agent-skill"></a>
+<img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
+<img alt="Codex Skill" src="https://img.shields.io/badge/skill-Codex-4c566a">
+<a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f855a"></a>
+
+[Star this repository](https://github.com/LikC1606/competition-agent-skill) to keep this auditable contest iteration workflow handy.
 
 ## Start from the contest workspace
 
@@ -70,4 +76,8 @@ diff -qr skills/competition-optimize "$skill_dir"
 git rev-parse HEAD
 ```
 
+## Records and license
+
 The [implementation record](./docs/competition-improvement-implementation-2026-11-16.md) and [refactor verification](./docs/refactor-implementation-2026-11-10.md) index tests and integrated examples. The [competition strategy research](./docs/competition-skills-agents-research-report-2026-11-16.md) traces outside methods and their scope. The [tabular pilot](./docs/tabular-pilot.md) and [campaign verification](./docs/unattended-campaign-validation.md) document historical runs. These results verify specific tools and workflows; leaderboard gains must be measured on the target task.
+
+Licensed under the [MIT License](./LICENSE). [Open an issue](https://github.com/LikC1606/competition-agent-skill/issues) for reproducible problems, and [star the repository](https://github.com/LikC1606/competition-agent-skill) to bookmark it.
