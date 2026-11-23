@@ -19,7 +19,7 @@ Ask for analysis only if you want to understand a strong entry. For optimization
 Ordinary scripts need Python 3.10 or later. If `python3` launches a container, use an interpreter with access to your contest workspace. The example below replays four **synthetic cached answer sets** to illustrate voting and stopping diagnostics. It writes `trace.json` and `report.json` without a model, network access, or numeric packages. Cached replay does not establish leaderboard gains or measured wall-clock savings.
 
 ```sh
-demo_root=$(mktemp -d "${TMPDIR:-/data/lzh/default-storage/tmp}/competition-demo.XXXXXXXX")
+demo_root=$(mktemp -d "${TMPDIR:-/tmp}/competition-demo.XXXXXXXX")
 python3 examples/inference_vote_replay.py --output-dir "$demo_root/replay"
 ```
 

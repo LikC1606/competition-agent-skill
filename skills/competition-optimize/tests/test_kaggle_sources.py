@@ -105,7 +105,7 @@ class FixedOpener:
 class KaggleSourceTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(
-            prefix="kaggle-source-tests-", dir=os.environ.get("TMPDIR", "/data/lzh/default-storage/tmp"))
+            prefix="kaggle-source-tests-", dir=os.environ.get("TMPDIR") or None)
         self.addCleanup(self.temporary.cleanup)
         self.output = Path(self.temporary.name) / "sources"
         self.addCleanup(mock.patch.stopall)

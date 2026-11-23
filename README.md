@@ -19,7 +19,7 @@
 普通脚本需要 Python 3.10 或更新版本。若 `python3` 是容器包装命令，换成能访问比赛工作区的解释器。下例用四组**合成固定答案**演示投票和早停诊断，写出 `trace.json` 和 `report.json`，无需模型、网络或数值依赖。缓存回放不能证明比赛提分或实测耗时减少。
 
 ```sh
-demo_root=$(mktemp -d "${TMPDIR:-/data/lzh/default-storage/tmp}/competition-demo.XXXXXXXX")
+demo_root=$(mktemp -d "${TMPDIR:-/tmp}/competition-demo.XXXXXXXX")
 python3 examples/inference_vote_replay.py --output-dir "$demo_root/replay"
 ```
 
