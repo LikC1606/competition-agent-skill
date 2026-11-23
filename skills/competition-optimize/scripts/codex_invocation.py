@@ -15,6 +15,10 @@ from campaign_runtime import CampaignError, turn_directory
 
 _TEXT = {"type": "string", "minLength": 1}
 _TEXTS = {"type": "array", "items": _TEXT, "minItems": 1}
+_RESEARCH_PROFILE = 'default_permissions="competition-research"'
+_RESEARCH_NETWORK_OPTIONS = ("--config", _RESEARCH_PROFILE,
+                             "--config", 'permissions.competition-research.extends=":workspace"',
+                             "--config", "permissions.competition-research.network.enabled=true")
 RESEARCH_SCHEMA: dict[str, Any] = {
     "type": ["object", "null"],
     "properties": {
@@ -33,6 +37,8 @@ RESEARCH_SCHEMA: dict[str, Any] = {
 }
 RESEARCH_FINDING_SCHEMA: dict[str, Any] = {
     "type": "object",
+    "description": ("Use with research_state to carry a decision-changing finding across checkpoints. "
+                    "Describe the source behind a completed implementation in summary and evidence."),
     "properties": {key: _TEXT for key in ("premise_id", "observation", "design_effect", "evidence_path")},
     "required": ["premise_id", "observation", "design_effect", "evidence_path"],
     "additionalProperties": False,
@@ -138,8 +144,7 @@ def _decision_fields_valid(receipt: dict[str, Any]) -> bool:
     if "research_finding" in receipt:
         finding = receipt["research_finding"]
         if (not isinstance(finding, dict) or set(finding) != set(RESEARCH_FINDING_SCHEMA["required"])
-                or not all(_text(value) for value in finding.values())
-                or not research or finding["evidence_path"] not in research["evidence"]):
+                or not all(_text(value) for value in finding.values())):
             return False
     selection = receipt.get("working_selection")
     if selection is not None:
@@ -183,7 +188,7 @@ def _parse_events(path: pathlib.Path) -> dict[str, Any]:
     return result
 
 
-def _parse_receipt(path: pathlib.Path) -> dict[str, Any]:
+def read_receipt(path: pathlib.Path, *, mode: str | None = None) -> dict[str, Any]:
     """Accept one terminal receipt, including a provider's prose preamble.
 
     Some tool-capable providers cannot use CLI schema decoding. Keep their raw
@@ -221,6 +226,19 @@ def _parse_receipt(path: pathlib.Path) -> dict[str, Any]:
             any(not isinstance(item, str) for item in receipt["evidence"]) or
             not _decision_fields_valid(receipt)):
         raise CampaignError("Final receipt does not match the campaign schema")
+    if finding := receipt.get("research_finding"):
+        research = receipt.get("research_state")
+        evidence_path = finding["evidence_path"]
+        if research is None:
+            # The implementation can cite a finding without scheduling another research checkpoint.
+            if mode in {"work", "execute"} and evidence_path in receipt["evidence"]:
+                return receipt
+            raise CampaignError("Final receipt with research_finding requires research_state")
+        if evidence_path not in research["evidence"]:
+            if evidence_path not in receipt["evidence"]:
+                raise CampaignError("Include research_finding.evidence_path in research_state.evidence or top-level evidence")
+            # Recover the cross-reference already declared in the raw receipt.
+            research["evidence"].append(evidence_path)
     return receipt
 
 
@@ -245,11 +263,17 @@ class CodexInvocation:
                   "--config", 'shell_environment_policy.set.SHELLOPTS="pipefail"']
         if state["model"]:
             common += ["--model", state["model"]]
+        # A named permissions profile and the legacy --sandbox switch are two
+        # different selectors. Keep the workspace filesystem profile when opting into network access.
+        sandbox_options = ["--sandbox", state["sandbox"]]
+        if state.get("allow_network"):
+            common += _RESEARCH_NETWORK_OPTIONS
+            sandbox_options = []
         if state["session_id"] and state["next_mode"] != "rethink":
             return [state["agent_bin"], "exec", "resume", "--skip-git-repo-check",
                     *common, state["session_id"], "-"]
         command = [state["agent_bin"], "exec", "-C", state["workspace"], "--skip-git-repo-check",
-                   "--sandbox", state["sandbox"], *common]
+                   *sandbox_options, *common]
         for directory in sorted({str(campaign), str(pathlib.Path(state["archive"]).parent)}):
             if directory != state["workspace"]:
                 command += ["--add-dir", directory]
@@ -265,10 +289,13 @@ class CodexInvocation:
                    "--config", 'shell_environment_policy.set.SHELLOPTS="pipefail"']
         if "--model" in turn["command"]:
             command += ["--model", turn["command"][turn["command"].index("--model") + 1]]
+        if _RESEARCH_PROFILE in turn["command"]:
+            command += _RESEARCH_NETWORK_OPTIONS
         return [*command, session_id, "-"]
 
     @staticmethod
-    def observe(directory: pathlib.Path, result: dict[str, Any], *, quarantined: bool) -> InvocationOutcome:
+    def observe(directory: pathlib.Path, result: dict[str, Any], *, quarantined: bool,
+                mode: str | None = None) -> InvocationOutcome:
         events = _parse_events(directory / "events.jsonl")
         error = result.get("error", "")
         receipt = None
@@ -288,7 +315,7 @@ class CodexInvocation:
             if quarantined:
                 raise CampaignError("Unconfirmed archive suffix quarantined; reconcile its artifacts")
             needs_receipt = True
-            receipt = _parse_receipt(directory / "message.json")
+            receipt = read_receipt(directory / "message.json", mode=mode)
             needs_receipt = False
         except CampaignError as exc:
             error = str(exc)

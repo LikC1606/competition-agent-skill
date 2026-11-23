@@ -33,7 +33,13 @@ Before claiming a capability gap, inspect the model's mapping and objective. An 
 
 When a changed or reportedly broken stage decides whether to spend on a fit, trace the real `build_model` and pipeline calls. Use a discriminating development case or small synthetic fixture. Run the actual feature producer through the wrapper and selector that consume it and inspect the values and their column identities at the downstream estimator. For example, a new column can be nonconstant in the feature frame and still be dropped by a fixed selector. Vary its input through the real caller and compare the selected columns and values with the control; calling the feature helper alone would miss the drop.
 
-Reuse [saved fold models](#inspect-saved-fold-models-without-fitting) for unchanged dependencies and inspect each model through its own fitted transforms. For changed code, use the candidate's normal constructor and the existing pipeline API on the smallest inputs that expose the issue. If the check needs learned state that cannot be reused, fit only that stage on appropriate rows. Check [the supervised training path](#verify-supervised-preprocessing-information-flow) when training and inference behave differently. In the existing proposal or notes, record the actual call, observed behavior and cost. This check can settle whether the intended feature reaches its consumer; it does not supply a fold-clean performance comparison for the changed pipeline.
+For filters with physical thresholds, pass rows on both sides of the threshold through the actual stage and check the units it receives. Filter in the original units or transform the cutoff consistently. Build physical aggregates from the original measurements before applying a nonlinear transform to the aggregate. In Lavanya Shukla v29, cell 28 transforms prices with `log1p` and cell 32 applies dollar thresholds to those values. On the official training table this drops two rows. Applying the predicates in dollars would drop three. Cell 47 also fits Box–Cox on selected columns before cell 52 sums area inputs. Any transformed input in that sum changes its meaning as a physical area. [Lavanya Shukla v29](https://www.kaggle.com/code/lavanyashukla01/how-i-made-top-0-3-on-a-kaggle-competition?scriptVersionId=15419856)
+
+For a change to a wrapper's decision rule, use the actual `build_model`, `fit` and prediction methods with deterministic outputs from unchanged members. For example, use Python's `unittest.mock.patch` on the unchanged member constructors while leaving the wrapper and its splitter active. Give the members different predictions so the expected change can be checked at the scored output. For a learned gate, exercise a group that should change and an unseen group that should use the fallback. Use different fit and prediction row counts when the rule carries row-dependent state.
+
+When compatible saved fits exist, replay the real prediction path using each member's fitted transforms and the task's declared interpreter. Reproduce the control and then exercise the change through the same consumer. A full small fit is useful when the question requires new learned state or its interaction with the pipeline. Fit only the needed stages when the rest can be reused. Keep real columns and fit/score boundaries, including capacity for the actual inner splits, and estimate cost from the nested work as well as the row count. Record what the check exercised and its cost in the existing proposal or notes. Use a matched run for the performance comparison. [Saved fold models](#inspect-saved-fold-models-without-fitting) · [Supervised fitting](#verify-supervised-preprocessing-information-flow)
+
+If a transform selects a domain from fit data and then raises on a valid scoring row, inspect the actual selection and inputs at both boundaries. A nonnegative observed minimum in the fitting rows gives no guarantee about unseen rows. For example, an age derived from two dates can be negative on a rare input even when every age in a small training slice is positive. Retain that case, check whether the declared folds and inference path encounter it, and scope the conclusion to the contexts tested. An alternate fixture can test the wrapper while the transform's input-domain question remains open.
 
 ## Verify Supervised Preprocessing Information Flow
 
@@ -88,6 +94,8 @@ For temporal protocols, set `time_column`, `time_format` (`number` or timezone-a
 
 Keep training outputs together under an existing `runs/` parent. A failed fit leaves its launch and per-fold journal, without a successful manifest. See recovery below before repeating it.
 
+For an existing primary development comparison, identify its reference result and saved `evaluate_predictions.py` and `prediction_core.py` before training. Check the returned `evaluator_hash` against the reference before comparing or archiving. If the hash differs but the scoring inputs match, rescore the sealed OOF with the reference evaluator and use that result for the primary archive entry. This preserves proposal binding and measured fit cost. See [zero fit rescoring](#rescore-with-the-frozen-evaluator).
+
 ```sh
 PY=/absolute/path/to/tabular-env/bin/python
 S=/absolute/path/to/competition-optimize/scripts
@@ -113,6 +121,18 @@ $PY "$S/tabular_training.py" predict --frozen runs/frozen --data test-features.c
 Choose the candidate from development evidence before `freeze`; the example command is not a direction to select the challenger regardless of results. Freeze all finalists and the actual selection/delivery rule before reading confirmation labels. `freeze` copies and seals source, protocol, data, OOF, fitting receipts and model files. Later commands recheck those bytes and recorded Python/package environment before loading the models. The fixed inference recipe is the arithmetic mean of all frozen fold models; it does not retrain on holdout rows or tune blend weights. The tool records the decision rule but does not interpret natural language or automatically promote a candidate.
 
 `confirm` checks ID/group/time separation, predicts with frozen models, then reads the separate confirmation truth file and produces a normal prediction result with `stage=confirmation`. Keep it out of development decisions. `predict` verifies the exact sample ID set, column names and order; it writes predictions in sample order plus a hash receipt. Sample format is exactly the ID and frozen submission column. Upload remains a separately authorized action.
+
+## Match Saved OOF Before Screening
+
+Use the original training run's `oof.csv` as the reference. Pass the saved predictions to screen as paths.
+
+```sh
+"$PY" "$S/prediction_evidence.py" --reference runs/incumbent/oof.csv runs/*/oof.csv
+```
+
+The command verifies the prediction, truth and fit receipt against the seal of a tabular training run or its frozen copy. It uses standard Python and reads no model files. Select paths with status `matched` for the fold-matched pool. They have identical truth bytes and the same training and validation members per fold. Row order in the fit receipt, fold names, fold order and seeds are outside this membership comparison. `different_truth` means the sealed truth bytes differ, including any change in their serialization. `different_folds` means the truth bytes match but train or validation membership differs. Missing or inconsistent evidence, including outputs with no tabular training fit receipt, is `unverified` with a reason. An unverifiable reference stops the command.
+
+Keep the report with the decision. Use the reported `oof_sha256` to identify the exact predictions and score identical copies once. Matching fold membership is one input to the comparison. Check prediction scale, scoring units, inference context and which fits produced the members. See [ensemble boundaries](prediction-ensembles.md#reuse-predictions-at-the-right-fitting-boundary).
 
 ## Inspect Saved Fold Models Without Fitting
 
@@ -148,11 +168,21 @@ This is a single-threaded reader for trusted candidate code, not a sandbox. It p
 
 Before scheduling a fit, trace the actual build, fit and prediction paths. A fixed output weight or aggregation rule can reuse fitted artifacts when the change does not affect training, fitted preprocessing, member selection or calibration. Check the saved data and protocol, feature order and target scale, and the fit and validation IDs, seeds and environment for each fold of each partition being compared. A newly fitted coefficient or calibrator needs its own [label boundary](local-evaluation.md); reusing members does not make that step fixed.
 
-Use matching saved OOF columns aligned by ID, or load the relevant fold models as above and recover the required member predictions through their own saved transforms. Apply the proposed rule at the same point as intended for inference: a rule within a fold model can differ from one applied after averaging, thresholding or inverse transformation. Before interpreting the comparison, reproduce the saved control with its original rule on each used partition; explain any numerical difference against the recorded precision. If a needed prediction or compatible model is missing, locate it first, then fit only the missing components and folds required by the declared comparison.
+Use matching saved OOF columns aligned by ID, or load the relevant fold models as above and recover the required member predictions through their own saved transforms. Apply the proposed rule at the same point as intended for inference. A rule within a fold model can differ from one applied after averaging, thresholding or inverse transformation. Before interpreting the comparison, reproduce the saved control with its original rule on each used partition and explain any numerical difference against the recorded precision. If a needed prediction or compatible model is missing, locate it first, then fit only the components and folds required by the declared comparison.
+
+For a batch quantile applied to otherwise row-local predictions, cache each fold's predictions before the quantile and any unaffected member outputs. Use NumPy to recompute the quantile on the values in each context, in the original units with the original tie and singleton behavior. Reapply subsequent blending, averaging and transforms in their original order. Check against direct `predictions(...)` calls on representative contexts and against the saved control. If predicted features or member outputs depend on other rows, recompute those stages too. [Choose the prediction contexts](local-evaluation.md#match-the-prediction-context)
 
 For a fixed affine blend under RMSE, squared error along that direction is quadratic; reuse paired residuals and predictions to reason about or evaluate a declared change. The [existing blend direction check](codex-tools.md#reuse-the-existing-numeric-operations) answers whether an interior convex blend can beat both endpoints on those rows. It supplies neither weights nor validation of a new recipe. A zero-fit grid is still a parameter sweep; do not use it when tuning is out of scope, and do not convert a value selected on those labels into independent evidence.
 
 Score newly composed predictions in a fresh directory with the matching `evaluate_predictions.py` contract. Keep the output rule, input recipe/model identities, and the control reproduction with the evidence. Record an exploratory ablation as `--role diagnostic`; for a declared contender, provide the executed output recipe as `--configuration` and cite how scoring rows were excluded from all fitting/selection stages with `--prediction-boundary`. Do not borrow the parent's `training_execution` or rebind its proposal. The managed `rescore` command below accepts unchanged sealed OOF only.
+
+### Reuse Inner Predictions for a Learned Combiner
+
+Before proposing another gate or stack, inventory two inputs per outer fold. The scored member predictions come from the outer models and use the original scoring context. The combiner's fit inputs come from inner folds within the outer training rows and use the declared training prediction rule. These contexts can differ, for example when the validation batches use a quantile calculated over the entire batch.
+
+If follow-up fits of the combiner are likely, retain its inner predictions and targets or sufficient statistics as fitted attributes in the sealed model. Bind each value to the outer fold's ordered `train_ids` and retain the actual inner train/validation assignments, producer code and prediction rule. Recover the state through `SavedTabularRun`. If only fitted weights or aggregate losses survived, reconstruct the missing inner inputs with the existing branch code and preserve the outer fits where valid. Check the inner split and label boundary before using an existing cache. [Nested validation](local-evaluation.md#fitted-diagnostics-on-stored-predictions)
+
+Use `recompose --control RUN --composition compose.py --output-dir NEW_DIR` when the rule operates on the control's saved members and fitted state. The hook receives `None` for `member`, `member_x_fit` and `member_x_score`. Use `include_member=False` for the original rule and `True` for the changed rule. The hook gets features in recorded fit and scoring row order. Derive learned coefficients from the permitted cached fit state. Count any new solves and schedule missing estimator fits separately. Exercise the changed operation on a small fixture or saved state before a costly fit. [Hook signature](#fit-only-an-added-member)
 
 ### Fit Only an Added Member
 
@@ -171,7 +201,7 @@ The same hook can replace one fitted member when its peers and upstream transfor
 
 The adapter matches training/inference bytes and the protocol (including ordered fit/score rows and seeds), then checks the disabled rule on every scored fold against the saved control. The default reproduction tolerance is exact; specify `--control-atol` only for a justified numerical difference. For accuracy it also checks the raw control probabilities. Reproduction checks the disabled rule and row alignment. To verify an active change, perturb the exact statistic at its consumer and check the fitted state or final score-path predictions. A check on `train_prediction_` says nothing about a clip scale that reads `model.predict(x_fit)` instead. Neither a changed row count nor reproduced control proves that an arbitrary hook uses the intended input.
 
-The result is a fresh development score for `runs/composed/oof.csv`. Keep `recipe.json` (the rule and the two recipe hashes) plus sealed `recomposition.json` (the exact model run seals, fold checks, and separate original training costs). Recomposition itself adds zero adapter fits. Count new member training with `cost --run runs/added-member`; the control's original cost is provenance, not a new charge. This path does not attach a managed training receipt or produce a deliverable frozen model. A shortlisted recipe needs the same composed prediction path for inference before it can be frozen or submitted.
+The result is a fresh development score for `runs/composed/oof.csv`. Keep `recipe.json` with the rule and input recipe hashes, and sealed `recomposition.json` with the source run seals, fold checks and original training costs. Recomposition adds zero adapter fits. If you trained a new member, record its cost with `cost --run runs/added-member`. The composition still needs an inference path before frozen delivery.
 
 If the returned evaluator differs from the pinned comparator, run the saved `evaluate_predictions.py` directly on the **new** OOF and its sealed truth snapshot. Copy the reference result's metric, split ID, column names, score kind and custom metric options. For a pinned default-column RMSE proxy:
 
@@ -186,6 +216,8 @@ Check the result with `compare_prediction_results.py` against the reference befo
 ## Freeze the Submission Schema and Target Scale
 
 Internal evaluation columns and target units need not match the official CSV. At `freeze`, declare `--submission-column` when the official target name differs, and `--inverse-transform` when model predictions require a target inverse. Defaults preserve the protocol prediction column and use `identity`. Supported regression inverses are `exp` for a target trained as `log(y)` and `expm1` for `log1p(y)`. Choose from the actual preprocessing/model output contract; an estimator that already returns original units needs `identity`. Do not infer units from plausible-looking values or apply the inverse twice.
+
+For custom training recipes and source notebooks, trace the actual estimators reaching the final `predict`. If delivery uses a full-data fit, fit after validation or preserve that estimator apart from the fold fits. If delivery ensembles folds, bind the saved members and aggregation to the recipe. In Arnout Van Avermaet v16, `model_this` fits on all training rows and then passes the same estimator to `oof_pred`, which mutates it in each fold. The test output therefore uses the last fold's fit. The exporter also applies `expm1` to outputs trained with `log(y)`, subtracting one unit from the prices. [Arnout Van Avermaet v16, cells 45–50 and 61](https://www.kaggle.com/code/theupgrade/step-by-step-eda-lasso-lgbmr-stack?scriptVersionId=125563448)
 
 For example, when the protocol evaluates log-price predictions and the official sample expects `Id,SalePrice`:
 
@@ -218,7 +250,7 @@ $PY "$S/tabular_training.py" plan-cost --protocol repartition-a.json --protocol 
   --expected-fit-calls 10
 ```
 
-This command only reads protocol JSON. A mismatch fails before launch. Pass the per-execution count to `train --expected-fit-calls` to check the actual protocol used. Explicit retries and estimator fits hidden inside candidate code are outside this estimate; use the fit journal for actual costs.
+This command reads protocol JSON and fails on a mismatch before launch. Pass the per-execution count to `train --expected-fit-calls` to check the actual protocol used. For a nested model, count the changed and reusable fits inside each call, including prototype calls. One outer fit with three final members and three inner splits of two members runs nine direct member fits before any deeper nesting. Use the previous run's recorded fit time and the scope of the changed work to estimate elapsed cost. Read the fit journal for actual adapter calls and elapsed time.
 
 To run a slot in a [frozen paired plan](local-evaluation.md#freeze-a-paired-eligibility-rule), copy that exact protocol's `protocol_sha256` from `plan-cost` into the run entry before archiving the plan. One managed training call is one repetition. The slot's `seeds` may be `[]` when the exact protocol already binds all folds and their seeds, or the list of unique estimator seeds in protocol order. Pass its IDs when launching:
 
@@ -229,6 +261,8 @@ $PY "$S/tabular_training.py" train --data training.csv --protocol repartition-a.
 ```
 
 The adapter checks the frozen slot, exact protocol bytes and executed recipe identity before importing the candidate. Record the sealed result with `candidate_archive.py record --configuration runs/paired-a/recipe.json --result runs/paired-a/evaluation/result.json` and the other usual fields, including a reuse reason where needed. The archive checks the completed matching comparison. This path uses the trainer's current scorer and recipe identity; keep matched cached controls whose evidence belongs to that same contract.
+
+### Rescore with the Frozen Evaluator
 
 When installed scorer code has changed but a development comparison must retain its existing contract, use the original run's sealed OOF with the exact saved scorer that produced a valid reference result:
 
@@ -243,7 +277,7 @@ $PY "$S/tabular_training.py" rescore --run runs/challenger \
 
 The new directory preserves the reference, scorer, output and failures without changing the original run. A successful result links the original training seal and execution receipt; archive it using `--configuration ORIGINAL_RUN/recipe.json` and its original bound `--proposal-id`. Archive recording verifies that link and keeps the original fit cost and proposal timing. `new_fit_calls: 0` describes this rescore; `originating_cost` describes the training that generated its predictions. Count the original execution once with `cost --run ORIGINAL_RUN`, not as another fit for each rescore. Older runs without a managed receipt can still use the standalone prediction scorer, but cannot gain retrospective proposal evidence.
 
-The adapter durably appends `fit_started`, `fit_completed` or `fit_failed` for every fold. A killed fit remains `unresolved_fit_calls`, with unknown duration instead of zero. After an incomplete identical attempt, automatic repetition is refused; inspect its journal, then supply `--retry-reason 'actual reason'` in a fresh directory only when a new attempt is useful. This flag also permits an intentional planned repeat of completed work, which remains a measurement of the same implementation. Partial folds are not automatically resumed.
+The adapter durably appends `fit_started`, `fit_completed` or `fit_failed` for every fold. A prediction failure after `fit_completed` leaves a completed fit to charge and an unfinished run without a valid score. A killed fit remains `unresolved_fit_calls`, with unknown duration instead of zero. After an incomplete identical attempt, automatic repetition is refused; inspect its journal, then supply `--retry-reason 'actual reason'` in a fresh directory only when a new attempt is useful. This flag also permits an intentional planned repeat of completed work, which remains a measurement of the same implementation. Partial folds are not automatically resumed.
 
 ```sh
 $PY "$S/tabular_training.py" cost --run runs/failed --run runs/repaired --run runs/copied

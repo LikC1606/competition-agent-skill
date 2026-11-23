@@ -112,14 +112,27 @@ def candidate_index(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {entry["candidate_id"]: entry for entry in records if entry["event"] == "candidate"}
 
 
+def missing_comparison_fields(context: dict[str, Any]) -> list[str]:
+    required = ("evaluator_hash", "workload_hash", "score_model_hash", "stage", "objective_name")
+    return [key for key in required if not isinstance(context.get(key), str) or not context[key]]
+
+
+def missing_saved_comparison_fields(entry: dict[str, Any]) -> list[str]:
+    """Find comparison identities absent from an otherwise scored adapter result."""
+    result = entry["result"]
+    if (entry["role"] in DEVELOPMENT_ROLES and entry["valid"] and result.get("execution_status") == "success"
+            and result.get("objective_value") is not None and result.get("objective_kind") in {"proxy", "official_metric"}):
+        return missing_comparison_fields(entry["comparison"])
+    return []
+
+
 def measurable(entry: dict[str, Any], *, include_diagnostics: bool = False) -> bool:
     objective, context = entry["objective"], entry["comparison"]
-    required = ("evaluator_hash", "workload_hash", "score_model_hash", "stage", "objective_name")
     roles = DEVELOPMENT_ROLES if include_diagnostics else {"development"}
     return (entry["valid"] and entry["role"] in roles and "score_invalidation" not in entry
             and objective.get("value") is not None and objective.get("direction") in DIRECTIONS
             and objective.get("kind") in {"proxy", "official_metric"}
-            and all(isinstance(context.get(key), str) and context[key] for key in required))
+            and not missing_comparison_fields(context))
 
 
 def directed_score(entry: dict[str, Any]) -> float:

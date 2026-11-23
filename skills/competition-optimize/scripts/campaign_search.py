@@ -14,6 +14,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Mapping
 
 import candidate_archive as archive_tools
+from candidate_evidence import missing_saved_comparison_fields
 from campaign_trials import delivered_trials, trial_history
 from campaign_handoff import bound_packet
 
@@ -82,11 +83,20 @@ class CampaignEvidence:
         return {entry["conflict_signature"] for entry in self.records if entry["event"] == "measurement_plan"}
 
     @cached_property
+    def _closed_proposals(self) -> set[str]:
+        return {entry["proposal_id"] for entry in self.records
+                if entry["event"] in {"candidate", "proposal_stop"} and entry.get("proposal_id")}
+
+    @cached_property
     def _pending_proposals(self) -> dict[str, dict[str, Any]]:
-        closed = {entry.get("proposal_id") for entry in self.records
-                  if entry["event"] in {"candidate", "proposal_stop"}}
         return {entry["proposal_id"]: entry for entry in self.records
-                if entry["event"] == "proposal" and entry["proposal_id"] not in closed}
+                if entry["event"] == "proposal" and entry["proposal_id"] not in self._closed_proposals}
+
+    def proposal_closed(self, proposal_id: str | None) -> bool:
+        return proposal_id is not None and proposal_id in self._closed_proposals
+
+    def proposal_pending(self, proposal_id: str) -> bool:
+        return proposal_id in self._pending_proposals
 
     def pending_in_comparison(self, proposal_id: str | None, comparison: Mapping[str, Any] | None) -> bool:
         proposal = self._pending_proposals.get(proposal_id) if proposal_id else None
@@ -169,13 +179,41 @@ class CampaignEvidence:
         """
         entry = self._index.get(selection["candidate_id"])
         progress = self.signals(objective_anchor=objective_anchor)["objective_progress"]
+        primary = progress["comparison"]
+        if entry is not None and entry["role"] == "development" and primary is not None:
+            comparison = entry["comparison"]
+            differences = [
+                f"{key} (missing)" if comparison.get(key) is None else key
+                for key in sorted(primary.keys() | comparison.keys())
+                if comparison.get(key) != primary.get(key)
+            ]
+            if differences:
+                raise archive_tools.ArchiveFailure(
+                    "working_selection_comparison_mismatch", f"Candidate {selection['candidate_id']} differs from the primary "
+                    f"comparison: {', '.join(differences)}. Check the adapter result and record arguments "
+                    "against the primary contract before recording a corrected observation.")
         if (entry is None or not observed_implementation(entry)
-                or entry["comparison"] != progress["comparison"]):
+                or entry["comparison"] != primary):
             raise archive_tools.ArchiveFailure(
                 "invalid_working_selection", "Working selection must name a measured development implementation "
                 "under the primary comparison; retain the previous choice or correct the receipt")
         if require_eligibility:
             archive_tools.measurement_plans.validate_selection(entry, self.records, reads=self._reads)
+
+    def selection_comparison_pair(self, request: Mapping[str, Any] | None,
+                                  progress: Mapping[str, Any]) -> tuple[dict, dict] | None:
+        if not request or request["comparison_key"] != progress["comparison_key"]:
+            return None
+        target = self._index.get(request["candidate_id"])
+        if (target is None or not observed_implementation(target)
+                or target["comparison"] == progress["comparison"] or not progress["best_candidate"]):
+            return None
+        # Prefer the actual proposal control when it belongs to the primary comparison.
+        for parent_id in target["parent_ids"]:
+            parent = self._index[parent_id]
+            if parent["comparison"] == progress["comparison"] and observed_implementation(parent):
+                return target, parent
+        return target, self._index[progress["best_candidate"]]
 
     def selection_excluded(self, selection: Mapping[str, Any] | None) -> bool:
         return bool(selection and "score_invalidation" in self._index.get(selection["candidate_id"], {}))
@@ -247,6 +285,7 @@ def observed_implementation(entry: dict[str, Any]) -> bool:
 def objective_progress(records: list[dict[str, Any]], *,
                        evidence: archive_tools.ComparisonEvidence | None = None,
                        objective_anchor: str | None = None) -> dict[str, Any]:
+    reference = None
     context = None
     if objective_anchor is not None:
         reference = next((entry for entry in records if entry["event"] == "candidate" and
@@ -255,20 +294,28 @@ def objective_progress(records: list[dict[str, Any]], *,
             raise archive_tools.ArchiveFailure(
                 "invalid_objective_anchor", "Objective anchor must name a valid scored development implementation")
         context = reference["comparison"]
-    anchor = next((entry for entry in reversed(records)
-                   if entry["event"] == "candidate" and entry["role"] == "development" and
-                   "score_invalidation" not in entry and
-                   (context is None or entry["comparison"] == context)), None)
-    if anchor is None and context is not None:
-        # The pinned reference can still identify the contract after its score is excluded.
-        anchor = reference
+    development = [entry for entry in records if entry["event"] == "candidate"
+                   and entry["role"] == "development" and "score_invalidation" not in entry]
+    if context is None and development:
+        # A proposal is dispatched under its first parent's comparison. Keep
+        # off-contract results as evidence without letting them choose a new objective.
+        controls = {entry["proposal_id"]: entry["parent_ids"][0]
+                    for entry in records if entry["event"] == "proposal"}
+        candidates = archive_tools.candidate_index(records) if controls else {}
+        context = development[-1]["comparison"]  # Bootstrap if no other development record exists.
+        for entry in reversed(development):
+            control = controls.get(entry.get("proposal_id"))
+            if control is None or candidates[control]["comparison"] == entry["comparison"]:
+                context = entry["comparison"]
+                break
+    # A pinned reference still identifies its contract after its score is excluded.
+    anchor = next((entry for entry in reversed(development) if entry["comparison"] == context), reference)
     if anchor is None:
         return {"comparison_key": None, "comparison": None, "anchor_candidate": None,
                 "objective_anchor": objective_anchor,
                 "best_candidate": None, "best_value": None, "comparable_implementations": 0,
                 "implementations_since_best": 0, "latest_eligible": False,
                 "nonimproving_candidates": [], "improvement_candidates": []}
-    context = anchor["comparison"]
     evidence = evidence or archive_tools.ComparisonEvidence(records, eligible=observed_implementation)
     measured = evidence.for_candidate(anchor["candidate_id"]).representatives
     best = None
@@ -388,6 +435,14 @@ def comparison_recovery(records: list[dict[str, Any]], continuity: dict[str, Any
             if observed_implementation(entry) and executed_implementation(entry) != identity:
                 reference = entry
 
+    examples = [index[candidate_id] for candidate_id in continuity["recent_unpaired_candidates"][-4:]]
+    return comparison_recovery_cards(target, reference, relationship, examples,
+                                     continuity["unpaired_contracts"] - len(examples), reads)
+
+
+def comparison_recovery_cards(target: dict, reference: dict | None, relationship: str,
+                              examples: list[dict], omitted: int,
+                              reads: archive_tools.EvidenceReads) -> dict[str, Any]:
     def card(entry: dict[str, Any], *, compact: bool = False) -> dict[str, Any]:
         archive_tools.verify_result(entry, reads=reads)
         archive_tools.verify_artifacts(entry, reads=reads)
@@ -403,13 +458,13 @@ def comparison_recovery(records: list[dict[str, Any]], continuity: dict[str, Any
                           comparison=entry["comparison"], requires_revalidation=True)
         return result
 
-    examples = continuity["recent_unpaired_candidates"][-4:]
     return {"target": card(target), "reference": card(reference) if reference else None,
             "reference_relationship": relationship if reference else None,
-            "changed_fields": sorted(key for key in target["comparison"]
-                                     if reference and target["comparison"][key] != reference["comparison"].get(key)),
-            "unpaired_examples": [card(index[candidate_id], compact=True) for candidate_id in examples],
-            "examples_omitted": continuity["unpaired_contracts"] - len(examples),
+            "changed_fields": (sorted(key for key in target["comparison"].keys() | reference["comparison"].keys()
+                                      if target["comparison"].get(key) != reference["comparison"].get(key))
+                               if reference else []),
+            "unpaired_examples": [card(entry, compact=True) for entry in examples],
+            "examples_omitted": omitted,
             "scope": "Identity and retrieval evidence only; no cross-contract scores or feedback. "
                      "Inspect changed fields and the fixed task, then select an existing legal common development "
                      "contract and measure a trusted reference and candidate under it. Reuse source snapshots "
@@ -424,23 +479,26 @@ def execution_health(records: list[dict[str, Any]]) -> dict[str, Any]:
     buckets would disconnect a failed run from its preceding successful run.
     This chronological signal compares no scores and ignores confirmation.
     """
-    attempts = []
-    seen = set()
+    def observed(entry: dict[str, Any]) -> bool:
+        return archive_tools._observed_snapshot(entry, archive_tools.implementation_identity(entry),
+                                                include_diagnostics=True)
+
+    attempts = {}
     for entry in records:
         identity = executed_implementation(entry)
         if identity is None or "score_invalidation" in entry:
             continue
         result = entry["result"]
         reference = (identity, result["result_path"], result.get("result_sha256"))
-        if reference not in seen:
-            attempts.append(entry)
-            seen.add(reference)
-    anchor = attempts[-1] if attempts else None
+        previous = attempts.get(reference)
+        if previous is None or (observed(entry) and not observed(previous)):
+            # A metadata repair completes the original attempt in place.
+            attempts[reference] = entry
+    anchor = next(reversed(attempts.values()), None)
     last_scored = None
     tail = []
-    for entry in reversed(attempts):
-        if archive_tools._observed_snapshot(entry, archive_tools.implementation_identity(entry),
-                                            include_diagnostics=True):
+    for entry in reversed(attempts.values()):
+        if observed(entry):
             last_scored = entry["candidate_id"]
             break
         tail.append(entry["candidate_id"])
@@ -455,7 +513,7 @@ def execution_health(records: list[dict[str, Any]]) -> dict[str, Any]:
             "last_scored_candidate": last_scored, "needs_attention": bool(tail), "issue": issue,
             "recent_unmeasured_candidates": list(reversed(tail[:8])),
             "scope": "Chronological development and diagnostic execution health only; contracts may differ. "
-                     "No objective ranking or causal judgement; duplicate result references are ignored."}
+                     "No objective ranking or causal judgement; one attempt per result reference."}
 
 
 def execution_review_due(health: dict[str, Any], previous: dict[str, Any] | None, window: int) -> bool:
@@ -511,6 +569,12 @@ def recovery_evidence(records: list[dict[str, Any]], health: dict[str, Any], *,
                       "partial": bool(result.get("partial")),
                       "artifacts": [item for item in value.get("artifacts", []) if isinstance(item, str)]
                                    if isinstance(value.get("artifacts"), list) else []}
+        if missing := missing_saved_comparison_fields(entry):
+            diagnostic["missing_comparison_fields"] = missing
+            if (entry["role"] == "development" and not entry.get("proposal_id")
+                    and not result.get("training_execution") and not archive_tools.prediction_result(result)
+                    and result.get("objective_name") and result.get("objective_direction")):
+                diagnostic["record_metadata"] = {key: entry[key] for key in ("route", "mechanism", "status")}
         return {"candidate_id": entry["candidate_id"], "role": entry["role"], "parent_ids": entry["parent_ids"],
                 "implementation": archive_tools.implementation_identity(entry),
                 "artifact_paths": entry["artifact_paths"], "comparison": entry["comparison"],
@@ -702,6 +766,8 @@ def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: Campaig
         progress=prepared.updates["objective_progress"], health=facts["execution_health"],
         continuity=facts["comparison_continuity"], _view=view,
         measurement_plan=facts["measurement_plan"], mode=prepared.updates["next_mode"],
+        selection_pair=view.selection_comparison_pair(prepared.review_requests.get("selection_comparison"),
+                                                      prepared.updates["objective_progress"]),
         decision_context=decision_context,
         working_selection=selection,
         frontier_seen=memory["frontier_exposures"].get(key, {}),
@@ -712,6 +778,8 @@ def prepare_handoff(memory: Mapping[str, Any], prepared: TurnPlan, view: Campaig
     reviews = dict(prepared.review_requests)
     if "comparison" in reviews and not delivered_comparison_review(packet):
         reviews.pop("comparison")
+    if "selection_comparison" in reviews and not delivered_comparison_review(packet):
+        reviews.pop("selection_comparison")
     if "repeat" in reviews and not delivered_repeat_conflict(packet):
         reviews.pop("repeat")
     return Handoff(packet, {
@@ -735,6 +803,7 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
                    learning_seen: dict[str, int] | None = None,
                    evidence: archive_tools.ComparisonEvidence | None = None,
                    measurement_plan: dict[str, Any] | None = None,
+                   selection_pair: tuple[dict, dict] | None = None,
                    decision_context: dict[str, Any] | None = None,
                    working_selection: dict[str, Any] | None = None,
                    _view: CampaignEvidence | None = None, mode: str = "work") -> dict[str, Any]:
@@ -748,6 +817,27 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
         continuity = view.signals()["comparison_continuity"]
     if measurement_plan is None:
         measurement_plan = view._measurement_plan
+    if selection_pair is not None:
+        target, reference = selection_pair
+        recovery = comparison_recovery_cards(target, reference, "primary_development_reference", [], 0, reads)
+        packet = {"schema_version": 1, "archive_path": str(archive), "archive_snapshot": snapshot,
+                  "task_sha256": task_sha256, "objective_progress": progress,
+                  "comparison_continuity": continuity, "comparison_recovery": recovery,
+                  "working_selection": working_selection,
+                  "scope": "Recover one missing primary comparison for a requested working selection."}
+        recovery["retrieval_sha256"] = archive_tools.sha256(archive_tools.canonical(_comparison_review_identity(packet)))
+        return bound_packet(packet, budget=HANDOFF_BYTES, mode=mode)
+    execution_recovery = recovery_evidence(records, health, reads=reads)
+    target = (execution_recovery or {}).get("target") or {}
+    if mode == "repair" and measurement_plan is None and target.get("diagnostic", {}).get("record_metadata"):
+        # A saved score needs its comparison bindings. Keep other proposals,
+        # strategy cards and their exposure accounting for the next checkpoint.
+        packet = {"schema_version": 1, "archive_path": str(archive), "archive_snapshot": snapshot,
+                  "task_sha256": task_sha256, "objective_progress": progress, "execution_health": health,
+                  "execution_recovery": {**execution_recovery, "reference": None,
+                                         "reference_relationship": None, "reference_comparison_matches": None},
+                  "scope": "Recover comparison metadata for the saved development result."}
+        return bound_packet(packet, budget=HANDOFF_BYTES, mode=mode)
     index = view._index
     repeat_conflict = None
     if progress["anchor_candidate"]:
@@ -799,7 +889,7 @@ def handoff_packet(archive: pathlib.Path, records: list[dict[str, Any]],
             card["feedback_scope"] = "Agent observations for this implementation and comparison; causal claims unverified"
     packet = {"schema_version": 1, "archive_path": str(archive), "archive_snapshot": snapshot,
               "task_sha256": task_sha256, "objective_progress": progress,
-              "execution_health": health, "execution_recovery": recovery_evidence(records, health, reads=reads),
+              "execution_health": health, "execution_recovery": execution_recovery,
               "comparison_continuity": continuity,
               "comparison_recovery": comparison_recovery(records, continuity, reads=reads),
               "repeat_conflict": repeat_conflict,

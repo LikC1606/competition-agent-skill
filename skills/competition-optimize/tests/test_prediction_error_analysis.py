@@ -124,11 +124,49 @@ class PredictionErrorAnalysisTests(unittest.TestCase):
             self.analyze(*option, "--candidate-fit", str(self.fit_receipt(self.candidate, folds[:1])))
         changed = [folds[0], {**folds[1], "train_ids": ["a"]}]
         with self.assertRaisesRegex(analyzer.AnalysisFailure, "different training or validation assignments"):
-            self.analyze(*option, "--candidate-fit", str(self.fit_receipt(self.candidate, changed)))
+            self.analyze("--check-blend-headroom", *option, "--candidate-fit",
+                         str(self.fit_receipt(self.candidate, changed)))
         after = self.fit_receipt(self.candidate, folds)
         after.write_bytes(after.read_bytes() + b"\n")
         with self.assertRaisesRegex(analyzer.AnalysisFailure, "differs from its training manifest"):
             self.analyze(*option, "--candidate-fit", str(after))
+
+    def test_blend_headroom_uses_real_fold_and_category_intersections(self) -> None:
+        self.baseline = self.evaluate("id,prediction\n001,1\n1,1\na,1\nb,1\n")
+        self.candidate = self.evaluate("id,prediction\n001,-1\n1,3\na,3\nb,-1\n")
+        folds = [{"fold_id": "A", "train_ids": ["1", "b"], "validation_ids": ["a", "001"]},
+                 {"fold_id": "B", "train_ids": ["a", "001"], "validation_ids": ["1", "b"]}]
+        before = self.fit_receipt(self.baseline, folds)
+        after = self.fit_receipt(self.candidate, [{**fold, "fold_id": fold["fold_id"].lower()} for fold in folds])
+        with self.assertRaisesRegex(analyzer.AnalysisFailure, "requires --baseline-fit and --candidate-fit"):
+            self.analyze("--check-blend-headroom")
+        output = self.root / "headroom"
+        command = [sys.executable, str(SCRIPT_DIR / "analyze_prediction_errors.py"),
+                   *self.arguments(output, "--summary-only", "--check-blend-headroom", "--baseline-fit", str(before),
+                                   "--candidate-fit", str(after), "--slices", str(self.slices), "--slice-column", "regime",
+                                   "--required-blend-gain", "0.15")]
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=15)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        summary = json.loads(completed.stdout)
+        report = json.loads(Path(summary["report"]).read_text())
+        self.assertEqual(summary["blend_headroom"], report["blend_headroom"])
+        self.assertEqual(summary["second_layer_boundary"], "held_out_label_overlap")
+        headroom = summary["blend_headroom"]
+        # Every whole fold and every category pairs one useful move with one harmful move.
+        self.assertEqual(headroom["global"]["lower_bound_rmse"], 1)
+        self.assertEqual(headroom["by_fold"]["lower_bound_rmse"], 1)
+        self.assertEqual(headroom["slices"][0]["by_category"]["lower_bound_rmse"], 1)
+        self.assertEqual(headroom["global"]["threshold_check"], "below_required_gain")
+        self.assertEqual(headroom["by_fold"]["threshold_check"], "below_required_gain")
+        self.assertEqual(headroom["slices"][0]["by_category"]["threshold_check"], "below_required_gain")
+        joint = headroom["slices"][0]["by_fold_and_category"]
+        self.assertEqual(joint["cell_count"], 4)
+        # Each favorable singleton can hit zero. The other two keep their residual of 1.
+        self.assertAlmostEqual(joint["lower_bound_rmse"], math.sqrt(0.5))
+        self.assertAlmostEqual(joint["upper_bound_improvement_over_baseline"], 1 - math.sqrt(0.5))
+        self.assertEqual(joint["threshold_check"], "not_ruled_out")
+        self.assertTrue(headroom["weights_use_scored_labels"])
+        self.assertFalse(headroom["recipe_evaluated"])
 
     def test_total_gain_with_slice_regression_is_visible_and_matches_hand_calculations(self) -> None:
         report, output = self.analyze("--slices", str(self.slices), "--slice-column", "regime",

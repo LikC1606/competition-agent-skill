@@ -307,6 +307,8 @@ def new_campaign(args: argparse.Namespace) -> pathlib.Path:
     task = args.task_file.expanduser().resolve(strict=True)
     if not workspace.is_dir() or not task.is_file():
         raise CampaignError("Workspace must be a directory and task must be a file")
+    if args.allow_network and args.sandbox != "workspace-write":
+        raise CampaignError("--allow-network requires the workspace-write sandbox")
     binary = shutil.which(args.agent_bin)
     if binary is None:
         raise CampaignError(f"Agent executable not found: {args.agent_bin}")
@@ -336,6 +338,7 @@ def new_campaign(args: argparse.Namespace) -> pathlib.Path:
         "schema_version": SCHEMA_VERSION, "campaign_id": uuid.uuid4().hex, "status": "running",
         "workspace": str(workspace), "archive": str(archive), "archive_snapshot": snapshot,
         "agent_bin": binary, "model": args.model, "sandbox": args.sandbox,
+        "allow_network": args.allow_network,
         **{key: getattr(args, key) for key in LIMITS},
         "turn_timeout_seconds": args.turn_timeout_seconds, "turn_number": 0,
         "turns_without_implementation": 0, "failures": 0, "session_id": None, "inflight": None,
@@ -492,8 +495,13 @@ def public_status(campaign: pathlib.Path, state: dict[str, Any]) -> dict[str, An
         "context_refresh_reason", "execution_health", "failure_review_window",
         "comparison_continuity", "comparison_review_window", "workflow_provenance", *LIMITS)}
     value["unreported_usage_turns"] = state["unreported_usage_turns"]
+    value["allow_network"] = state.get("allow_network", False)
     value["next_proposal_id"] = state.get("next_proposal_id")
     comparison_key = (state["objective_progress"] or {}).get("comparison_key")
+    registration = state.get("proposal_registration")
+    value["proposal_registration"] = registration if registration and registration["comparison_key"] == comparison_key else None
+    selection_review = state.get("selection_comparison")
+    value["selection_comparison"] = selection_review if selection_review and selection_review["comparison_key"] == comparison_key else None
     value["research_state"] = current_research_state(state, comparison_key)
     selection = state.get("working_selection")
     value["working_selection"] = selection if selection and selection["comparison_key"] == comparison_key else None
@@ -625,6 +633,7 @@ def accept_research_corrections(campaign: pathlib.Path, report_path: pathlib.Pat
         if all(current.get(row["key"], {}).get("receipt_path") == str(path) for row in reports):
             return state
         state.update(research_corrections=corrections, session_id=None, next_mode="rethink", next_proposal_id=None,
+                     proposal_registration=None,
                      next_action="Reassess the proposed continuation using the reviewed research corrections. "
                                  "Choose the next action supported by the task and available evidence.")
         if successor:
@@ -648,7 +657,7 @@ def add_search_policy(command: argparse.ArgumentParser, defaults: bool = False) 
     command.add_argument("--objective-anchor", help="candidate ID identifying the primary development comparison contract")
     if not defaults:
         command.add_argument("--clear-objective-anchor", action="store_true",
-                             help="restore comparison selection from the latest development record")
+                             help="restore automatic comparison selection")
     command.add_argument("--stagnation-window", type=int,
                          default=DEFAULT_STAGNATION_WINDOW if defaults else None,
                          help="new comparable implementations without a historical best before strategy review")
@@ -675,6 +684,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--model")
     start.add_argument("--sandbox", choices=["workspace-write", "read-only", "danger-full-access"],
                        default="workspace-write")
+    start.add_argument("--allow-network", action="store_true",
+                       help="enable authorized research network access in the native workspace profile")
     start.add_argument("--background", action="store_true", help="detach a manager-restarting supervisor")
     add_limits(start)
     start.add_argument("--turn-timeout-seconds", type=float, help="optional watchdog; no default turn timeout")

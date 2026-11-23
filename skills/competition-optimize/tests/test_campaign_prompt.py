@@ -124,6 +124,23 @@ class CampaignPromptTests(unittest.TestCase):
                 self.assertIn("does not qualify as a new primary best", prompt)
                 self.assertIn("An unresolved permission question does not block authorized development.", prompt)
 
+    def test_prompt_skips_draft_request_only_for_the_completed_working_selection(self):
+        adopted = {"candidate_id": "adopted", "comparison_key": "primary"}
+        completed = {**adopted, "status": "completed"}
+        progress = {"comparison_key": "primary"}
+        schedule = "Schedule an authorized local draft with local_delivery.status=requested"
+        prompt = self.render(next_mode="research", objective_progress=progress,
+                             working_selection=adopted, local_delivery=completed)
+        self.assertNotIn(schedule, prompt)
+        self.assertIn("The local draft for the current working selection is already recorded.", prompt)
+        self.assertIn("Request a new draft only when adopting a different eligible candidate", prompt)
+        for other in ({**completed, "candidate_id": "different"},
+                      {**completed, "comparison_key": "old"},
+                      {**completed, "status": "requested"}):
+            with self.subTest(local_delivery=other):
+                self.assertIn(schedule, self.render(next_mode="rethink", objective_progress=progress,
+                                                    working_selection=adopted, local_delivery=other))
+
     def test_budget_retains_withdrawal_identity_without_reviving_its_previous_claim(self):
         row = {"turn": 8, "receipt_path": "/saved/000008/message.json",
                "supersedes_receipt_path": "/saved/000007/message.json", "report": {

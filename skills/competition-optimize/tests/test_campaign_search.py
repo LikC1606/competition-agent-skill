@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import shlex
 import sys
 import tempfile
 import unittest
@@ -927,6 +928,68 @@ class CampaignSearchTests(unittest.TestCase):
         self.assertEqual(search.executed_implementation(first), search.executed_implementation(success))
         self.assertEqual(self.health()["execution_attempts"], 2)
         self.assertEqual(self.health()["last_scored_candidate"], "environment-recovered")
+        self.assertFalse(self.health()["needs_attention"])
+
+    def test_missing_comparison_fields_can_be_recovered_without_rerunning_or_reordering_attempts(self) -> None:
+        incomplete = {"score_model_hash": None, "stage": None}
+        earlier = self.record("earlier", 10, comparison=incomplete)
+        later = self.record("later", 11, comparison=incomplete)
+        self.assertEqual(self.health()["attempts_without_observation"], 2)
+        target = self.packet()["execution_recovery"]["target"]
+        self.assertEqual(target["candidate_id"], "later")
+        self.assertEqual(target["diagnostic"]["missing_comparison_fields"], ["score_model_hash", "stage"])
+
+        def reconcile(entry):
+            return archive.record_candidate(archive.parser().parse_args([
+                "record", "--archive", str(self.path), "--candidate-id", entry["candidate_id"] + "-reconciled",
+                "--route", entry["route"], "--status", "promising", "--mechanism", entry["mechanism"],
+                "--source", entry["artifact_paths"]["source"], "--result", entry["result"]["result_path"],
+                "--score-model-hash", "m" * 64, "--stage", "development",
+                "--reuse-reason", "Recovered the score contract for the same executed result."]))
+
+        reconcile(earlier)
+        health = self.health()
+        self.assertEqual(health["last_scored_candidate"], "earlier-reconciled")
+        self.assertEqual(health["recent_unmeasured_candidates"], ["later"])
+        reconcile(later)
+        health = self.health()
+        self.assertEqual(health["execution_attempts"], 2)
+        self.assertEqual(health["last_scored_candidate"], "later-reconciled")
+        self.assertFalse(health["needs_attention"])
+        self.assertIsNone(self.packet()["execution_recovery"])
+
+    def test_saved_score_repair_handoff_reuses_the_result_and_implementation(self) -> None:
+        from campaign_prompt import prompt_for_turn
+
+        control = self.record("control", 10)
+        self.propose("later-proposal", "control")
+        original = self.record("saved", 11, parent="control", route="contestant's route",
+                               recipe={"solver": "solution.py"},
+                               comparison={"score_model_hash": None, "stage": None})
+        prefix = self.path.read_bytes()
+        result = Path(original["result"]["result_path"])
+        result_bytes = result.read_bytes()
+        packet = self.packet(mode="repair")
+        self.assertEqual(search.delivered_exposures(packet)["proposals"], [])
+        prompt = prompt_for_turn({"next_mode": "repair", "archive": str(self.path)}, self.root, 1, packet)
+        command = next(shlex.split(line) for line in prompt.splitlines() if "candidate_archive.py record " in line)
+        replacements = {"RECOVERED_ID": "recovered", "SCORE_MODEL_HASH": control["comparison"]["score_model_hash"],
+                        "STAGE": control["comparison"]["stage"],
+                        "EVIDENCE_FOR_RECOVERED_FIELDS": "The original panel used the control's recorded scoring rule."}
+        arguments = []
+        for argument in command[2:]:
+            flag, separator, value = argument.partition("=")
+            arguments.append(flag + separator + replacements.get(value, value) if separator
+                             else replacements.get(argument, argument))
+        recovered = archive.record_candidate(archive.parser().parse_args(arguments))
+
+        self.assertEqual(recovered["implementation"], original["implementation"])
+        self.assertEqual(recovered["result"], original["result"])
+        self.assertEqual(recovered["comparison"], control["comparison"])
+        self.assertEqual(recovered["parent_ids"], ["control"])
+        self.assertTrue(self.path.read_bytes().startswith(prefix))
+        self.assertEqual(result.read_bytes(), result_bytes)
+        self.assertEqual(self.progress()["best_candidate"], "recovered")
         self.assertFalse(self.health()["needs_attention"])
 
     def test_confirmation_manual_unsnapshotted_and_output_only_records_cannot_change_health(self) -> None:

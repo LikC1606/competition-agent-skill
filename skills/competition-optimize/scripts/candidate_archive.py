@@ -33,7 +33,7 @@ from candidate_evidence import (
     nonempty_text, observed_snapshot as _observed_snapshot, reject_constant, sha256, unique_object,
     construction_mode, review_opportunities as _review_opportunities, distinct_implementations,
     descriptive_diagnostic, prediction_result, proposal_identity_checks, proposal_prediction_status,
-    validate_construction_targets,
+    missing_saved_comparison_fields, validate_construction_targets,
 )
 from evidence_files import (EvidenceReads, hash_path, verify_artifacts, verify_result,
                             verify_proposal_targets as _verify_proposal_targets)
@@ -610,6 +610,17 @@ def trace_report(args: argparse.Namespace) -> dict[str, Any]:
             "scope": "Linked code/result identities and adapter-declared checks; mechanism causality and promotion are not certified"}
 
 
+def read_record_report(path: pathlib.Path, option: str) -> bytes:
+    try:
+        return path.expanduser().resolve(strict=True).read_bytes()
+    except OSError as exc:
+        raise ArchiveFailure(
+            "io_error",
+            f"Could not read the JSON file for {option} ({exc.strerror or type(exc).__name__}). "
+            "Pass a readable JSON file path or omit the option. Put ordinary observations in --feedback.",
+        ) from exc
+
+
 def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
     archive = args.archive.expanduser().resolve()
     old = read_records(archive)
@@ -723,7 +734,7 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
         record["prediction_status"] = args.prediction_status
         validate_successor(record, proposal, old)
     if getattr(args, "implementation_review", None) is not None:
-        raw_review = args.implementation_review.expanduser().resolve(strict=True).read_bytes()
+        raw_review = read_record_report(args.implementation_review, "--implementation-review")
         review = load_json(raw_review, str(args.implementation_review))
         try:
             record["implementation_review"] = implementation_reviews.normalize(
@@ -735,7 +746,7 @@ def record_candidate(args: argparse.Namespace) -> dict[str, Any]:
                                  "Incomplete or unverified fidelity requires --prediction-status unresolved. "
                                  "Keep the measured score and describe the actual implementation in the review and feedback.")
     if getattr(args, "learning", None) is not None:
-        raw_learning = args.learning.expanduser().resolve(strict=True).read_bytes()
+        raw_learning = read_record_report(args.learning, "--learning")
         try:
             record["learning"] = scoped_learning.normalize(
                 load_json(raw_learning, str(args.learning)), raw_learning, record,
@@ -859,6 +870,24 @@ def route_decision(args: argparse.Namespace) -> dict[str, Any]:
 def summarize(args: argparse.Namespace) -> dict[str, Any]:
     records = read_records(args.archive.expanduser().resolve())
     candidates = [record for record in records if record.get("event") == "candidate"]
+    fields = ("candidate_id", "parent_ids", "fingerprint", "artifact_paths", "route", "status", "valid",
+              "role", "objective", "comparison", "cost", "result", "feedback", "failure_mechanism",
+              "score_invalidation", "prediction_boundary", "diagnostic_scope")
+    if match_terms := getattr(args, "match", None):
+        terms = [nonempty_text(term, "match") for term in match_terms]
+        needles = [term.casefold() for term in terms]
+        matches = []
+        for entry in candidates:
+            if entry["role"] != "development":
+                continue
+            search_fields = [entry[field].casefold() for field in ("candidate_id", "route", "mechanism")]
+            if any(needle in value for needle in needles for value in search_fields):
+                matches.append(entry)
+        recent = matches[-args.recent:]
+        return {"schema_version": 1, "match_terms": terms, "matched_candidate_count": len(matches),
+                "omitted_candidate_count": len(matches) - len(recent),
+                "recent_candidates": [{key: entry[key] for key in (*fields, "mechanism", "proposal_id") if key in entry}
+                                      for entry in recent]}
     routes: dict[str, dict[str, Any]] = {}
     for entry in candidates:
         if entry["role"] != "development":
@@ -871,7 +900,7 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
     return {"schema_version": 1, "candidate_count": len(candidates),
             "decision_count": sum(entry["event"] == "decision" for entry in records),
             "proposal_count": sum(entry["event"] == "proposal" for entry in records),
-            "recent_candidates": [{key: entry[key] for key in ("candidate_id", "parent_ids", "fingerprint", "artifact_paths", "route", "status", "valid", "role", "objective", "comparison", "cost", "result", "feedback", "failure_mechanism", "score_invalidation", "prediction_boundary", "diagnostic_scope") if key in entry}
+            "recent_candidates": [{key: entry[key] for key in fields if key in entry}
                                   for entry in candidates[-args.recent:]],
             "routes": {route: {"candidates": info["candidates"],
                                "statuses": dict(info["statuses"]), "latest": info["latest"]}
@@ -923,10 +952,10 @@ def parser() -> argparse.ArgumentParser:
     record.add_argument("--candidate-id", required=True)
     record.add_argument("--proposal-id", help="implementation proposal this evaluated successor fulfills")
     record.add_argument("--prediction-status", choices=["supported", "contradicted", "unresolved"])
-    record.add_argument("--implementation-review", type=pathlib.Path,
-                        help="source-bound agent assessment of which proposed mechanism actually reached this successor")
-    record.add_argument("--learning", type=pathlib.Path,
-                        help="conditional agent conclusion with measured evidence and an explicit prior revision")
+    record.add_argument("--implementation-review", type=pathlib.Path, metavar="REVIEW_JSON",
+                        help="optional path to a JSON review of which proposed mechanism actually ran")
+    record.add_argument("--learning", type=pathlib.Path, metavar="LEARNING_JSON",
+                        help="optional path to a JSON report of a reusable conclusion tied to measured evidence")
     record.add_argument("--parent", action="append", default=[])
     record.add_argument("--source", type=pathlib.Path)
     record.add_argument("--configuration", type=pathlib.Path)
@@ -952,8 +981,10 @@ def parser() -> argparse.ArgumentParser:
     record.add_argument("--objective-direction", choices=sorted(DIRECTIONS))
     record.add_argument("--objective-kind", choices=sorted(KINDS))
     record.add_argument("--objective-name")
-    record.add_argument("--cost", help="Optional extra measured costs; managed training cost is read from --result")
-    record.add_argument("--feedback")
+    record.add_argument("--cost", metavar="COST_JSON",
+                        help='optional inline JSON object such as {"solve_seconds": 0.2}. '
+                        'Omit it when --result already reports the needed elapsed time or managed training cost.')
+    record.add_argument("--feedback", help="plain-text observation about the evaluated outcome")
     record.add_argument("--failure")
     invalidate = sub.add_parser("invalidate-score", help="exclude a proven defective score while retaining the original observation")
     invalidate.add_argument("--archive", type=pathlib.Path, required=True)
@@ -975,6 +1006,8 @@ def parser() -> argparse.ArgumentParser:
     show = sub.add_parser("summary", help="print a compact route/status summary")
     show.add_argument("--archive", type=pathlib.Path, required=True)
     show.add_argument("--recent", type=int, default=8, help="number of compact candidate records to show")
+    show.add_argument("--match", action="append", metavar="TERM",
+                      help="search all development candidate IDs, routes and mechanisms for a literal term; repeat for alternatives")
     return root
 
 
@@ -1024,8 +1057,13 @@ def main() -> int:
                              "message": str(exc)}}
         print(json.dumps(report, ensure_ascii=False, allow_nan=False), file=sys.stderr)
         return 2
-    result = ({"schema_version": 1, "status": "success", "candidate": result}
-              if args.command == "record" else dict(result))
+    if args.command == "record":
+        candidate = result
+        result = {"schema_version": 1, "status": "success", "candidate": candidate}
+        if missing := missing_saved_comparison_fields(candidate):
+            result["missing_comparison_fields"] = missing
+    else:
+        result = dict(result)
     result.setdefault("status", "success")
     print(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2))
     return 0

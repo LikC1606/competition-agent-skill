@@ -158,10 +158,76 @@ class CandidateArchiveTests(unittest.TestCase):
         self.assertEqual(self.record("confirm-b", "route-b", 10.0, extra=["--role", "confirmation"]).returncode, 0)
         self.assertEqual(self.decide("--current-route", "route-a"), before)
 
+    def test_summary_matches_older_development_trials_before_limiting_results(self) -> None:
+        self.assertEqual(self.record("baseline", "trees", 1.0).returncode, 0)
+        self.mutate_and_record("old-expand", 0.8, "--parent", "baseline", "--mechanism", "Fold-local MixUp")
+        self.mutate_and_record("old-smooth", 0.9, "--parent", "baseline", "--route", "Gaussian-Jitter")
+        self.mutate_and_record("recent-unrelated", 0.99)
+        self.mutate_and_record("mixup-holdout", 9.0, "--role", "confirmation")
+        lines = self.archive.read_text(encoding="utf-8").splitlines()
+        legacy = json.loads(lines[1])
+        del legacy["implementation"], legacy["reuse_links"]
+        lines[1] = json.dumps(legacy)
+        self.archive.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        original = self.archive.read_bytes()
+        command = [sys.executable, str(SCRIPT_DIR / "candidate_archive.py"), "summary", "--archive", str(self.archive)]
+        terms = ["--match", "mixup", "--match", "JITTER", "--match", "Gaussian"]
+
+        run = subprocess.run(command + terms, capture_output=True, text=True, timeout=15)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        report = json.loads(run.stdout)
+        self.assertEqual(report["matched_candidate_count"], 2)
+        self.assertEqual(report["omitted_candidate_count"], 0)
+        first, second = report["recent_candidates"]
+        self.assertEqual([first["candidate_id"], second["candidate_id"]], ["old-expand", "old-smooth"])
+        self.assertEqual(first["mechanism"], "Fold-local MixUp")
+        self.assertEqual(first["parent_ids"], ["baseline"])
+
+        run = subprocess.run(command + terms + ["--recent", "1"], capture_output=True, text=True, timeout=15)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        limited = json.loads(run.stdout)
+        self.assertEqual(limited["matched_candidate_count"], 2)
+        self.assertEqual(limited["omitted_candidate_count"], 1)
+        self.assertEqual([row["candidate_id"] for row in limited["recent_candidates"]], ["old-smooth"])
+
+        run = subprocess.run(command + ["--recent", "1"], capture_output=True, text=True, timeout=15)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        ordinary = json.loads(run.stdout)
+        self.assertEqual(ordinary["candidate_count"], 5)
+        self.assertEqual([row["candidate_id"] for row in ordinary["recent_candidates"]], ["mixup-holdout"])
+        self.assertEqual(self.archive.read_bytes(), original)
+
     def test_missing_score_identity_does_not_invent_a_decision(self) -> None:
         self.assertEqual(self.record("b", "route-a", 1.0, extra=["--objective-kind", "unknown"]).returncode, 0)
         self.mutate_and_record("unknown", 2.0, "--objective-kind", "unknown")
         self.assertEqual(self.decide()["action"], "diagnose")
+
+    def test_record_exposes_comparison_gaps_and_a_saved_result_can_be_reused(self) -> None:
+        result = self.root / "saved.json"
+        result.write_text(json.dumps({
+            "status": "success", "valid": True, "candidate_hash": archive.hash_path(self.source),
+            "evaluator_hash": "e" * 64,
+            "score": {"kind": "official_metric", "metric": "cost", "direction": "minimize", "value": 52},
+            "evaluation": {"split_hash": "w" * 64, "expected_cases": 2, "completed_cases": 2},
+        }), encoding="utf-8")
+        command = [sys.executable, str(SCRIPT_DIR / "candidate_archive.py"), "record",
+                   "--archive", str(self.archive), "--source", str(self.source), "--result", str(result),
+                   "--route", "control", "--mechanism", "fixed construction", "--status", "incumbent"]
+        first = subprocess.run(command + ["--candidate-id", "control"], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(first.stdout)["missing_comparison_fields"], ["score_model_hash", "stage"])
+        prefix = self.archive.read_bytes()
+        self.assertNotIn("missing_comparison_fields", json.loads(prefix))
+
+        repaired = subprocess.run(command + ["--candidate-id", "control-bound", "--score-model-hash", "m" * 64,
+                                             "--stage", "development", "--reuse-reason", "Recovered stage and scorer"],
+                                  capture_output=True, text=True, check=True)
+        self.assertNotIn("missing_comparison_fields", json.loads(repaired.stdout))
+        before, after = archive.read_records(self.archive)
+        self.assertTrue(self.archive.read_bytes().startswith(prefix))
+        self.assertEqual(before["result"], after["result"])
+        brief = subprocess.run([sys.executable, str(SCRIPT_DIR / "candidate_archive.py"), "brief",
+                                "--archive", str(self.archive)], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(brief.stdout)["best_development"], "control-bound")
 
     def test_preflight_blocks_duplicates_and_allows_explained_verification(self) -> None:
         self.assertEqual(self.record("b", "route-a", 1.0).returncode, 0)

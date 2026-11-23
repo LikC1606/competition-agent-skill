@@ -48,6 +48,7 @@ class TurnOutcome:
     receipt_path: str | None = None
     finding_sha256: str | None = None
     local_delivery_hashes: Mapping[str, str] | None = None
+    unmatched_selection: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,47 @@ def update_research_corrections(memory: Mapping[str, Any], origin: Mapping[str, 
     return corrections
 
 
+def archived_proposal_action(proposal_id: str) -> str:
+    return (f"Review the archived outcome of proposal {json.dumps(proposal_id, ensure_ascii=False)} "
+            "and choose the next development action.")
+
+
+def missing_proposal_action(proposal_id: str, receipt_path: str | None) -> str:
+    pointer = f" at {receipt_path}" if receipt_path else ""
+    return (f"Review the design and evidence in the saved receipt{pointer}. "
+            f"The requested proposal {json.dumps(proposal_id, ensure_ascii=False)} needs a pending archive "
+            "record under the primary comparison before execution. Use candidate_archive.py propose "
+            "for a supported design or select an existing matching pending proposal.")
+
+
+def resolved_proposal_updates(memory: Mapping[str, Any], evidence: CampaignEvidence,
+                              progress: Mapping[str, Any]) -> dict[str, Any]:
+    """Reconcile selection and registration against the accepted archive."""
+    updates: dict[str, Any] = {}
+    selected = memory.get("next_proposal_id")
+    if selected and not evidence.proposal_pending(selected):
+        updates.update(next_proposal_id=None, next_action=archived_proposal_action(selected))
+    research_id = (memory.get("research_state") or {}).get("proposal_id")
+    registration = memory.get("proposal_registration")
+    if registration:
+        proposal_id = registration["proposal_id"]
+        same_comparison = registration["comparison_key"] == progress["comparison_key"]
+        if same_comparison and evidence.pending_in_comparison(proposal_id, progress["comparison"]):
+            updates.update(proposal_registration=None, next_proposal_id=proposal_id, next_mode="execute")
+        elif not same_comparison or evidence.proposal_pending(proposal_id) or evidence.proposal_closed(proposal_id):
+            updates["proposal_registration"] = None
+            if research_id == proposal_id:
+                updates["research_state"] = None
+            if (same_comparison and evidence.proposal_closed(proposal_id)
+                    and memory.get("last_receipt_path") == registration["receipt_path"]):
+                updates["next_action"] = archived_proposal_action(proposal_id)
+    active_registration = updates.get("proposal_registration", registration)
+    if (research_id and not evidence.proposal_pending(research_id)
+            and research_id != (active_registration or {}).get("proposal_id")):
+        updates["research_state"] = None
+    return updates
+
+
 def pending_local_delivery(memory: Mapping[str, Any], progress: Mapping[str, Any],
                            evidence: CampaignEvidence) -> Mapping[str, Any] | None:
     delivery = memory.get("local_delivery")
@@ -83,13 +125,24 @@ def pending_local_delivery(memory: Mapping[str, Any], progress: Mapping[str, Any
     return None
 
 
+def has_completed_local_delivery(memory: Mapping[str, Any], candidate_id: str,
+                                 comparison_key: str | None) -> bool:
+    delivery = memory.get("local_delivery")
+    return bool(delivery and delivery["status"] == "completed"
+                and delivery["candidate_id"] == candidate_id
+                and delivery["comparison_key"] == comparison_key)
+
+
 def validate_local_delivery(memory: Mapping[str, Any], turn: Mapping[str, Any],
-                            receipt: Mapping[str, Any], evidence: CampaignEvidence) -> None:
+                            receipt: Mapping[str, Any], evidence: CampaignEvidence) -> Mapping[str, Any] | None:
+    """Return the validated report if it changes the recorded local delivery."""
     report = receipt.get("local_delivery")
     delivering = turn["mode"] == "deliver"
     if report is None and not delivering:
-        return
+        return None
     progress = evidence.signals(objective_anchor=memory.get("objective_anchor"))["objective_progress"]
+    comparison_key = progress["comparison_key"]
+    already_delivered = report and has_completed_local_delivery(memory, report["candidate_id"], comparison_key)
     if delivering:
         pending = pending_local_delivery(memory, progress, evidence)
         if (not pending or not report or report["status"] == "requested"
@@ -101,12 +154,18 @@ def validate_local_delivery(memory: Mapping[str, Any], turn: Mapping[str, Any],
                                  "without revising the working selection or research continuation")
     else:
         selection = receipt.get("working_selection", memory.get("working_selection"))
-        if (report["status"] != "requested" or receipt["status"] != "continue" or not selection
+        if (receipt["status"] != "continue" or not selection
                 or selection["candidate_id"] != report["candidate_id"]):
             raise ArchiveFailure("invalid_local_delivery", "Local delivery requests must name the adopted "
                                  "development candidate in a continuing receipt")
+        if report["status"] != "requested" and not (
+                report["status"] == "completed" and already_delivered
+                and selection.get("comparison_key", comparison_key) == comparison_key):
+            raise ArchiveFailure("invalid_local_delivery", "Only a sealed local delivery can record a new "
+                                 "completion or blocker")
     evidence.validate_working_selection(report, objective_anchor=memory.get("objective_anchor"),
                                          require_eligibility=True)
+    return None if already_delivered else report
 
 
 class CampaignPolicy:
@@ -133,6 +192,12 @@ class CampaignPolicy:
             return _Work("deliver", f"Complete the authorized local delivery of "
                          f"{json.dumps(delivery['candidate_id'], ensure_ascii=False)}. "
                          f"Accepted action: {json.dumps(delivery['detail'], ensure_ascii=False)}")
+        selection_review = memory.get("selection_comparison")
+        if pair := evidence.selection_comparison_pair(selection_review, progress):
+            target, reference = (json.dumps(row["candidate_id"], ensure_ascii=False) for row in pair)
+            return _Work("measure", f"Recover the primary comparison for {target} against {reference}. "
+                         "Check the actual protocol before judging the proposed selection.",
+                         "selection_comparison", {"selection_comparison": selection_review})
         if comparison_review_due(continuity, memory["comparison_review_window"]):
             return _Work("measure", (
                 "Inspect the isolated contracts and remeasure a trusted reference and candidate under an existing "
@@ -157,6 +222,12 @@ class CampaignPolicy:
                 "If a source could reverse the choice, name the bottleneck, the missing premise and the original "
                 "evidence or alternate access path to inspect. Return the supported choice and its next action"),
                 "objective_stagnation")
+        registration = memory.get("proposal_registration")
+        if registration:
+            proposal = json.dumps(registration["proposal_id"], ensure_ascii=False)
+            receipt = json.dumps(registration["receipt_path"], ensure_ascii=False)
+            return _Work("register", f"Resolve registration of proposal {proposal} from the accepted receipt {receipt}. "
+                         "Register it under the primary comparison if supported, or identify the specific gap.")
         if memory["next_mode"] == "rethink":
             return _Work("rethink", reason="research_review" if open_question else "strategy_review")
         proposal_id = memory.get("next_proposal_id")
@@ -166,7 +237,7 @@ class CampaignPolicy:
                 "Use candidate_archive.py trace --proposal-id to retrieve its declared change and comparison. "
                 "Record a linked execution or stop the proposal with concrete evidence; do not substitute a memo, "
                 "protocol conversion or delivery for this implementation."))
-        if open_question or memory["next_mode"] in {"research", "execute"}:
+        if open_question or memory["next_mode"] in {"research", "execute", "register"}:
             return _Work("research", DISCOVER)
         # Repair and measurement are derived from current evidence, not durable
         # requests that survive after a failed invocation has resolved them.
@@ -175,6 +246,8 @@ class CampaignPolicy:
     def prepare(self, memory: Mapping[str, Any], evidence: CampaignEvidence) -> TurnPlan:
         """Stage a new turn; neither review nor exposure is acknowledged here."""
         facts = evidence.signals(memory["comparison_review_checkpoint"], objective_anchor=memory.get("objective_anchor"))
+        resolved = resolved_proposal_updates(memory, evidence, facts["objective_progress"])
+        memory = {**memory, **resolved} if resolved else memory
         facts["objective_progress"] = evidence.with_strategy_reference(
             facts["objective_progress"], memory.get("working_selection"))
         work = self._work(memory, facts, evidence)
@@ -185,8 +258,11 @@ class CampaignPolicy:
                 reason = "scheduled_rotation"
             elif not memory["session_id"]:
                 reason = "session_recovery" if memory["turn_number"] else "initial"
-        updates = {key: facts[key] for key in
-                   ("objective_progress", "execution_health", "comparison_continuity")}
+        updates = {**resolved, **{key: facts[key] for key in
+                                ("objective_progress", "execution_health", "comparison_continuity")}}
+        if (memory.get("selection_comparison")
+                and not evidence.selection_comparison_pair(memory["selection_comparison"], facts["objective_progress"])):
+            updates["selection_comparison"] = None
         if evidence.selection_excluded(memory.get("working_selection")):
             updates["working_selection"] = None
         delivery = memory.get("local_delivery")
@@ -216,6 +292,8 @@ class CampaignPolicy:
                                          objective_anchor=memory.get("objective_anchor"))
         updates = {key: facts[key] for key in
                    ("objective_progress", "execution_health", "comparison_continuity")}
+        resolved = resolved_proposal_updates(memory, outcome.evidence, facts["objective_progress"])
+        updates.update(resolved)
         if outcome.evidence.selection_excluded(memory.get("working_selection")):
             updates["working_selection"] = None
         idle = (0 if outcome.archive_delta["new_implementation_attempts"] > 0
@@ -223,11 +301,17 @@ class CampaignPolicy:
         updates["turns_without_implementation"] = idle
         receipt = outcome.receipt
         if receipt is None:
+            if outcome.unmatched_selection:
+                request = {"candidate_id": outcome.unmatched_selection,
+                           "comparison_key": facts["objective_progress"]["comparison_key"]}
+                if outcome.evidence.selection_comparison_pair(request, facts["objective_progress"]):
+                    updates["selection_comparison"] = request
             facts["objective_progress"] = updates["objective_progress"] = outcome.evidence.with_strategy_reference(
                 facts["objective_progress"], memory.get("working_selection"))
-            retry_memory = dict(memory)
+            retry_memory = {**memory, **updates}
             if memory["failures"] + 1 >= 2:
-                retry_memory["next_mode"] = "rethink"
+                if not resolved.get("next_proposal_id"):
+                    retry_memory["next_mode"] = "rethink"
                 updates["session_id"] = None
             updates["next_mode"] = self._work(retry_memory, facts, outcome.evidence).mode
             return updates
@@ -245,6 +329,10 @@ class CampaignPolicy:
                 exposures[delivery["comparison_key"]] = seen
                 updates[memory_key] = exposures
         reviews = turn.get("review_checkpoints", {})
+        reviewed_selection = bool(reviews.get("selection_comparison") and
+                                  reviews["selection_comparison"] == memory.get("selection_comparison"))
+        if reviewed_selection:
+            updates["selection_comparison"] = None
         if "execution" in reviews:
             updates["execution_review_checkpoint"] = dict(reviews["execution"])
         if "strategy" in reviews:
@@ -270,16 +358,56 @@ class CampaignPolicy:
                   "comparison_key": ((turn.get("context", {}).get("objective_progress") or {}).get("comparison_key")
                                      or facts["objective_progress"]["comparison_key"]),
                   "assessment_kind": "agent_report"}
+        requested = receipt.get("next_proposal_id")
+        progress = facts["objective_progress"]
+        primary_comparison = progress["comparison"]
+        ready = outcome.evidence.pending_in_comparison(requested, primary_comparison)
+        closed = outcome.evidence.proposal_closed(requested)
+        foreign = bool(requested and not ready and outcome.evidence.proposal_pending(requested))
+        registration = None
+        if (requested and not (ready or closed or foreign) and outcome.receipt_path
+                and progress["comparison_key"] and origin["comparison_key"] == progress["comparison_key"]
+                and receipt["status"] == "continue" and turn["mode"] != "register"):
+            registration = {"proposal_id": requested, "comparison_key": progress["comparison_key"],
+                            "receipt_path": outcome.receipt_path}
+        if requested or turn["mode"] == "register":
+            updates["proposal_registration"] = registration
+            prior = memory.get("proposal_registration")
+            prior_research = memory.get("research_state") or {}
+            if (prior and prior_research.get("proposal_id") == prior["proposal_id"]
+                    and not outcome.evidence.pending_in_comparison(prior["proposal_id"], primary_comparison)
+                    and (registration or {}).get("proposal_id") != prior["proposal_id"]):
+                updates["research_state"] = None
+        if closed:
+            updates["next_action"] = archived_proposal_action(requested)
+        elif foreign:
+            updates["next_action"] = (
+                f"Proposal {json.dumps(requested, ensure_ascii=False)} is pending under a different comparison. "
+                "Select or register a proposal under the primary comparison.")
+        elif requested and not (ready or registration) and turn["mode"] != "register":
+            updates["next_action"] = missing_proposal_action(requested, outcome.receipt_path)
         if "research_state" in receipt:
-            updates["research_state"] = ({**origin, "report": copy.deepcopy(receipt["research_state"])}
-                                         if receipt["research_state"] is not None else None)
+            report = receipt["research_state"]
+            updates["research_state"] = {**origin, "report": copy.deepcopy(report)} if report is not None else None
+            if report and report["status"] == "open" and report["route"] == "implement":
+                if closed:
+                    updates["research_state"] = None
+                elif ready or registration:
+                    updates["research_state"]["proposal_id"] = requested
         if receipt.get("corrections"):
             updates["research_corrections"] = update_research_corrections(memory, origin, receipt["corrections"])
         continued = False
         research = updates.get("research_state")
-        if (outcome.finding_sha256 and turn["mode"] in {"rethink", "research"} and receipt["status"] == "continue"
-                and receipt["next_action"].strip() and research and research["report"]["status"] == "open"
-                and origin["comparison_key"] == facts["objective_progress"]["comparison_key"]):
+        open_finding = (bool(outcome.finding_sha256) and turn["mode"] in {"rethink", "research", "register"}
+                        and bool(receipt["next_action"].strip()) and research is not None
+                        and research["report"]["status"] == "open"
+                        and origin["comparison_key"] == facts["objective_progress"]["comparison_key"])
+        # A research agent can report the checkpoint as complete while explicitly
+        # leaving a cited finding and an open successor, or registering the requested proposal.
+        continuing = receipt["status"] == "continue" or (
+            receipt["status"] == "complete" and not memory.get("completion_check")
+            and (open_finding or resolved.get("next_proposal_id")))
+        if continuing and open_finding:
             key = origin["comparison_key"] or "null"
             history = memory.get("research_findings", {})
             seen = history.get(key, {})
@@ -299,19 +427,13 @@ class CampaignPolicy:
                                               "assessment_kind": "agent_selection_report"}
                                              if selection is not None else None)
         delivery = receipt.get("local_delivery")
-        if delivery:
-            previous = memory.get("local_delivery")
-            already_delivered = (delivery["status"] == "requested" and previous
-                                 and previous["candidate_id"] == delivery["candidate_id"]
-                                 and previous["comparison_key"] == facts["objective_progress"]["comparison_key"]
-                                 and previous["status"] == "completed")
-            if not already_delivered:
-                updates["local_delivery"] = {
-                    **origin, **copy.deepcopy(delivery),
-                    "comparison_key": facts["objective_progress"]["comparison_key"],
-                    "assessment_kind": "agent_delivery_report",
-                    "evidence_sha256": dict(outcome.local_delivery_hashes or {}),
-                }
+        comparison_key = facts["objective_progress"]["comparison_key"]
+        if delivery and not has_completed_local_delivery(memory, delivery["candidate_id"], comparison_key):
+            updates["local_delivery"] = {
+                **origin, **copy.deepcopy(delivery), "comparison_key": comparison_key,
+                "assessment_kind": "agent_delivery_report",
+                "evidence_sha256": dict(outcome.local_delivery_hashes or {}),
+            }
         resolutions = [entry for entry in outcome.appended_events
                        if entry["event"] in {"measurement_decision", "measurement_stop"}]
         if resolutions:
@@ -321,32 +443,38 @@ class CampaignPolicy:
             if matched:
                 updates["next_action"] = matched[-1]["next_action"]
         if delivering:
-            chosen = memory.get("next_proposal_id")
-            if outcome.evidence.pending_in_comparison(chosen, facts["objective_progress"]["comparison"]):
+            chosen = resolved.get("next_proposal_id", memory.get("next_proposal_id"))
+            if outcome.evidence.pending_in_comparison(chosen, primary_comparison):
                 updates["next_proposal_id"] = chosen
             updates["next_mode"] = "research"
-        elif receipt["status"] != "continue" or not updates["next_action"].strip():
+        elif not continuing or (not updates["next_action"].strip() and not resolved.get("next_proposal_id")):
             updates["next_mode"] = "rethink"
         else:
-            chosen = receipt.get("next_proposal_id")
-            if (chosen is None and turn["mode"] in {"repair", "measure"}):
+            chosen = requested
+            if chosen is None and resolved.get("next_proposal_id"):
+                chosen = resolved["next_proposal_id"]
+            elif chosen is None and turn["mode"] in {"repair", "measure"}:
                 chosen = memory.get("next_proposal_id")
-            if (outcome.evidence.pending_in_comparison(chosen, facts["objective_progress"]["comparison"])
+            if (outcome.evidence.pending_in_comparison(chosen, primary_comparison)
                     and not (turn["mode"] == "execute" and chosen == memory.get("next_proposal_id"))):
                 updates["next_proposal_id"] = chosen
-            elif chosen or turn["mode"] in {"rethink", "research", "execute"}:
+            elif chosen or turn["mode"] in {"rethink", "research", "execute", "register"}:
                 updates["next_mode"] = "research"
-        measurement_progress = (turn["mode"] == "measure" and
-                                facts["comparison_continuity"]["distinct_observations"] >
-                                (turn.get("context", {}).get("comparison_continuity") or {}).get("distinct_observations", 0))
+        measurement_progress = reviewed_selection or (
+            turn["mode"] == "measure" and facts["comparison_continuity"]["distinct_observations"] >
+            (turn.get("context", {}).get("comparison_continuity") or {}).get("distinct_observations", 0))
         measurement_progress |= any(entry["event"] == "measurement_stop" for entry in outcome.appended_events)
         if turn["mode"] == "measure":
             measurement_progress |= any(entry["event"] in {"measurement_plan", "measurement_decision"} or
                                         entry["event"] == "candidate" and
                                         entry["result"].get("measurement_plan_id") and observed_implementation(entry)
                                         for entry in outcome.appended_events)
-        if idle >= 2 and not (measurement_progress or continued or delivery or updates["next_proposal_id"]):
-            reviewed = turn["mode"] == "rethink" or (turn["mode"] == "repair" and turn.get("fresh_context"))
+        delivery_progress = "local_delivery" in updates
+        pending_registration = updates.get("proposal_registration", memory.get("proposal_registration"))
+        if idle >= 2 and not (measurement_progress or continued or delivery_progress
+                              or updates["next_proposal_id"] or pending_registration):
+            reviewed = turn["mode"] in {"rethink", "register"} or (
+                turn["mode"] == "repair" and turn.get("fresh_context"))
             if updates["next_mode"] != "rethink":
                 updates["next_mode"] = "research" if reviewed else "rethink"
             updates["retry_at"] = outcome.now + min(

@@ -14,12 +14,13 @@ from typing import Any, Callable
 
 from candidate_evidence import ArchiveFailure, canonical, sha256
 from campaign_archive import CampaignArchive
-from campaign_policy import CampaignPolicy, TurnOutcome, validate_local_delivery
+from campaign_policy import (CampaignPolicy, TurnOutcome, archived_proposal_action, missing_proposal_action,
+                             validate_local_delivery)
 from campaign_prompt import prompt_for_turn, prompt_for_receipt
-from campaign_search import prepare_handoff
+from campaign_search import CampaignEvidence, prepare_handoff
 from campaign_state import append_event, check_control_files, save_state
 from campaign_runtime import CampaignError, atomic_bytes, atomic_json, file_hash, job_directory, output_hashes, read_json
-from codex_invocation import CodexInvocation
+from codex_invocation import CodexInvocation, read_receipt
 from campaign_workflow import freeze_workflow
 
 
@@ -107,6 +108,80 @@ def local_evidence_hash(campaign: pathlib.Path, state: dict[str, Any], reference
     return None
 
 
+def missing_local_evidence(campaign: pathlib.Path, state: dict[str, Any], references: list[str]) -> list[str]:
+    roots = (pathlib.Path(state["workspace"]), pathlib.Path(state["archive"]).parent, campaign)
+    missing = []
+    for reference in references:
+        if reference.startswith(("https://", "http://")):
+            continue
+        path = pathlib.Path(reference.partition("#")[0])
+        try:
+            present = any((root / path).is_file() for root in roots)
+        except (OSError, ValueError):
+            present = False
+        if not present:
+            missing.append(reference)
+    return missing
+
+
+def sealed_receipt(campaign: pathlib.Path, number: int, path: pathlib.Path) -> dict[str, Any] | None:
+    origin = job_directory(campaign, number)
+    if path not in (origin / "message.json", origin / "receipt" / "message.json"):
+        return None
+    try:
+        exit_record = read_json(path.with_name("exit.json"))
+        outputs = exit_record.get("outputs") if isinstance(exit_record, dict) else None
+        if (not isinstance(outputs, dict) or exit_record.get("returncode") != 0
+                or outputs.get("message.json") != file_hash(path)):
+            return None
+        return read_receipt(path)
+    except (OSError, ValueError, CampaignError):
+        return None
+
+
+def legacy_implementation_receipt(campaign: pathlib.Path, research: dict[str, Any]) -> dict[str, Any] | None:
+    """Recover an explicit proposal selection from its original accepted report."""
+    report = research["report"]
+    if (research.get("proposal_id") or research.get("assessment_kind") != "agent_report"
+            or report["status"] != "open" or report["route"] != "implement"
+            or not research.get("receipt_path")):
+        return None
+    receipt = sealed_receipt(campaign, research["turn"], pathlib.Path(research["receipt_path"]))
+    return receipt if receipt and receipt.get("research_state") == report else None
+
+
+def legacy_proposal_registration(campaign: pathlib.Path, state: dict[str, Any],
+                                 evidence: CampaignEvidence) -> dict[str, Any] | None:
+    """Recover the latest accepted request when it was still the intended continuation."""
+    if (state.get("next_proposal_id") or state.get("last_agent_status") != "continue"
+            or not state.get("last_receipt_path")):
+        return None
+    path = pathlib.Path(state["last_receipt_path"])
+    source = path.parent.parent if path.parent.name == "receipt" else path.parent
+    if source.parent != campaign / "turns" or not source.name.isascii() or not source.name.isdecimal():
+        return None
+    receipt = sealed_receipt(campaign, int(source.name), path)
+    proposal_id = (receipt or {}).get("next_proposal_id")
+    if not proposal_id or receipt["status"] != "continue" or evidence.proposal_closed(proposal_id):
+        return None
+    if state["next_action"] not in (receipt["next_action"], missing_proposal_action(proposal_id, str(path))):
+        return None
+    progress = evidence.signals(objective_anchor=state.get("objective_anchor"))["objective_progress"]
+    if evidence.proposal_pending(proposal_id) and not evidence.pending_in_comparison(proposal_id, progress["comparison"]):
+        return None
+    try:
+        request = read_json(source / "request.json")
+        context = request["context"]
+        if sha256(canonical(context) + b"\n") != request["context_sha256"]:
+            return None
+        key = context["objective_progress"]["comparison_key"] or state["objective_progress"]["comparison_key"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if key and key == progress["comparison_key"]:
+        return {"proposal_id": proposal_id, "comparison_key": key, "receipt_path": str(path)}
+    return None
+
+
 class TurnLifecycle:
     """One persistence authority for a prepared turn and its accepted outcome."""
 
@@ -118,8 +193,21 @@ class TurnLifecycle:
         snapshot, protected, provenance = freeze_workflow(campaign, pathlib.Path(__file__).resolve().parent.parent, state)
         state.update(instruction_snapshot=snapshot, workflow_provenance=provenance,
                      protected_files={**state["protected_files"], **protected})
+        prior_research = state.get("research_state")
+        missing_research = (missing_local_evidence(campaign, state, prior_research["report"]["evidence"])
+                            if prior_research else [])
         archive = CampaignArchive(pathlib.Path(state["archive"]))
         with archive.confirmed(state["archive_snapshot"]) as evidence:
+            if "proposal_registration" not in state:
+                state["proposal_registration"] = legacy_proposal_registration(campaign, state, evidence)
+            legacy = legacy_implementation_receipt(campaign, prior_research) if prior_research else None
+            if legacy and evidence.proposal_closed(legacy.get("next_proposal_id")):
+                state["research_state"] = None
+                if (state.get("last_receipt_path") == prior_research["receipt_path"]
+                        and state["next_action"] == legacy["next_action"]):
+                    state["next_action"] = archived_proposal_action(legacy["next_proposal_id"])
+            if missing_research:
+                state["research_state"] = None
             prepared = CampaignPolicy().prepare(state, evidence)
             state.update(prepared.updates)
             fresh, reason = prepared.fresh_context, prepared.context_refresh_reason
@@ -157,6 +245,7 @@ class TurnLifecycle:
                                 "trial_exposure": turn["trial_exposure"],
                                 "learning_exposure": turn["learning_exposure"],
                                 "review_checkpoints": turn["review_checkpoints"],
+                                **({"research_state_missing_evidence": missing_research} if missing_research else {}),
                                 "context_sha256": turn["context_sha256"]})
 
     @staticmethod
@@ -176,9 +265,12 @@ class TurnLifecycle:
             append_event(campaign, {**received.quarantine_event, "turn": turn["number"], "token": turn["token"]})
         delta, quarantined, evidence = received.delta, received.quarantined, received.evidence
         state.update(archive_snapshot=received.snapshot, progress=evidence.counts)
-        invocation = CodexInvocation.observe(directory, result, quarantined=quarantined)
-        original_invocation = invocation
         delivery = job_directory(campaign, turn["number"], "receipt")
+        delivery_prepared = (delivery / "request.json").exists()
+        # Honor recovery already sealed by an earlier manager.
+        invocation = CodexInvocation.observe(directory, result, quarantined=quarantined,
+                                             mode=None if delivery_prepared else turn["mode"])
+        original_invocation = invocation
         # Do not give a formatting repair a new resource allowance. Its worker
         # also retains the original turn deadline and immediate-stop handling.
         observed_tokens = sum(invocation.events["usage"].get(key, 0) + state["usage"].get(key, 0)
@@ -188,7 +280,7 @@ class TurnLifecycle:
                    time.time() >= state["created_unix"] + state["max_wall_seconds"] or
                    turn["timeout_seconds"] is not None and
                    time.time() >= turn["started_unix"] + turn["timeout_seconds"])
-        if invocation.needs_receipt and not (delivery / "request.json").exists() and not limited:
+        if invocation.needs_receipt and not delivery_prepared and not limited:
             job = receipt_job(campaign, turn, invocation, received.snapshot)
             materialize_request(campaign, job)
             append_event(campaign, {"event": "receipt_delivery_prepared", "turn": turn["number"],
@@ -198,7 +290,7 @@ class TurnLifecycle:
             return
         invocations = [(invocation, result)]
         receipt_path = directory / "message.json"
-        if (delivery / "request.json").exists():
+        if delivery_prepared:
             job = receipt_job(campaign, turn, original_invocation)
             materialize_request(campaign, job)
             delivered = read_json(delivery / "exit.json")
@@ -227,16 +319,16 @@ class TurnLifecycle:
         state["inflight"] = None
         error, receipt = invocation.error, invocation.receipt
         delivery_hashes = {}
+        unmatched_selection = None
         if receipt:
             try:
                 if receipt.get("working_selection") is not None:
                     evidence.validate_working_selection(receipt["working_selection"],
                                                          objective_anchor=state.get("objective_anchor"),
                                                          require_eligibility=True)
-                validate_local_delivery(state, turn, receipt, evidence)
+                delivery = validate_local_delivery(state, turn, receipt, evidence)
                 if turn["mode"] == "deliver" and received.appended_events:
                     raise ArchiveFailure("invalid_local_delivery", "Local delivery cannot append development events")
-                delivery = receipt.get("local_delivery")
                 if delivery and delivery["status"] == "completed":
                     for path in delivery["evidence"]:
                         digest = local_evidence_hash(campaign, state, path)
@@ -244,13 +336,34 @@ class TurnLifecycle:
                             raise ArchiveFailure("invalid_local_delivery", "Delivery evidence must be a nonempty local artifact")
                         delivery_hashes[path] = digest
             except ArchiveFailure as exc:
+                if exc.kind == "working_selection_comparison_mismatch" and receipt.get("working_selection"):
+                    unmatched_selection = receipt["working_selection"]["candidate_id"]
                 error, receipt, delivery_hashes = str(exc), None, {}
         # New archive evidence is accepted even if invocation delivery failed.
-        finding = receipt.get("research_finding") if receipt and turn["mode"] in {"research", "rethink"} else None
+        policy_receipt = receipt
+        research = receipt.get("research_state") if receipt else None
+        missing_research = missing_local_evidence(campaign, state, research["evidence"]) if research else []
+        if missing_research:
+            policy_receipt = dict(receipt)
+            policy_receipt.pop("research_state")
+            policy_receipt.pop("research_finding", None)
+        ignored_corrections = {}
+        if receipt and receipt.get("corrections"):
+            supported = []
+            for correction in receipt["corrections"]:
+                missing = missing_local_evidence(campaign, state, correction["evidence"])
+                if missing:
+                    ignored_corrections[correction["key"]] = missing
+                else:
+                    supported.append(correction)
+            if ignored_corrections:
+                policy_receipt = {**policy_receipt, "corrections": supported}
+        finding = (policy_receipt.get("research_finding")
+                   if policy_receipt and turn["mode"] in {"research", "rethink", "register"} else None)
         finding_hash = local_evidence_hash(campaign, state, finding["evidence_path"]) if finding else None
-        outcome = TurnOutcome(evidence, received.appended_events, delta, receipt, time.time(),
+        outcome = TurnOutcome(evidence, received.appended_events, delta, policy_receipt, time.time(),
                               receipt_path=str(receipt_path), finding_sha256=finding_hash,
-                              local_delivery_hashes=delivery_hashes)
+                              local_delivery_hashes=delivery_hashes, unmatched_selection=unmatched_selection)
         updates = CampaignPolicy().accept(state, turn, outcome)
         state.update(updates)
         if receipt is None:
@@ -265,6 +378,10 @@ class TurnLifecycle:
             event = {"event": "turn_interrupted", "error": error}
         else:
             event = {"event": "turn_completed", "receipt": receipt}
+            if missing_research:
+                event["research_state_missing_evidence"] = missing_research
+            if ignored_corrections:
+                event["research_corrections_missing_evidence"] = ignored_corrections
             if "research_findings" in updates:
                 event["research_finding_sha256"] = finding_hash
             state["last_receipt_path"] = str(receipt_path)

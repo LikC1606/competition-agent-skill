@@ -10,13 +10,14 @@ import json
 import math
 import pathlib
 import sys
+from collections.abc import Iterable
 from fractions import Fraction
 from typing import Any
 
 import evaluate_predictions as evaluator
 from compare_prediction_results import ComparisonFailure
 from prediction_core import metric_preference
-from prediction_evidence import EvidenceFailure, PredictionPair, load_fold_receipt, load_pair, read_categories
+from prediction_evidence import EvidenceFailure, PredictionPair, fold_membership, load_fold_receipt, load_pair, read_categories
 
 
 class AnalysisFailure(Exception):
@@ -134,6 +135,58 @@ def blend_directions(metric: str, labels: list[float], baseline: list[float],
                      "evidence is supplied. Evaluate any constructed recipe, including rounding, separately."}
 
 
+def blend_headroom(pair: PredictionPair, folds: dict[str, tuple[set[str], set[str]]],
+                   slices: dict[str, dict[str, str]], columns: list[str],
+                   required_gain: float | None = None) -> dict[str, Any]:
+    """Lower bounds for nested classes of convex blends of two fixed endpoints."""
+    residuals, displacements = [], []
+    for label, baseline, candidate in zip(pair.labels, pair.baseline, pair.candidate):
+        start = Fraction(baseline)
+        residuals.append(start - Fraction(label))
+        displacements.append(Fraction(candidate) - start)
+    zeros = [0.0] * len(residuals)
+    baseline_rmse = pair.comparison["baseline"]["score"]
+
+    def bound(keys: Iterable[tuple[str, ...]]) -> dict[str, Any]:
+        cells: dict[tuple[str, ...], list[int]] = {}
+        for index, key in enumerate(keys):
+            cells.setdefault(key, []).append(index)
+        optimal_residuals = [0.0] * len(residuals)
+        for indexes in cells.values():
+            curvature = sum(displacements[i] ** 2 for i in indexes)
+            alignment = -sum(residuals[i] * displacements[i] for i in indexes)
+            weight = max(0, min(1, alignment / curvature)) if curvature else 0
+            for i in indexes:
+                optimal_residuals[i] = float(residuals[i] + weight * displacements[i])
+        score = evaluator.calculate_metric("rmse", zeros, optimal_residuals)
+        gain_bound = baseline_rmse - score
+        result: dict[str, Any] = {"cell_count": len(cells), "lower_bound_rmse": score,
+                                  "upper_bound_improvement_over_baseline": gain_bound}
+        if required_gain is not None:
+            result["threshold_check"] = "below_required_gain" if gain_bound < required_gain else "not_ruled_out"
+        return result
+
+    by_id = {sample_id: fold_id for fold_id, (_, validation) in folds.items() for sample_id in validation}
+    sample_ids = pair.sample_ids
+    return {"status": "available", "metric": "rmse", "baseline_rmse": baseline_rmse,
+            **({"required_gain": required_gain} if required_gain is not None else {}),
+            "global": bound(() for _ in sample_ids),
+            "by_fold": bound((by_id[sample_id],) for sample_id in sample_ids),
+            "slices": [{"column": column,
+                        "by_category": bound((slices[sample_id][column],) for sample_id in sample_ids),
+                        "by_fold_and_category": bound((by_id[sample_id], slices[sample_id][column])
+                                                      for sample_id in sample_ids)}
+                       for column in columns],
+            "weights_use_scored_labels": True, "recipe_evaluated": False,
+            "scope": "Two fixed prediction endpoints on these development rows. Each occupied cell gets "
+                     "its own weight in [0, 1]. Use by_fold for a separate constant fit per outer training fold. "
+                     "Use by_fold_and_category for a category map fitted separately within each outer training fold. "
+                     "Only the category is needed at inference; fold indexes the fit being evaluated. "
+                     "By_category instead bounds one shared map across folds. "
+                     "RMSE bounds are reported to scorer precision. Check prediction context and fitting ancestry. "
+                     "These label-informed bounds give no expected gain for a fitted rule or a refitted endpoint."}
+
+
 def influence_diagnostics(metric: str, labels: list[float], baseline: list[float],
                           candidate: list[float], sample_ids: list[str],
                           max_removals: int = 5) -> dict[str, Any]:
@@ -191,6 +244,12 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
         raise AnalysisFailure("Provide both --slices and at least one --slice-column, or neither")
     if bool(args.baseline_fit) != bool(args.candidate_fit):
         raise AnalysisFailure("Provide both --baseline-fit and --candidate-fit, or neither")
+    check_headroom = getattr(args, "check_blend_headroom", False)
+    if check_headroom and not args.baseline_fit:
+        raise AnalysisFailure("Blend headroom requires --baseline-fit and --candidate-fit")
+    required_gain = getattr(args, "required_blend_gain", None)
+    if required_gain is not None and (not check_headroom or not math.isfinite(required_gain) or required_gain <= 0):
+        raise AnalysisFailure("--required-blend-gain must be finite and positive and requires --check-blend-headroom")
     columns = args.slice_column or []
     if len(set(columns)) != len(columns) or any(not column.strip() for column in columns):
         raise AnalysisFailure("Requested slice columns must be unique and non-empty")
@@ -202,10 +261,13 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
     if comparison["stage"] != "development":
         raise AnalysisFailure("Exploratory error analysis requires development evaluations")
     config, metric, epsilon = pair.configuration, pair.metric, pair.epsilon
+    if check_headroom and metric != "rmse":
+        raise AnalysisFailure("Blend headroom requires RMSE development evaluations")
     if config["id_column"] in columns:
         raise AnalysisFailure("ID column must differ from slice columns")
     sample_ids, truth, before, after = pair.sample_ids, pair.labels, pair.baseline, pair.candidate
     fold_report = None
+    matched = {}
     fold_inputs, fold_hashes = {}, {}
     if args.baseline_fit:
         try:
@@ -213,7 +275,7 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
             other, after_fit, after_hash = load_fold_receipt(args.candidate_fit, pair, "candidate")
         except EvidenceFailure as exc:
             raise AnalysisFailure(str(exc)) from exc
-        if matched != other:
+        if fold_membership(matched) != fold_membership(other):
             raise AnalysisFailure("Baseline and candidate fit receipts have different training or validation assignments")
         fold_report = fold_diagnostics(pair, matched)
         fold_inputs = {"baseline_fit": str(before_fit), "candidate_fit": str(after_fit)}
@@ -286,6 +348,7 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
                                   if before_shares is not None else None,
                                   "candidate_error_share": math.fsum(after_shares[i] for i in indexes)
                                   if after_shares is not None else None})
+    headroom = blend_headroom(pair, matched, slices, columns, required_gain) if check_headroom else None
     worst, regressions = [], []
     if after_errors is not None:
         worst_indexes = heapq.nsmallest(args.top_k, range(len(sample_ids)),
@@ -320,6 +383,10 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
                          "slice_hash": evaluator.byte_hash(slices_raw) if slices_raw is not None else None}
     if check_blend:
         diagnostic_config["check_blend_direction"] = True
+    if check_headroom:
+        diagnostic_config["check_blend_headroom"] = True
+        if required_gain is not None:
+            diagnostic_config["required_blend_gain"] = required_gain
     if check_influence:
         diagnostic_config.update(check_influence=True, influence_max_removals=influence_limit)
     if fold_report is not None:
@@ -344,6 +411,7 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
         "clipped_log_loss" if metric == "binary_log_loss" else "absolute_error",
         "largest_candidate_errors": worst, "largest_regressions": regressions, "slices": slice_results,
         **({"blend_direction": blend_report} if check_blend else {}),
+        **({"blend_headroom": headroom} if check_headroom else {}),
         **({"influence": influence_report} if check_influence else {}),
         **({"fold_comparison": fold_report} if fold_report is not None else {}),
         "configuration": diagnostic_config, "config_hash": evaluator.object_hash(diagnostic_config),
@@ -361,8 +429,10 @@ def analyze(args: argparse.Namespace, output_dir: pathlib.Path) -> dict[str, Any
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ["baseline", "candidate", "truth", "output-dir"]:
-        parser.add_argument(f"--{name}", required=True, type=pathlib.Path)
+    for name in ["baseline", "candidate"]:
+        parser.add_argument(f"--{name}", required=True, type=pathlib.Path, help="saved development result.json")
+    parser.add_argument("--truth", required=True, type=pathlib.Path, help="exact truth CSV used by both evaluations")
+    parser.add_argument("--output-dir", required=True, type=pathlib.Path, help="new diagnostic directory")
     parser.add_argument("--slices", type=pathlib.Path, help="optional full-split ID/categorical metadata CSV")
     parser.add_argument("--slice-column", action="append", help="categorical column to diagnose; repeat for separate slices")
     parser.add_argument("--baseline-fit", type=pathlib.Path, help="baseline's sealed tabular training fit.json")
@@ -374,6 +444,10 @@ def make_parser() -> argparse.ArgumentParser:
                         help="same diagnostic scores/top cases; skip full cases CSV and copied input snapshots")
     parser.add_argument("--check-blend-direction", action="store_true",
                         help="RMSE/MAE convex-loss endpoint signs; no weight search or recipe score")
+    parser.add_argument("--check-blend-headroom", action="store_true",
+                        help="RMSE oracle bounds for fixed endpoints by fold and slice; requires both fit receipts")
+    parser.add_argument("--required-blend-gain", type=float,
+                        help="optional task threshold in RMSE units for the blend bounds")
     parser.add_argument("--check-influence", action="store_true",
                         help="RMSE sign sensitivity to deleting rows; no refitting or promotion gate")
     parser.add_argument("--influence-max-removals", type=int, default=5,
@@ -401,8 +475,12 @@ def main() -> int:
             print(json.dumps({"status": "failed", "error": {"type": "output_failure", "message": str(exc)}},
                              ensure_ascii=False), file=sys.stderr)
             return 2
-    print(json.dumps({"status": result["status"], "report": str(output_dir / "report.json") if created else None,
-                      "case_count": result.get("case_count"), "error": result["error"]}, ensure_ascii=False),
+    summary = {"status": result["status"], "report": str(output_dir / "report.json") if created else None,
+               "case_count": result.get("case_count"), "error": result["error"]}
+    if "blend_headroom" in result:
+        summary["blend_headroom"] = result["blend_headroom"]
+        summary["second_layer_boundary"] = result["fold_comparison"]["pooled_oof_second_layer_boundary"]["status"]
+    print(json.dumps(summary, ensure_ascii=False),
           file=sys.stdout if result["status"] == "success" else sys.stderr)
     return 0 if result["status"] == "success" else 2
 

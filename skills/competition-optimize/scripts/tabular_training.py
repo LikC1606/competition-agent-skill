@@ -388,8 +388,8 @@ def score(spec: dict, truth: Path, predicted: Path, stage: str, root: Path, spli
     return result
 
 
-def recompose(control: Path, member: Path, composition: Path, output: Path, *, control_atol: float = 0) -> dict:
-    """Score a declared addition using two sealed fold-model runs; no adapter fits."""
+def recompose(control: Path, member: Path | None, composition: Path, output: Path, *, control_atol: float = 0) -> dict:
+    """Score a declared composition using sealed fold models without adapter fits."""
     started = time.perf_counter()
     np, _, limits = runtime()
     if not np.isfinite(control_atol) or control_atol < 0:
@@ -397,18 +397,23 @@ def recompose(control: Path, member: Path, composition: Path, output: Path, *, c
     if output.exists():
         raise FileExistsError("Recomposition output already exists: " + str(output))
     base = SavedTabularRun(control, kind="tabular_training")
-    added = SavedTabularRun(member, kind="tabular_training")
     spec = base.protocol
-    if base.fit["cost"]["execution_id"] == added.fit["cost"]["execution_id"]:
-        raise TrainingFailure("Use a separate trained member, not a copy of the control execution")
-    if any(base.manifest["files"].get(name) != added.manifest["files"].get(name)
-           for name in ("training.csv", "inference.csv")):
-        raise TrainingFailure("Saved runs must use matching training and inference data")
-    if ({k: v for k, v in spec.items() if k != "features"} !=
-            {k: v for k, v in added.protocol.items() if k != "features"}):
-        raise TrainingFailure("Saved runs must match protocols apart from feature columns, including fold IDs, row order and seeds")
+    inputs = {"control": base}
+    features = spec["features"]
+    added = None
+    if member is not None:
+        added = SavedTabularRun(member, kind="tabular_training")
+        if base.fit["cost"]["execution_id"] == added.fit["cost"]["execution_id"]:
+            raise TrainingFailure("Omit --member to recompose the control alone. A supplied member needs a separate execution")
+        if any(base.manifest["files"].get(name) != added.manifest["files"].get(name)
+               for name in ("training.csv", "inference.csv")):
+            raise TrainingFailure("Saved runs must use matching training and inference data")
+        if ({k: v for k, v in spec.items() if k != "features"} !=
+                {k: v for k, v in added.protocol.items() if k != "features"}):
+            raise TrainingFailure("Saved runs must match protocols apart from feature columns, including fold IDs, row order and seeds")
+        inputs["member"] = added
+        features = list(dict.fromkeys(features + added.protocol["features"]))
     identifier, column = spec.get("id_column", "id"), spec.get("prediction_column", "prediction")
-    features = list(dict.fromkeys(base.protocol["features"] + added.protocol["features"]))
     _, rows = csv_rows(base.root / "training.csv", [identifier, *features], raw=base._bytes("training.csv"))
     _, recorded = csv_rows(base.root / "oof.csv", [identifier, column], raw=base._bytes("oof.csv"))
     source = composition.read_bytes()
@@ -425,9 +430,11 @@ def recompose(control: Path, member: Path, composition: Path, output: Path, *, c
             model = base.load_model(fold_id)
             x_fit = matrix(np, rows, train_ids, spec["features"])
             x_score = matrix(np, rows, valid_ids, spec["features"])
-            new_model = added.load_model(fold_id)
-            member_x_fit = matrix(np, rows, train_ids, added.protocol["features"])
-            member_x_score = matrix(np, rows, valid_ids, added.protocol["features"])
+            new_model = member_x_fit = member_x_score = None
+            if added is not None:
+                new_model = added.load_model(fold_id)
+                member_x_fit = matrix(np, rows, train_ids, added.protocol["features"])
+                member_x_score = matrix(np, rows, valid_ids, added.protocol["features"])
 
             def composed(include_member):
                 values = predict_fold(model, new_model, x_fit, x_score, member_x_fit, member_x_score,
@@ -453,15 +460,14 @@ def recompose(control: Path, member: Path, composition: Path, output: Path, *, c
     (output / "composition.py").write_bytes(source)
     write_json(output / "recipe.json", {"schema_version": 1, "kind": "tabular_recomposition",
                "composition_source": source.decode("utf-8-sig"),
-               "control_recipe_sha256": byte_hash(base._bytes("recipe.json")),
-               "member_recipe_sha256": byte_hash(added._bytes("recipe.json"))})
+               **{f"{name}_recipe_sha256": byte_hash(run._bytes("recipe.json")) for name, run in inputs.items()}})
     save_csv(output / "oof.csv", [identifier, column], [(key, repr(oof[key])) for key in spec["expected_oof_ids"]])
     (output / "truth.csv").write_bytes(truth)
     result = score(spec, output / "truth.csv", output / "oof.csv", "development", output / "evaluation",
                    base.manifest["protocol_hash"])
     report = {"new_fit_calls": 0, "recomposition_seconds": time.perf_counter() - started,
               "inputs": {name: {"run": str(run.root), "seal": run.manifest["seal"], "originating_cost": run.fit["cost"]}
-                         for name, run in (("control", base), ("member", added))},
+                         for name, run in inputs.items()},
               "control_atol": control_atol, "folds": comparisons,
               "scope": "Development predictions. No adapter fits during recomposition; arbitrary composition code and "
                        "its information flow are not certified."}
@@ -853,9 +859,10 @@ def main() -> int:
     rescoring = commands.add_parser("rescore", help="Reuse sealed OOF with a saved reference evaluator; zero fits")
     for name in ["run", "evaluator", "reference-result"]:
         rescoring.add_argument("--" + name, type=Path, required=True)
-    recomposing = commands.add_parser("recompose", help="Reuse a sealed control and separately trained member on matched folds")
-    for name in ["control", "member", "composition"]:
+    recomposing = commands.add_parser("recompose", help="Score a composition of saved fold models")
+    for name in ["control", "composition"]:
         recomposing.add_argument("--" + name, type=Path, required=True)
+    recomposing.add_argument("--member", type=Path, help="Optional separate trained member on matched folds")
     recomposing.add_argument("--control-atol", type=float, default=0,
                              help="Declared absolute reproduction tolerance; defaults to exact")
     frozen = commands.add_parser("freeze")
