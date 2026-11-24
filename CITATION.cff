@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use Competition Agent Skill in your workflow, please cite this repository."
+type: software
+title: "Competition Agent Skill: Evidence-Driven Iterative Optimization"
+authors:
+  - family-names: Liu
+    given-names: Zhenhao
+    affiliation: "WestlakeNLP, Westlake University"
+    website: https://likc1606.github.io/
+repository-code: https://github.com/LikC1606/competition-agent-skill
+url: https://github.com/LikC1606/competition-agent-skill
+license: MIT
+keywords:
+  - agent-skills
+  - competitive-ml
+  - kaggle
+  - codex
